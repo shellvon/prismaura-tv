@@ -1,0 +1,37 @@
+# Android / IDE / generated local state
+.gradle/
+**/build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# Runtime dependencies and temporary bundler metadata
+node_modules/
+tools/plugin-runtime/metafile.json
+
+# Signing and private configuration
+*.jks
+*.keystore
+*.p12
+*.pfx
+keystore.properties
+signing.properties
+.env
+.env.*
+!.env.example
+
+# Local exports and diagnostics
+backup*.json
+backup*.tar
+prism-backup*.json
+prismaura-backup*.json
+crash-*.txt
+*.log
+
+# Source-free distribution: keep personal plugins and fixtures outside this repository
+/plugins/
+/tools/test-source/
+/tools/lan-static/
+/app/src/debug/assets/gdstudio.js
+/prism-tv-private-materials*/

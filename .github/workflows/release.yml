@@ -1,0 +1,71 @@
+name: Release APK
+
+on:
+  push:
+    tags: ['v[0-9]*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      UPDATE_MIRROR_BASE: ${{ vars.UPDATE_MIRROR_BASE }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Validate release tag
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+      - name: Install Android SDK components
+        run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
+      - name: Restore existing app signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.PRISM_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/prism-signing.jks"
+          chmod 600 "$RUNNER_TEMP/prism-signing.jks"
+      - name: Build signed release
+        env:
+          PRISM_KEYSTORE_PATH: ${{ runner.temp }}/prism-signing.jks
+          PRISM_KEYSTORE_PASSWORD: ${{ secrets.PRISM_KEYSTORE_PASSWORD }}
+          PRISM_KEY_ALIAS: ${{ secrets.PRISM_KEY_ALIAS }}
+          PRISM_KEY_PASSWORD: ${{ secrets.PRISM_KEY_PASSWORD }}
+        run: |
+          ./gradlew --no-daemon :app:prepareReleaseAssets \
+            -PupdateRepository="$GITHUB_REPOSITORY" \
+            -PupdateMirrorBase="$UPDATE_MIRROR_BASE"
+      - name: Verify APK
+        run: |
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging app/build/outputs/apk/release/app-release.apk > "$RUNNER_TEMP/prism-badging.txt"
+          if grep -q '^application-debuggable' "$RUNNER_TEMP/prism-badging.txt"; then
+            echo 'Refusing to publish a debuggable APK'
+            exit 1
+          fi
+      - name: Publish release
+        run: |
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+            --title "PrismAura $RELEASE_TAG" --notes-file app/build/release-assets/notes.md
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            app/build/release-assets/PrismAura.apk app/build/release-assets/latest.json
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/prism-signing.jks"
