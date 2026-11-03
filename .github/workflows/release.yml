@@ -33,7 +33,7 @@ jobs:
         run: |
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
       - name: Install Android SDK components
-        run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
+        run: $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
       - name: Restore existing app signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.PRISM_KEYSTORE_BASE64 }}
