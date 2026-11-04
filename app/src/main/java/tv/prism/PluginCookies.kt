@@ -40,10 +40,6 @@ class PluginCookies(context: Context, private val pluginId: String) : CookieJar 
         cookies = mutableListOf()
     }
 
-    /** Any stored session at all counts as "logged in" — the host uses this to decide whether
-        VIP results are playable before showing them. */
-    @Synchronized fun hasCookies(): Boolean = load().isNotEmpty()
-
     private fun load(): MutableList<Cookie> {
         cookies?.let { return it }
         val encrypted = prefs.getString(pluginId, null)

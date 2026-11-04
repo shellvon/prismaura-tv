@@ -110,37 +110,64 @@ class PluginClient(private val context: Context) {
     ): Any? {
         val limit = PluginWorkers.resolve(context)
         return gate(limit).withPermit {
-            withContext(Dispatchers.Main) {
-                val service = connect()
-                val id = UUID.randomUUID().toString()
-                val result = CompletableDeferred<String>()
-                pending[id] = result
-                try {
-                    service.send(Message.obtain(null, 1).apply {
-                        replyTo = replies
-                        data = Bundle().apply {
-                            putString("id", id); putString("source", source); putString("variables", variables.toString())
-                            putString("method", method); putString("args", args.toString()); putString("pluginId", pluginId)
-                            /* The service process has its own SharedPreferences cache, so the
-                               resolved count travels with the call instead of being read there. */
-                            putInt("workers", limit)
-                        }
-                    })
-                    val raw = withTimeout(timeoutMs) { result.await() }
-                    val response = JSONObject(raw)
-                    if (!response.optBoolean("ok")) error(response.optString("error", "插件执行失败"))
-                    if (response.isNull("value")) null else response.get("value")
-                } catch (e: TimeoutCancellationException) {
-                    /* Only this call is abandoned. Killing the process here would take down the
-                       other searches that share it. */
-                    cancel(id)
-                    throw IllegalStateException("插件执行超时", e)
-                } catch (e: CancellationException) {
-                    cancel(id)
-                    throw e
-                } finally { pending.remove(id) }
+            callInSlot(source, variables, method, args, pluginId, timeoutMs, limit)
+        }
+    }
+
+    /** Acquire one slot before starting the budget, then use it for the whole page batch. */
+    internal suspend fun callPage(
+        plugin: Plugin,
+        method: String,
+        firstPage: Int,
+        itemsKey: String,
+        args: (Int) -> JSONArray,
+    ): PluginPage {
+        val limit = PluginWorkers.resolve(context)
+        return gate(limit).withPermit {
+            loadPluginPage(firstPage, itemsKey) { page ->
+                callInSlot(plugin.source, plugin.variables, method, args(page), plugin.id, 35_000, limit) as? JSONObject
+                    ?: error("音源未返回有效分页结果")
             }
         }
+    }
+
+    private suspend fun callInSlot(
+        source: String,
+        variables: JSONObject,
+        method: String,
+        args: JSONArray,
+        pluginId: String,
+        timeoutMs: Long,
+        limit: Int,
+    ): Any? = withContext(Dispatchers.Main) {
+        val service = connect()
+        val id = UUID.randomUUID().toString()
+        val result = CompletableDeferred<String>()
+        pending[id] = result
+        try {
+            service.send(Message.obtain(null, 1).apply {
+                replyTo = replies
+                data = Bundle().apply {
+                    putString("id", id); putString("source", source); putString("variables", variables.toString())
+                    putString("method", method); putString("args", args.toString()); putString("pluginId", pluginId)
+                    /* The service process has its own SharedPreferences cache, so the
+                       resolved count travels with the call instead of being read there. */
+                    putInt("workers", limit)
+                }
+            })
+            val raw = withTimeout(timeoutMs) { result.await() }
+            val response = JSONObject(raw)
+            if (!response.optBoolean("ok")) error(response.optString("error", "插件执行失败"))
+            if (response.isNull("value")) null else response.get("value")
+        } catch (e: TimeoutCancellationException) {
+            /* Only this call is abandoned. Killing the process here would take down the
+               other searches that share it. */
+            cancel(id)
+            throw IllegalStateException("插件执行超时", e)
+        } catch (e: CancellationException) {
+            cancel(id)
+            throw e
+        } finally { pending.remove(id) }
     }
 
     private fun cancel(id: String) {

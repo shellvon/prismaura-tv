@@ -159,10 +159,9 @@ class MainActivity : ComponentActivity() {
     private var entities by mutableStateOf<List<SearchEntity>>(emptyList())
     private var searchTerm by mutableStateOf("")
     private var searchHistory by mutableStateOf<Map<String, List<String>>>(emptyMap())
-    private var searchPage by mutableIntStateOf(1)
     private var hasMore by mutableStateOf(false)
     private var searchAppending by mutableStateOf(false)
-    private var searchRemaining = emptySet<String>()
+    private var searchNextPages = emptyMap<String, Int>()
     /* Exponential moving average of per-source search time, so a slow source stops being
        asked first after its first slow answer. */
     private var searchLatency = emptyMap<String, Long>()
@@ -442,7 +441,7 @@ class MainActivity : ComponentActivity() {
         val requestedType = searchType
         val sources = plugins.state.value.plugins.filter { it.enabled }.filter { plugin ->
             val supported = plugin.metadata.optJSONArray("supportedSearchType")
-            (searchSources.isEmpty() || plugin.id in searchSources) && (!append || plugin.id in searchRemaining) &&
+            (searchSources.isEmpty() || plugin.id in searchSources) && (!append || plugin.id in searchNextPages) &&
                 (supported == null || (0 until supported.length()).any { supported.optString(it) == requestedType })
         }.sortedBy { searchLatency[it.id] ?: 0L }
         if (sources.isEmpty() || query.isBlank()) { status = "请选择插件并输入搜索内容"; return }
@@ -458,16 +457,12 @@ class MainActivity : ComponentActivity() {
         searchAppending = append
         searchJob = lifecycleScope.launch {
             busy = true
-            val requestedPage = if (append) searchPage + 1 else 1
-            var more = false
             val failures = mutableListOf<String>()
-            val remaining = mutableSetOf<String>()
+            val nextPages = mutableMapOf<String, Int>()
             var done = 0
-            var hiddenVip = 0
             try {
                 if (!append) { results = emptyList(); entities = emptyList(); hasMore = false }
                 searchTerm = query.trim()
-                searchPage = requestedPage
                 /* Each source runs in its own sandbox worker, so a slow source no longer holds
                    the others back. Every answer still paints the moment it lands, and latency
                    is remembered so the fastest sources still start first. */
@@ -477,21 +472,17 @@ class MainActivity : ComponentActivity() {
                             if (generation != searchGeneration) return@async
                             val started = System.currentTimeMillis()
                             try {
-                                val response = plugins.client.call(plugin.source, plugin.variables, "search", JSONArray().put(query.trim()).put(requestedPage).put(requestedType), plugin.id) as? JSONObject ?: error("无效搜索结果")
+                                val loaded = plugins.client.callPage(plugin, "search", if (append) searchNextPages.getValue(plugin.id) else 1, "data") { page ->
+                                    JSONArray().put(query.trim()).put(page).put(requestedType)
+                                }
+                                val response = loaded.response
                                 val list = response.optJSONArray("data") ?: JSONArray()
                                 if (generation != searchGeneration) return@async
-                                if (!response.optBoolean("isEnd", true) && list.length() > 0) { more = true; remaining += plugin.id }
+                                if (!response.optBoolean("isEnd", true)) nextPages[plugin.id] = loaded.number + 1
                                 if (requestedType == "music") {
                                     val songs = (0 until minOf(list.length(), 100)).mapNotNull { list.optJSONObject(it)?.let(plugin::song) }
-                                    /* VIP results only play for the account owner, so without a
-                                       configured credential or a scan-login session they would
-                                       fail at playback. Hide instead of promising what fails. */
-                                    val playable = if (plugin.hasCredentials() || songs.none(Song::isVip)) songs else try {
-                                        if (plugins.client.call("", JSONObject(), "hasCookies", pluginId = plugin.id) == true) songs else songs.filterNot(Song::isVip)
-                                    } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-                                    catch (e: Exception) { songs.filterNot(Song::isVip) }
-                                    hiddenVip += songs.size - playable.size
-                                    results = (results + playable).distinctBy { it.key }
+                                    // The source decides availability; vip is only a display hint.
+                                    results = (results + songs).distinctBy { it.key }
                                 } else {
                                     val shaped = (0 until minOf(list.length(), 100)).mapNotNull { list.optJSONObject(it)?.let { item -> SearchEntity(plugin.id, plugin.displayName, item) } }
                                         /* A source that ignores the requested type would otherwise put
@@ -506,7 +497,7 @@ class MainActivity : ComponentActivity() {
                                     entities = entities + shaped
                                 }
                                 done++
-                                status = "找到 ${if (requestedType == "music") results.size else entities.size} 条 · 已查询 $done/${sources.size} 个音源${if (hiddenVip > 0) " · 已隐藏 $hiddenVip 首 VIP" else ""}"
+                                status = "找到 ${if (requestedType == "music") results.size else entities.size} 条 · 已查询 $done/${sources.size} 个音源"
                             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
                             catch (e: Exception) {
                                 if (generation == searchGeneration) {
@@ -526,15 +517,14 @@ class MainActivity : ComponentActivity() {
                     }.awaitAll()
                 }
                 if (generation != searchGeneration) return@launch
-                hasMore = more
-                searchRemaining = remaining
+                hasMore = nextPages.isNotEmpty()
+                searchNextPages = nextPages
                 getSharedPreferences("search", MODE_PRIVATE).edit().putString("latency",
                     JSONObject().apply { searchLatency.forEach { (id, ms) -> put(id, ms) } }.toString()).apply()
                 val failureNote = if (failures.isEmpty()) "" else "；搜索失败：${failures.joinToString("、").take(300)}"
-                val vipNote = if (hiddenVip > 0) "；已隐藏 $hiddenVip 首 VIP 歌曲，配置 Cookie 后可见" else ""
                 status = if (results.isEmpty() && entities.isEmpty() && failures.isNotEmpty())
                     "搜索异常：${failures.joinToString("、").take(300)}"
-                else "找到 ${if (requestedType == "music") results.size else entities.size} 条结果$failureNote$vipNote"
+                else "找到 ${if (requestedType == "music") results.size else entities.size} 条结果$failureNote"
             } finally { if (generation == searchGeneration) { busy = false; searchAppending = false } }
         }
     }
@@ -675,9 +665,13 @@ class MainActivity : ComponentActivity() {
             try {
                 val nextPage = if (append) browsePage + 1 else 1
                 val method = when (browseKind) { "artist" -> "getArtistWorks"; "album" -> "getAlbumInfo"; else -> "getMusicSheetInfo" }
-                val args = JSONArray().put(item).put(nextPage)
-                if (browseKind == "artist") args.put("music")
-                val result = plugins.client.call(plugin.source, plugin.variables, method, args, plugin.id) as? JSONObject ?: error("音源未返回详情")
+                val loaded = plugins.client.callPage(plugin, method, nextPage, if (browseKind == "artist") "data" else "musicList") { page ->
+                    val args = JSONArray().put(item).put(page)
+                    if (browseKind == "artist") args.put("music")
+                    args
+                }
+                if (generation != browseGeneration) return@launch
+                val result = loaded.response
                 val items = if (browseKind == "artist") result.optJSONArray("data") else result.optJSONArray("musicList")
                 val count = items?.length() ?: 0
                 val songs = (0 until minOf(count, 200)).mapNotNull { items?.optJSONObject(it)?.let(plugin::song) }
@@ -692,9 +686,9 @@ class MainActivity : ComponentActivity() {
                     browseInfo = info
                     browseTitle = info.optString("title").ifBlank { info.optString("name").ifBlank { browseTitle } }
                 }
-                browsePage = nextPage
-                browseMore = songs.isNotEmpty() && !result.optBoolean("isEnd", true)
-                browseStatus = if (browseSongs.isEmpty()) "暂无歌曲" else ""
+                browsePage = loaded.number
+                browseMore = !result.optBoolean("isEnd", true)
+                browseStatus = if (browseSongs.isEmpty()) { if (browseMore) "本页暂无歌曲，可继续加载" else "暂无歌曲" } else ""
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { browseStatus = "加载失败：${e.message ?: "未知错误"}" }
             finally { if (generation == browseGeneration) browseLoading = false }
@@ -2704,8 +2698,7 @@ class MainActivity : ComponentActivity() {
                                                     ),
                                                     current = queue.getOrNull(queueIndex)?.key == song.key,
                                                     qualityTag = qualityTags[song.key]?.takeIf { it.isNotBlank() },
-                                                    /* Reaching the end is the request for the next page;
-                                                       no button whose node can disappear under the remote. */
+                                                    /* Reaching the end also requests the next page. */
                                                     onFocus = {
                                                         detailFocusMemory.value = rowFocus to (detailSongRowOffset() + index)
                                                         resolveQuality(song)
@@ -2715,6 +2708,9 @@ class MainActivity : ComponentActivity() {
                                             }
                                             if (browseLoading && browseSongs.isNotEmpty()) item {
                                                 Text("正在加载更多…", color = c.muted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
+                                            }
+                                            if (browseMore) item {
+                                                PrismAction(if (browseLoading) "正在加载…" else "加载更多", { if (!browseLoading) loadBrowse(true) })
                                             }
                                         }
                                     }
@@ -2880,10 +2876,10 @@ class MainActivity : ComponentActivity() {
                                 val suggestionsVisible = !busy && (keyword.isBlank() || keyword.trim() != searchTerm.trim())
                                 val searchListState = remember(searchTerm, searchType) { LazyListState() }
                                 val searchContentFocus = if (suggestionsVisible) firstSuggestionFocus else searchResultsFocus
-                                LaunchedEffect(focusSearchResults, busy, results.isNotEmpty(), entities.isNotEmpty(), navBarFocused) {
+                                LaunchedEffect(focusSearchResults, busy, results.isNotEmpty(), entities.isNotEmpty(), hasMore, navBarFocused) {
                                     if (!focusSearchResults || navBarFocused || playerOpen) return@LaunchedEffect
                                     if (results.isEmpty() && entities.isEmpty() && busy) return@LaunchedEffect
-                                    if (results.isNotEmpty() || entities.isNotEmpty()) {
+                                    if (results.isNotEmpty() || entities.isNotEmpty() || hasMore) {
                                         searchListState.scrollToItem(0)
                                         repeat(4) {
                                             withFrameNanos { }
@@ -3046,6 +3042,7 @@ class MainActivity : ComponentActivity() {
                                         when {
                                             resultCount > 0 -> "$resultCount 条 · ${if (searchSources.isEmpty()) "全部音源" else "${searchSources.size} 个音源"}" + if (busy) " · 搜索中" else ""
                                             busy -> "搜索中…"
+                                            hasMore -> "本页暂无结果"
                                             else -> "没有匹配结果"
                                         },
                                         color = c.muted, fontSize = 11.sp,
@@ -3092,7 +3089,7 @@ class MainActivity : ComponentActivity() {
                                 }
                                 if (results.isEmpty()) {
                                     Text(
-                                        if (busy) "正在搜索…" else "没有找到「$keyword」的歌曲。换个关键词，或换一个音源试试",
+                                        if (busy) "正在搜索…" else if (hasMore) "本页暂无歌曲，可继续加载" else "没有找到「$keyword」的歌曲。换个关键词，或换一个音源试试",
                                         color = c.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 16.dp)
                                     )
                                 } else LazyColumn(Modifier.weight(1f).padding(top = 4.dp), state = searchListState) {
@@ -3115,6 +3112,12 @@ class MainActivity : ComponentActivity() {
                                         Text("正在加载更多…", color = c.muted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
                                     }
                                 }
+                                }
+                                if (hasMore) {
+                                    PrismAction(if (busy) "正在加载…" else "加载更多", { if (!busy) search(searchTerm, append = true) },
+                                        if (results.isEmpty() && entities.isEmpty()) Modifier.focusAnchor(searchResultsFocus)
+                                            .focusProperties { if (searchFilterFocus.attached) up = searchFilterFocus.requester }
+                                        else Modifier)
                                 }
                                 }
                             }

@@ -56,7 +56,6 @@ class PluginService : Service() {
                 val call = Message.obtain(msg)
                 workerCap = call.data.getInt("workers", workerCap).coerceIn(1, MAX_WORKERS)
                 if (call.data.getString("method") == "clearCookies") clearCookies(call)
-                else if (call.data.getString("method") == "hasCookies") hasCookies(call)
                 else { queue.addLast(call); dispatch() }
             }
             3 -> cancel(msg.data.getString("id") ?: "")
@@ -154,14 +153,6 @@ class PluginService : Service() {
             onFailure = { JSONObject().put("ok", false).put("error", it.message ?: "清除失败") },
         )
         reply(msg, result.toString())
-    }
-
-    /* Same in-process lane as clearCookies: answers whether a scan-login left cookies behind,
-       without loading any plugin JavaScript. */
-    private fun hasCookies(msg: Message) {
-        val pluginId = msg.data.getString("pluginId") ?: ""
-        val value = pluginId.isNotBlank() && cookieJars.getOrPut(pluginId) { PluginCookies(this, pluginId) }.hasCookies()
-        reply(msg, JSONObject().put("ok", true).put("value", value).toString())
     }
 
     /** A stuck call is abandoned by throwing away its sandbox, not by killing every call. */

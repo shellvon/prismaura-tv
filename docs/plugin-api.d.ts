@@ -51,7 +51,7 @@ export interface MusicItem extends Entity {
   albumId?: string;
   /** Prism：MV 平台标识，由 getMvSource 解释；不要求与歌曲 ID 相同。 */
   mvId?: string;
-  /** Prism：显示 VIP 标记；不是会员授权或播放权限凭证。 */
+  /** Prism：仅用于展示；可播放性与过滤策略由插件负责，宿主不据此过滤或阻止解析。 */
   vip?: boolean;
 }
 
@@ -86,14 +86,14 @@ export interface LyricSource {
 export interface SearchResult<T extends Entity = Entity> {
   /** 当前页结果，保留插件自定义字段。 */
   data: T[];
-  /** 是否到末页；省略按 true 处理，页码从 1 开始。 */
+  /** 是否到末页；省略按 true 处理，页码从 1 开始。空页且 false 时宿主搜索会有限续查。 */
   isEnd?: boolean;
 }
 
 export interface TrackResult {
   /** 当前页曲目。 */
   musicList: MusicItem[];
-  /** 是否到末页；省略按 true 处理。 */
+  /** 是否到末页；省略按 true 处理。空页且 false 时宿主歌曲详情会有限续查。 */
   isEnd?: boolean;
   /** MusicFree：专辑详情补充，首屏合并进原始专辑实体。 */
   albumItem?: Partial<Entity>;

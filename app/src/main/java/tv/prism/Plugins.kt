@@ -44,17 +44,8 @@ data class Plugin(
         else name.replace('_', ' ').replace('-', ' ').replace(Regex("\\s+"), " ").trim().ifBlank { "未命名音源" }
 }
 
-/* Keys that carry a login. A source counts as logged in when one of these holds a value;
-   that, plus any scan-login cookies, decides whether VIP search results are kept. */
+/* Mask potentially sensitive configuration fields in the TV and phone interfaces. */
 val credentialKeys = setOf("password", "cookie", "token", "secret", "sessdata", "api_key", "apikey", "ck")
-fun Plugin.hasCredentials(): Boolean {
-    val fields = metadata.optJSONArray("userVariables") ?: return false
-    return (0 until fields.length()).any { i ->
-        val field = fields.optJSONObject(i) ?: return@any false
-        val key = field.optString("key")
-        key.isNotBlank() && credentialKeys.any { key.contains(it, ignoreCase = true) } && variables.optString(key).isNotBlank()
-    }
-}
 data class PluginsState(
     val plugins: List<Plugin> = emptyList(),
     val subscriptions: List<String> = emptyList(),

@@ -71,7 +71,7 @@
 
 ## 标准方法
 
-分页从 **1** 开始，`isEnd` 缺省按 true 处理。
+分页从 **1** 开始，`isEnd` 缺省按 true 处理。插件过滤后即使当前页为空，也应按上游原始分页结果返回 `isEnd`，不能将空页直接当作末页。搜索和歌曲详情遇到空页且 `isEnd: false` 时自动续查；每个音源的一次加载最多查询 5 页，获得执行槽后共享 35 秒预算，排队等待不计入，达到页数上限后可手动继续。搜索按音源分别记录实际页码，避免跳页后重复或遗漏。
 
 | 方法与参数 | 返回值 | 用途 |
 | --- | --- | --- |
@@ -171,9 +171,9 @@ getMvSource(song: MusicItem): Awaitable<MediaSource | null>;
 | 歌曲 `artistId` / `albumId` | 优先用平台标识打开详情；缺省尝试插件实体搜索 |
 | `getArtistWorks(..., 'music')` 的 artistInfo | description、artwork、albumSize、musicSize |
 | `getAlbumInfo(...)` 的 albumInfo | Prism 补充信息；同名信息优先采用标准 albumItem |
-| 歌曲 `vip: true` | 展示 VIP 标记；当前歌曲搜索在没有凭据字段且自动 Cookie 罐为空时还会过滤该结果 |
+| 歌曲 `vip: true` | 仅用于展示 VIP 标记；宿主不据此或根据凭据／Cookie 状态过滤歌曲、阻止解析 |
 
-凭据存在与否不是实际登录、会员或授权验证；播放权限由内容服务决定。
+> 可播放性与过滤策略由插件负责，插件可根据自身解析能力和登录状态决定各接口返回哪些歌曲。凭据存在与否不是实际登录、会员或授权验证；实际播放权限由内容服务决定。
 
 ### 热搜
 
