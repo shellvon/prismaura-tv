@@ -48,12 +48,21 @@
       <p class="hero__meta"><span>Android 6.0+</span><span>MusicFree 插件兼容</span><span>无内置广告</span></p>
       <div class="hero__actions" data-page-node-id="9rKKd9v1JauVcbceDP2i4H">
         <a class="btn btn--primary" href="https://github.com/shellvon/prismaura-tv/releases/latest" data-page-node-id="BJc7mXgs0rn8Vjb4G0DCyW">前往下载 APK</a>
-        <a class="btn btn--ghost" href="#start" data-page-node-id="HGydj2LwEDsAmhUB7Lgrz4">安装与使用</a>
       </div>
     </div>
     <div class="container hero__screen" data-page-node-id="Fgne1PBRiUE2tADmPd0mCx">
-      <figure class="shot" data-slot="hero" data-page-node-id="onvV8VxdC7Yftsd4V4c0Hp">
-        <img src="./images/tv-player.webp" width="1600" height="900" alt="极光音乐播放页：唱片封面、逐行高亮的同步歌词与播放控制" fetchpriority="high" data-page-node-id="aDg0Hxf99gWeGmNsG7FDTT">
+      <figure class="demo" id="demo" data-page-node-id="onvV8VxdC7Yftsd4V4c0Hp">
+        <div class="shot shot--demo">
+          <video controls playsinline muted preload="none" poster="./images/tv-demo-poster.webp" width="1280" height="720" aria-label="PrismAura 真实操作演示" aria-describedby="demo-caption demo-description">
+            <source src="./media/prismaura-demo.mp4" type="video/mp4">
+            <p>浏览器无法播放视频时，可<a href="./media/prismaura-demo.mp4">打开 MP4 演示</a>。</p>
+          </video>
+        </div>
+        <figcaption class="demo__caption" id="demo-caption">
+          <span>19 秒原速录屏 · 静音 · 已剪去部分加载等待</span>
+          <a href="./media/prismaura-demo.mp4" download>下载演示</a>
+        </figcaption>
+        <p class="visually-hidden" id="demo-description">录屏展示选择 GD 音乐台搜索歌曲，以及真实曲目的同步歌词、旋转唱片和播放队列。两个片段分别录制，音源由用户安装的插件提供。</p>
       </figure>
     </div>
   </section>
@@ -151,6 +160,29 @@
     </div>
   </section>
 
+  <section class="section" id="faq" aria-labelledby="faq-title">
+    <div class="container">
+      <div class="sec-head">
+        <h2 id="faq-title">开始前，你可能想知道</h2>
+        <p class="sec-head__line">关于音源、播放和更新的几个常见问题。</p>
+      </div>
+      <div class="faq">
+        <details>
+          <summary>为什么安装后没有歌曲？</summary>
+          <p>PrismAura 不附带音源。在「设置 → 音源」添加自己信任的插件或订阅后，再搜索歌曲或浏览歌单；也可以扫码，用手机粘贴地址。<a href="https://github.com/shellvon/prismaura-tv/blob/main/docs/PLUGIN_API.md">查看插件接入范围</a>。</p>
+        </details>
+        <details>
+          <summary>为什么搜到了歌曲，却无法播放？</summary>
+          <p>搜索结果不代表一定可播放，实际取决于插件、内容服务、账号权限和网络。先检查插件是否有更新，并按插件要求完成配置；需要登录的内容，应使用自己的账号。</p>
+        </details>
+        <details>
+          <summary>更新需要卸载旧版本吗？</summary>
+          <p>不需要。使用相同包名、相同签名且版本更高的安装包覆盖升级，可以保留现有应用数据；也可在「设置 → 关于」检查更新。自行构建时需要沿用原签名，<a href="https://github.com/shellvon/prismaura-tv/blob/main/docs/DEVELOPMENT.md#签名与覆盖更新">查看更新说明</a>。</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
   <section class="close grained" id="download" aria-labelledby="download-title" data-page-node-id="uo2xyVewV1IJVAxcQJnKTS">
     <div class="container close__inner" data-page-node-id="DEGtHTC4aFfKQTenrBvHxc">
       <h2 id="download-title" data-page-node-id="FE1d3KdZ7HbOuW5xNHKpsY">把音乐带回客厅</h2>
@@ -170,6 +202,7 @@
     <div class="footer__mast" data-page-node-id="i898H8tryoHFHPedUlVTbJ">
       <div class="footer__word" data-page-node-id="xz15Ujvjd13LPmNKm9JrNF">PrismAura<span data-page-node-id="bmggGKrCgzhZfjePk62wqB">极光音乐，为 TV 而生。</span></div>
       <nav class="footer__links" aria-label="页脚导航" data-page-node-id="EekalpzrCkaiDb3PwjklND">
+        <a href="#faq">常见问题</a>
         <a href="https://github.com/shellvon/prismaura-tv" data-page-node-id="cDfKcYG9i5zfqQaEFUYvN7">源码</a>
         <a href="https://github.com/shellvon/prismaura-tv/issues" data-page-node-id="hKEji981xh7vHn4sd0kjEx">问题反馈</a>
         <a href="https://github.com/shellvon/prismaura-tv/blob/main/CHANGELOG.md" data-page-node-id="zZlEbk3v3pxg6psc9p15hO">更新日志</a>
