@@ -4264,7 +4264,9 @@ class MainActivity : ComponentActivity() {
                 }
                 PrismAction("配置", onConfigure, edge.then(topEdge).focusAnchor(configureFocus).focusProperties { right = toggleFocus.requester })
                 PrismAction(if (plugin.enabled) "停用" else "启用", {
-                    lifecycleScope.launch {
+                    /* 焦点要等重组后的节点，所以必须挂在这一帧的帧时钟上：lifecycleScope 的
+                       上下文里没有 MonotonicFrameClock，withFrameNanos 会直接抛异常。 */
+                    scope.launch {
                         try { plugins.setEnabled(plugin.id, !plugin.enabled); withFrameNanos { }; toggleFocus.requestIfAttached() }
                         catch (e: kotlinx.coroutines.CancellationException) { throw e }
                         catch (e: Exception) { status = e.message ?: "操作失败" }
