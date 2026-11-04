@@ -13,7 +13,7 @@
 
 [特性](#特性) · [界面预览](#界面预览) · [开始听](#开始听) · [插件接入](docs/PLUGIN_API.md)
 
-<a href="docs/images/tv-player.png"><img src="docs/images/tv-player.png" width="100%" alt="PrismAura 实际播放页：唱片封面、同步歌词与播放控制"></a>
+<a href="site/images/tv-player.webp"><img src="site/images/tv-player.webp" width="100%" alt="PrismAura 实际播放页：唱片封面、同步歌词与播放控制"></a>
 
 </div>
 
@@ -40,26 +40,31 @@
   <tr>
     <td width="70%" align="center">
       <strong>发现 · 分类歌单与音乐榜单</strong><br><br>
-      <a href="docs/images/tv-discover.png"><img src="docs/images/tv-discover.png" width="100%" alt="发现页：分类歌单、歌手与榜单入口"></a>
+      <a href="site/images/tv-discover.webp"><img src="site/images/tv-discover.webp" width="100%" alt="发现页：分类歌单、歌手与榜单入口"></a>
     </td>
     <td width="30%" rowspan="2" align="center" valign="middle">
       <strong>手机 H5 · 随手掌控</strong><br><br>
-      <a href="docs/images/phone-remote.png"><img src="docs/images/phone-remote.png" width="100%" alt="实际 H5 遥控页：播放控制、搜索、音源与设置"></a><br>
+      <a href="site/images/phone-remote.webp"><img src="site/images/phone-remote.webp" width="100%" alt="实际 H5 遥控页：播放控制、搜索、音源与设置"></a><br>
       <sub>同一局域网 · 扫码即用</sub>
     </td>
   </tr>
   <tr>
     <td align="center">
       <strong>扫码登录 · 告别遥控器逐字输入</strong><br><br>
-      <a href="docs/images/tv-login.png"><img src="docs/images/tv-login.png" width="100%" alt="插件扫码登录弹窗；图中二维码为无效演示码"></a>
+      <a href="site/images/tv-login.webp"><img src="site/images/tv-login.webp" width="100%" alt="插件扫码登录弹窗；图中二维码为无效演示码"></a>
     </td>
   </tr>
 </table>
 
-<p align="center">
-  <strong>三种光线，同一种专注</strong><br><br>
-  <a href="docs/images/themes.png"><img src="docs/images/themes.png" width="100%" alt="黑金、瓷白、黑白三套主题的实际播放界面"></a>
-</p>
+<p align="center"><strong>三种光线，同一种专注</strong></p>
+
+<table>
+  <tr>
+    <td width="33%" align="center"><strong>极夜暖金</strong><br><br><a href="site/images/theme-gold.webp"><img src="site/images/theme-gold.webp" width="100%" alt="极夜暖金主题：深色背景与暖金歌词"></a></td>
+    <td width="33%" align="center"><strong>晨光白瓷</strong><br><br><a href="site/images/theme-porcelain.webp"><img src="site/images/theme-porcelain.webp" width="100%" alt="晨光白瓷主题：浅色背景与深色文字"></a></td>
+    <td width="33%" align="center"><strong>静谧黑白</strong><br><br><a href="site/images/theme-mono.webp"><img src="site/images/theme-mono.webp" width="100%" alt="静谧黑白主题：黑白界面与灰阶封面"></a></td>
+  </tr>
+</table>
 
 ## 开始听
 

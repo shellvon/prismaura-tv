@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://tv-music.240524.xyz/sitemap.xml
