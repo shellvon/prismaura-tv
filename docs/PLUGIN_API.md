@@ -1,6 +1,6 @@
 # 插件开发参考
 
-本文面向希望让现有 MusicFree 插件运行在 PrismAura，或为 TV 接入新能力的插件作者。描述对应客户端 **0.1.0**；标准参考 [MusicFree 官方协议](https://musicfree.catcat.work/plugin/protocol.html)，额外能力按本文的 Prism 扩展约定实现。
+本文面向希望让现有 MusicFree 插件运行在 PrismAura，或为 TV 接入新能力的插件作者。描述客户端当前行为，对应版本见仓库 [变更记录](../CHANGELOG.md) 与发布页；标准参考 [MusicFree 官方协议](https://musicfree.catcat.work/plugin/protocol.html)，额外能力按本文的 Prism 扩展约定实现。
 
 本文中的类型与数据样例用于说明接口，不是音乐源或订阅。可直接参考 [TypeScript 类型声明](plugin-api.d.ts)。
 
@@ -98,7 +98,7 @@
 
 ## 内置模块：准确版本
 
-这些是 **PrismAura 0.1.0** 的版本，不等同于 MusicFree 的打包版本。`require` 接受下表模块名及下文单列的 Cookie 适配名；lockfile 与 APK 中的第三方声明记录具体打包依赖。
+这些是 PrismAura 内置模块的版本，随依赖锁定更新（见 lockfile 与 APK 中的第三方声明），不等同于 MusicFree 的打包版本。`require` 接受下表模块名及下文单列的 Cookie 适配名。
 
 | 插件可 require 的名称 | 版本 | 说明 |
 | --- | --- | --- |

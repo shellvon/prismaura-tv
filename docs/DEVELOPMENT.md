@@ -103,7 +103,7 @@ apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
 
 这些值仅交给发布工作流，私钥和密码不进入 APK；base64 只是编码，应作为 Secret 保存。GitHub Actions 每次从 Secret 恢复同一份 keystore，不生成新的签名。每次发布：
 
-1. 更新 app/build.gradle.kts 的 versionName 与递增的 versionCode，整理 CHANGELOG.md 的 Unreleased 条目。
+1. 在 gradle.properties 更新 `appVersionName` 与递增的 `appVersionCode`（build.gradle.kts 读取该属性并提供 0.1.0/1 的默认值），整理 CHANGELOG.md 的 Unreleased 条目。
 2. 提交后推送与 versionName 相同的标签，例如 `v0.1.0`。
 3. [release.yml](../.github/workflows/release.yml) 自动构建、lint、验签，先创建草稿、上传附件，再发布为 latest。
 
