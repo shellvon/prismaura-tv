@@ -270,6 +270,7 @@ class MainActivity : ComponentActivity() {
     private var phoneRemoteMode by mutableStateOf(false)
     private val phoneHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var phoneTimeout: Runnable? = null
+    private val pluginReplacements = mutableStateListOf<PluginReplacement>()
     private val listener = object : Player.Listener {
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) { playing = playWhenReady }
         /* A failed resolve pauses the old track and leaves its title in the status line. When
@@ -1407,6 +1408,36 @@ class MainActivity : ComponentActivity() {
         phoneTimeout = null
         phoneDialog = false
         phoneInput?.close(); phoneInput = null
+        pluginReplacements.clear()
+    }
+
+    private fun showPluginImport(result: SyncResult) {
+        status = result.message
+        var bytes = pluginReplacements.sumOf { it.incoming.source.toByteArray(Charsets.UTF_8).size }
+        for (replacement in result.replacements) {
+            if (pluginReplacements.any { it.candidates.map { p -> p.id } == replacement.candidates.map { p -> p.id } && it.incoming.source == replacement.incoming.source }) continue
+            bytes += replacement.incoming.source.toByteArray(Charsets.UTF_8).size
+            if (bytes > Plugins.MAX_PENDING_SCRIPTS) { status += "；待确认文件过多，请分批导入"; break }
+            pluginReplacements += replacement
+        }
+        if (pluginReplacements.isNotEmpty()) phoneDialog = false
+    }
+
+    private fun resolvePluginReplacement(id: String, action: String, targetId: String? = null) {
+        check(!busy) { "正在处理音源，请稍后" }
+        val replacement = pluginReplacements.firstOrNull { it.incoming.id == id } ?: error("替换请求已失效，请重新导入")
+        pluginReplacements.remove(replacement)
+        if (action == "cancel") { status = "已取消导入，保留原插件"; return }
+        lifecycleScope.launch {
+            busy = true
+            try {
+                showPluginImport(if (action == "new") plugins.installIndependent(replacement)
+                    else plugins.confirmReplacement(replacement, targetId ?: replacement.candidates.single().id))
+            }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { status = "替换失败：${e.message}" }
+            finally { busy = false }
+        }
     }
 
     private fun openPhoneInput(fields: List<Pair<String, String>>, onSubmit: (Map<String, String>) -> Unit) {
@@ -1620,8 +1651,17 @@ class MainActivity : ComponentActivity() {
                         .put("status", status)
                         .put("page", page)
                         .put("playerOpen", playerOpen)
-                        /* Source management belongs on the phone: enabling, updating and
-                           filling a Cookie all need keys this remote does not have. */
+                        .put("importBusy", busy)
+                        .put("pluginReplacement", pluginReplacements.firstOrNull()?.let { replacement ->
+                            JSONObject().put("id", replacement.incoming.id).put("name", replacement.incoming.name)
+                                .put("author", replacement.incoming.metadata.optString("author"))
+                                .put("newVersion", replacement.incoming.metadata.optString("version"))
+                                .put("candidates", JSONArray(replacement.candidates.map { candidate ->
+                                    JSONObject().put("id", candidate.id).put("name", candidate.name)
+                                        .put("author", candidate.metadata.optString("author")).put("version", candidate.metadata.optString("version"))
+                                        .put("blocker", replacement.replacementBlocker(candidate).orEmpty())
+                                }))
+                        })
                         .put("sources", JSONArray().also { array ->
                             plugins.state.value.plugins.forEach { plugin ->
                                 val fields = JSONArray()
@@ -1640,6 +1680,7 @@ class MainActivity : ComponentActivity() {
                                 array.put(JSONObject()
                                     .put("id", plugin.id)
                                     .put("name", plugin.displayName)
+                                    .put("author", plugin.metadata.optString("author"))
                                     .put("enabled", plugin.enabled)
                                     .put("version", plugin.metadata.optString("version"))
                                     .put("capabilities", JSONArray(plugin.capabilities.labels))
@@ -1666,7 +1707,7 @@ class MainActivity : ComponentActivity() {
                         val request = JSONObject(raw)
                         val value = request.optString("value").trim()
                         var result: String? = null
-                        when (request.optString("type")) {
+                        when (val type = request.optString("type")) {
                             "playPause" -> {
                                 val p = controller ?: error("播放器未连接")
                                 when {
@@ -1757,14 +1798,35 @@ class MainActivity : ComponentActivity() {
                             }
                             "import" -> {
                                 require(value.isNotEmpty()) { "请输入插件或订阅地址" }
+                                check(!busy && pluginReplacements.isEmpty()) { "请先完成当前音源导入" }
                                 lifecycleScope.launch {
                                     busy = true
                                     status = "正在导入…"
-                                    try { status = plugins.importUrl(value).message }
+                                    try { showPluginImport(plugins.importUrl(value)) }
+                                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
                                     catch (e: Exception) { status = "导入失败：${e.message}" }
                                     finally { busy = false }
                                 }
                             }
+                            "importFile" -> {
+                                check(!busy && pluginReplacements.isEmpty()) { "请先完成当前音源导入" }
+                                val payload = JSONObject(value)
+                                val source = payload.getString("source")
+                                require(source.toByteArray(Charsets.UTF_8).size <= Plugins.MAX_SCRIPT) { "插件文件超过 384 KiB" }
+                                lifecycleScope.launch {
+                                    busy = true
+                                    status = "正在导入插件文件…"
+                                    try { showPluginImport(plugins.importSource(source)) }
+                                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                                    catch (e: Exception) { status = "导入失败：${e.message}" }
+                                    finally { busy = false }
+                                }
+                            }
+                            "importReplace" -> {
+                                val payload = JSONObject(value)
+                                resolvePluginReplacement(payload.getString("id"), "replace", payload.getString("targetId"))
+                            }
+                            "importCancel", "importNew" -> resolvePluginReplacement(value, if (type == "importNew") "new" else "cancel")
                             "importSheet" -> {
                                 val payload = JSONObject(value)
                                 val sheetUrl = payload.optString("url").trim()
@@ -1784,7 +1846,7 @@ class MainActivity : ComponentActivity() {
                                 val plugin = plugins.state.value.plugins.firstOrNull { it.id == value } ?: error("音源不存在")
                                 lifecycleScope.launch {
                                     status = "正在更新 ${plugin.displayName}…"
-                                    try { status = plugins.refresh(plugin.id).message }
+                                    try { showPluginImport(plugins.refresh(plugin.id)) }
                                     catch (e: Exception) { status = "更新失败：${e.message}" }
                                 }
                             }
@@ -3669,7 +3731,7 @@ class MainActivity : ComponentActivity() {
                                         if (subscription.isBlank()) { addSourceError = "请输入地址"; return }
                                         lifecycleScope.launch {
                                             busy = true; addSourceError = ""
-                                            try { status = plugins.importUrl(subscription.trim()).message; subscription = ""; closeAddSource() }
+                                            try { showPluginImport(plugins.importUrl(subscription.trim())); subscription = ""; closeAddSource() }
                                             catch (e: kotlinx.coroutines.CancellationException) { throw e }
                                             catch (e: Exception) { addSourceError = e.message ?: "添加失败，请检查地址" }
                                             finally { busy = false }
@@ -3683,7 +3745,7 @@ class MainActivity : ComponentActivity() {
                                         PrismAction("添加音源", { addSourceError = ""; addingSource = true }, Modifier.focusAnchor(sourceActionFocus).then(entryEdge).then(toolbarDown)
                                             .focusProperties { right = updateSourcesFocus }.rememberFocus(bodyFocusMemory), primary = true)
                                         Spacer(Modifier.width(8.dp))
-                                        PrismAction(if (busy) "更新中…" else "全部更新", { if (!busy) lifecycleScope.launch { busy = true; try { status = plugins.syncAll().message } catch (e: Exception) { status = "同步失败：${e.message}" } finally { busy = false } } },
+                                        PrismAction(if (busy) "更新中…" else "全部更新", { if (!busy) lifecycleScope.launch { busy = true; try { showPluginImport(plugins.syncAll()) } catch (e: Exception) { status = "同步失败：${e.message}" } finally { busy = false } } },
                                             Modifier.focusRequester(updateSourcesFocus).focusProperties { up = pluginsFocus; left = sourceActionFocus.requester }.then(toolbarDown).rememberFocus(bodyFocusMemory))
                                     }
                                     if (state.plugins.isEmpty() && state.subscriptions.isEmpty()) Text("添加信任的 MusicFree 插件或订阅，开始听歌", color = c.muted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 18.dp))
@@ -3729,7 +3791,7 @@ class MainActivity : ComponentActivity() {
                                             PrismAction("更新", { if (!busy) lifecycleScope.launch {
                                                 busy = true
                                                 status = "正在更新订阅…"
-                                                try { status = plugins.importUrl(url).message }
+                                                try { showPluginImport(plugins.importUrl(url)) }
                                                 catch (e: Exception) { status = "更新失败：${e.message}" }
                                                 finally { busy = false }
                                             } }, edgeToRail.rememberFocus(bodyFocusMemory))
@@ -4207,6 +4269,26 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+            pluginReplacements.firstOrNull()?.let { replacement ->
+                key(replacement.incoming.id) {
+                    val first = remember { FocusRequester() }
+                    val newVersion = replacement.incoming.metadata.optString("version").ifBlank { "未知版本" }
+                    PrismContextMenu("发现同名插件", "${replacement.incoming.name} · $newVersion。替换会沿用原配置和登录状态；独立安装使用独立配置，请确认来源可信。", {
+                        if (!busy) resolvePluginReplacement(replacement.incoming.id, "cancel")
+                    }, first) {
+                        PrismAction("取消", { if (!busy) resolvePluginReplacement(replacement.incoming.id, "cancel") }, Modifier.focusRequester(first), primary = true)
+                        Column(Modifier.heightIn(max = 240.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            replacement.candidates.forEach { candidate ->
+                                val label = listOf(candidate.name, candidate.metadata.optString("author"), candidate.metadata.optString("version")).filter { it.isNotBlank() }.joinToString(" · ")
+                                val blocker = replacement.replacementBlocker(candidate)
+                                if (blocker != null) Text("$label：$blocker", color = c.muted, fontSize = 12.sp)
+                                else PrismAction("替换 $label", { if (!busy) resolvePluginReplacement(replacement.incoming.id, "replace", candidate.id) })
+                            }
+                        }
+                        PrismAction(if (busy) "处理中…" else "作为独立音源安装", { if (!busy) resolvePluginReplacement(replacement.incoming.id, "new") })
+                    }
+                }
+            }
             if (phoneInput != null && phoneDialog) {
                 val input = phoneInput!!
                 /* Same reason as the queue panel: a dialog opens with no focus owner, so its
@@ -4258,7 +4340,7 @@ class MainActivity : ComponentActivity() {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(plugin.displayName, color = if (plugin.enabled) c.foreground else c.muted, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(
-                        listOfNotNull(plugin.metadata.optString("version").takeIf { it.isNotBlank() }?.let { "v$it" }, if (plugin.enabled) "已启用" else "已停用").joinToString(" · "),
+                        listOfNotNull(plugin.metadata.optString("version").takeIf { it.isNotBlank() }?.let { "v$it" }, plugin.metadata.optString("author").takeIf { it.isNotBlank() }, if (plugin.enabled) "已启用" else "已停用").joinToString(" · "),
                         color = if (plugin.enabled) c.accent else c.muted, fontSize = 11.sp,
                     )
                 }
@@ -4298,7 +4380,7 @@ class MainActivity : ComponentActivity() {
                     }, nextFocus())
                     if (plugin.updateUrl.isNotBlank()) PrismAction("更新插件", {
                         closeMenu()
-                        lifecycleScope.launch { try { status = plugins.refresh(plugin.id).message } catch (e: Exception) { status = "更新失败：${e.message}" } }
+                        lifecycleScope.launch { try { showPluginImport(plugins.refresh(plugin.id)) } catch (e: Exception) { status = "更新失败：${e.message}" } }
                     }, nextFocus())
                     if (!owned) PrismAction("移除音源", { confirmRemoval = true }, nextFocus())
                 }

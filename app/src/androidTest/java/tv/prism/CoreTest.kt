@@ -444,7 +444,8 @@ class CoreTest {
             assertEquals(0, compareVersions("1.0.0+new", "1.0.0+old"))
             val repository = Plugins(isolatedContext(), PluginClient(context))
             val source = "module.exports={platform:'Version fixture',version:'2.0.0',srcUrl:'/updates/current.js'}"
-            val plugin = repository.importSource(source, server.url("/original.js").toString())
+            repository.importSource(source, server.url("/original.js").toString())
+            val plugin = repository.state.value.plugins.single()
             repository.setVariables(plugin.id, JSONObject().put("label", "kept"))
             server.enqueue(MockResponse().setBody(source.replace("2.0.0", "2.1.0")))
             repository.refresh(plugin.id)
@@ -453,14 +454,17 @@ class CoreTest {
             assertTrue(runCatching { repository.refresh(plugin.id) }.isFailure)
             assertEquals("2.1.0", repository.state.value.plugins.single().metadata.getString("version"))
             assertEquals("kept", repository.state.value.plugins.single().variables.getString("label"))
-            val localSource = source.replace("/updates/current.js", server.url("/local-update.js").toString())
-            val local = repository.importSource(localSource)
-            server.enqueue(MockResponse().setBody(localSource.replace("2.0.0", "2.2.0")))
+            val localSource = source.replace("/updates/current.js", server.url("/local-update.js").toString()).replace("2.0.0", "2.2.0")
+            val replacement = repository.importSource(localSource).replacements.single()
+            repository.confirmReplacement(replacement)
+            val local = repository.state.value.plugins.single()
+            assertEquals(plugin.id, local.id)
+            server.enqueue(MockResponse().setBody(localSource.replace("2.2.0", "2.3.0")))
             repository.refresh(local.id)
             assertEquals("/updates/current.js", server.takeRequest(3, TimeUnit.SECONDS)!!.path)
             assertEquals("/local-update.js", server.takeRequest(3, TimeUnit.SECONDS)!!.path)
-            assertEquals(2, repository.state.value.plugins.size)
-            assertEquals("2.2.0", repository.state.value.plugins.first { it.id == local.id }.metadata.getString("version"))
+            assertEquals(1, repository.state.value.plugins.size)
+            assertEquals("2.3.0", repository.state.value.plugins.single().metadata.getString("version"))
         } finally { server.shutdown() }
     }
 
@@ -469,7 +473,8 @@ class CoreTest {
         try {
             val repository = Plugins(isolatedContext(), PluginClient(context))
             val source = "const axios=require('axios');module.exports={platform:'Cache fixture',cacheControl:'cache',getMediaSource:async function(){return (await axios.get('${server.url("/resolve")}')).data}}"
-            val plugin = repository.importSource(source)
+            repository.importSource(source)
+            val plugin = repository.state.value.plugins.single()
             val song = plugin.song(JSONObject().put("id", "one"))
             server.enqueue(MockResponse().setBody("""{"url":"https://media.example.test/first"}"""))
             server.enqueue(MockResponse().setBody("""{"url":"https://media.example.test/second"}"""))
@@ -479,7 +484,9 @@ class CoreTest {
             val configured = plugin.copy(variables = JSONObject().put("label", "new"))
             assertEquals("https://media.example.test/second", repository.mediaSource(configured, song, "standard")!!.getString("url"))
             assertEquals(2, server.requestCount)
-            val fresh = repository.importSource(source.replace("cacheControl:'cache'", "cacheControl:'no-store'"))
+            val replacement = repository.importSource(source.replace("cacheControl:'cache'", "cacheControl:'no-store'")).replacements.single()
+            repository.confirmReplacement(replacement)
+            val fresh = repository.state.value.plugins.single()
             repeat(2) { server.enqueue(MockResponse().setBody("""{"url":"https://media.example.test/uncached"}""")) }
             repeat(2) { repository.mediaSource(fresh, fresh.song(JSONObject().put("id", "one")), "standard") }
             assertEquals(4, server.requestCount)

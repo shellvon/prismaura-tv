@@ -126,10 +126,11 @@ class PluginService : Service() {
     private fun start(worker: Worker, msg: Message) {
         worker.current = msg
         val b = msg.data
-        worker.pluginId = b.getString("pluginId") ?: ""
-        val source = JSONObject.quote(b.getString("source") ?: "")
-        val variables = b.getString("variables") ?: "{}"
         val method = b.getString("method") ?: "describe"
+        // Inspection is executable code too. Never give it an installed identity or variables.
+        worker.pluginId = if (method == "describe") "" else b.getString("pluginId") ?: ""
+        val source = JSONObject.quote(b.getString("source") ?: "")
+        val variables = if (method == "describe") "{}" else b.getString("variables") ?: "{}"
         val args = b.getString("args") ?: "[]"
         val id = JSONObject.quote(b.getString("id") ?: "")
         val js = """(function(){try{var m=PrismEngine.load($source,$variables);if(${JSONObject.quote(method)}==='describe'){PrismBridge.result($id,JSON.stringify({ok:true,value:JSON.parse(m)}));}else{PrismEngine.invoke($id,${JSONObject.quote(method)},$args);}}catch(e){PrismBridge.result($id,JSON.stringify({ok:false,error:String(e&&e.message||e)}));}})();"""

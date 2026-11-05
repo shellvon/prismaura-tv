@@ -17,7 +17,6 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -31,10 +30,15 @@ data class Plugin(
     val origin: String = "",
 ) {
     val capabilities get() = PluginCapabilities(metadata)
+    // origin == url is a standalone online JS; a different origin is its JSON subscription.
+    val subscriptionManaged get() = origin.isNotBlank() && origin != url
     fun song(data: JSONObject) = Song(id, data, displayName, primaryKeys(metadata))
     val updateUrl: String get() {
         val declared = metadata.optString("srcUrl").ifBlank { url }
-        return if (url.isBlank()) declared else runCatching { url.toHttpUrl().resolve(declared)?.toString() }.getOrNull() ?: declared
+        return runCatching {
+            if (url.isBlank()) declared.toHttpUrl().toString()
+            else url.toHttpUrl().resolve(declared)?.toString().orEmpty()
+        }.getOrDefault("")
     }
     val name get() = metadata.optString("platform", "未知插件")
     val platform get() = SourcePlatforms.get(id) ?: MusicPlatform.identify(name, url)
@@ -54,7 +58,15 @@ data class PluginsState(
        re-importing the same address reuses the old id and those entries attach again. */
     val removed: Map<String, String> = emptyMap(),
 )
-data class SyncResult(val message: String, val failed: Boolean = false)
+/** A confirmation binds the exact code and the installed revision, never a re-download. */
+data class PluginReplacement(val candidates: List<Plugin>, val incoming: Plugin) {
+    fun replacementBlocker(target: Plugin): String? = when {
+        target.subscriptionManaged -> "此音源由订阅管理，请通过原订阅更新"
+        (compareVersions(incoming.metadata.optString("version"), target.metadata.optString("version")) ?: 0) < 0 -> "已安装版本较新，不能降级覆盖"
+        else -> null
+    }
+}
+data class SyncResult(val message: String, val failed: Boolean = false, val replacements: List<PluginReplacement> = emptyList())
 
 class Plugins(private val context: Context, val client: PluginClient) {
     private val mutex = Mutex()
@@ -112,34 +124,102 @@ class Plugins(private val context: Context, val client: PluginClient) {
         withContext(Dispatchers.IO) { write(next) }
     }
 
-    suspend fun importSource(source: String, url: String = "", origin: String = ""): Plugin =
-        storeSource(source, url, origin)
+    suspend fun importSource(source: String, url: String = "", origin: String = ""): SyncResult =
+        updateMutex.withLock { storeSource(source, url, origin) }
 
-    private suspend fun storeSource(source: String, url: String, origin: String, replacingId: String? = null): Plugin {
+    private suspend fun storeSource(rawSource: String, url: String, origin: String, replacingId: String? = null): SyncResult {
+        val source = rawSource.removePrefix("\uFEFF")
+        require(source.isNotBlank()) { "插件文件为空" }
         require(source.toByteArray(Charsets.UTF_8).size <= MAX_SCRIPT) { "插件文件过大" }
-        fun existing(plugins: List<Plugin>) = if (replacingId != null) plugins.firstOrNull { it.id == replacingId }
-            else if (url.isNotBlank()) plugins.firstOrNull { it.url == url } else null
-        val previous = existing(state.value.plugins)
-        /* Re-importing a source that was removed earlier revives its old identity, so the
-           favorites, subjects and history that point at it stop being orphans. */
-        val remembered = if (url.isNotBlank()) state.value.removed[url] else null
-        val pluginId = previous?.id ?: remembered ?: UUID.randomUUID().toString()
-        val metadata = client.call(source, previous?.variables ?: JSONObject(), "describe", pluginId = pluginId) as? JSONObject ?: error("插件格式无效")
+        val installed = state.value.plugins
+        val targets = if (replacingId != null) installed.filter { it.id == replacingId }
+            else installed.filter { url.isNotBlank() && (it.url == url || it.updateUrl == url) }
+        require(targets.size <= 1) { "多个音源使用同一更新地址，无法确定更新对象" }
+        val previous = targets.singleOrNull()
+        check(replacingId == null || previous != null) { "音源已移除，已取消更新" }
+        // A selected update belongs to its UUID; another independent instance must not swallow it.
+        val duplicate = if (previous != null) previous.takeIf { it.source.removePrefix("\uFEFF") == source }
+            else installed.firstOrNull { it.source.removePrefix("\uFEFF") == source }
+        duplicate?.let { return SyncResult("插件已安装：${it.displayName}") }
+        // Metadata execution receives neither installed variables nor an installed Cookie identity.
+        val metadata = client.call(source, JSONObject(), "describe") as? JSONObject ?: error("插件格式无效")
+        if (url.isNotBlank() && metadata.optString("srcUrl").isNotBlank()) {
+            url.toHttpUrl().resolve(metadata.optString("srcUrl"))?.let { metadata.put("srcUrl", it.toString()) }
+        }
+        val incoming = Plugin(UUID.randomUUID().toString(), url, source, metadata, JSONObject(), origin = origin)
         return mutex.withLock {
             val state = mutable.value
             check(state.error == null) { state.error ?: "插件数据读取失败" }
-            val old = existing(state.plugins)
-            check(replacingId == null || old != null) { "音源已移除，已取消更新" }
-            if (old != null) require((compareVersions(metadata.optString("version"), old.metadata.optString("version")) ?: 0) >= 0) {
-                "插件版本低于已安装版本，已保留 ${old.metadata.optString("version")}"
+            val old = previous?.let { expected ->
+                state.plugins.firstOrNull { it.id == expected.id }.also { checkRevision(expected, it) }
             }
-            /* A sync must not silently switch a source back on after the user disabled it. */
-            val p = Plugin(old?.id ?: pluginId, url, source, metadata, old?.variables ?: JSONObject(),
-                old?.enabled ?: true, old?.origin?.ifBlank { origin } ?: origin)
-            val updated = if (old == null) state.plugins + p else state.plugins.map { if (it.id == old.id) p else it }
-            withContext(Dispatchers.IO) { write(state.copy(plugins = updated, removed = state.removed - url)) }
-            p
+            val existing = if (old != null) old.takeIf { it.source.removePrefix("\uFEFF") == source }
+                else state.plugins.firstOrNull { it.source.removePrefix("\uFEFF") == source }
+            existing?.let { return@withLock SyncResult("插件已安装：${it.displayName}") }
+            val named = if (old == null) state.plugins.filter { it.name == incoming.name } else emptyList()
+            check(old == null || old.name == incoming.name || state.plugins.none { it.id != old.id && it.name == incoming.name }) {
+                "插件名称与另一个已安装音源冲突，已保留原插件"
+            }
+            if (old == null && named.isNotEmpty()) {
+                SyncResult("发现同名插件「${incoming.name}」，请选择替换或独立安装", replacements = listOf(PluginReplacement(named, incoming)))
+            } else {
+                checkVersion(incoming, old)
+                val identified = if (old == null) incoming.copy(id = state.removed[url] ?: incoming.id) else incoming
+                savePlugin(state, identified, old)
+            }
         }
+    }
+
+    suspend fun confirmReplacement(replacement: PluginReplacement, targetId: String = replacement.candidates.single().id): SyncResult = updateMutex.withLock {
+        mutex.withLock {
+            val state = mutable.value
+            val expected = replacement.candidates.firstOrNull { it.id == targetId } ?: error("请选择已有音源作为替换对象")
+            val current = state.plugins.firstOrNull { it.id == targetId } ?: error("音源已移除，请重新导入")
+            checkRevision(expected, current)
+            replacement.replacementBlocker(current)?.let { error(it) }
+            savePlugin(state, replacement.incoming, current, adoptRemoteChannel = true)
+        }
+    }
+
+    suspend fun installIndependent(replacement: PluginReplacement): SyncResult = updateMutex.withLock {
+        mutex.withLock install@{
+            val state = mutable.value
+            state.plugins.firstOrNull { it.source.removePrefix("\uFEFF") == replacement.incoming.source }?.let {
+                return@install SyncResult("插件已安装：${it.displayName}")
+            }
+            // A separate install must never revive a removed UUID and its old Cookie namespace.
+            savePlugin(state, replacement.incoming.copy(id = UUID.randomUUID().toString()), null)
+        }
+    }
+
+    private fun checkRevision(expected: Plugin, current: Plugin?) {
+        check(current != null && current.source == expected.source && current.url == expected.url && current.origin == expected.origin) {
+            "音源已移除或更新，请重新导入"
+        }
+    }
+
+    private fun checkVersion(incoming: Plugin, previous: Plugin?) {
+        if (previous != null) require((compareVersions(incoming.metadata.optString("version"), previous.metadata.optString("version")) ?: 0) >= 0) {
+            "插件版本低于已安装版本，已保留 ${previous.metadata.optString("version")}"
+        }
+    }
+
+    /** Caller holds mutex. File replacement retains the installed online channel, if any. */
+    private suspend fun savePlugin(state: PluginsState, incoming: Plugin, previous: Plugin?, adoptRemoteChannel: Boolean = false): SyncResult {
+        val keepChannel = previous != null && (!adoptRemoteChannel || incoming.url.isBlank())
+        val plugin = incoming.copy(
+            id = previous?.id ?: incoming.id,
+            url = if (keepChannel) previous!!.url.ifBlank { incoming.url } else incoming.url,
+            origin = if (keepChannel) previous!!.origin.ifBlank { incoming.origin } else incoming.origin,
+            variables = previous?.variables ?: JSONObject(), enabled = previous?.enabled ?: true,
+        )
+        val updated = if (previous == null) state.plugins + plugin else state.plugins.map { if (it.id == previous.id) plugin else it }
+        // A different remote import switches channel only after confirmation; an obsolete single-URL
+        // subscription must not later try to reinstall the old channel. Shared manifests stay intact.
+        val obsolete = previous?.origin?.takeIf { it == previous.url && it != plugin.origin && updated.none { p -> p.origin == it } }
+        val subscriptions = (state.subscriptions.filterNot { it == obsolete } + listOf(plugin.origin).filter { it.isNotBlank() }).distinct()
+        withContext(Dispatchers.IO) { write(state.copy(plugins = updated, subscriptions = subscriptions, removed = state.removed - plugin.url)) }
+        return SyncResult("已${if (previous == null) "导入" else "更新"}插件：${plugin.displayName}")
     }
 
     suspend fun importUrl(url: String): SyncResult = updateMutex.withLock {
@@ -154,39 +234,49 @@ class Plugins(private val context: Context, val client: PluginClient) {
                 val link = list.getJSONObject(i).getString("url")
                 base.resolve(link)?.toString() ?: error("无效的插件地址")
             }.distinct()
+            // Keep the explicitly added subscription even if every child is temporarily unavailable.
             mutex.withLock {
                 val state = mutable.value
                 withContext(Dispatchers.IO) { write(state.copy(subscriptions = (state.subscriptions + normalized).distinct())) }
             }
             return@withLock syncUrls(urls, normalized)
         }
-        importSource(raw, normalized, normalized)
-        mutex.withLock {
-            val state = mutable.value
-            withContext(Dispatchers.IO) { write(state.copy(subscriptions = (state.subscriptions + normalized).distinct())) }
-        }
-        SyncResult("已导入插件")
+        storeSource(raw, normalized, normalized)
     }
 
     suspend fun syncAll(): SyncResult {
         val subscriptions = state.value.subscriptions
         if (subscriptions.isEmpty()) return SyncResult("没有订阅")
-        val messages = subscriptions.map { url ->
-            try {
+        val results = mutableListOf<String>()
+        val replacements = mutableListOf<PluginReplacement>()
+        var failed = false
+        var overflow = false
+        var pendingBytes = 0
+        for (url in subscriptions) {
+            val result = try {
                 val direct = state.value.plugins.firstOrNull { it.origin == url && it.url == url }
                 if (direct != null && direct.updateUrl != url) refresh(direct.id) else importUrl(url)
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { SyncResult("${url.take(70)}：${e.message}", true) }
+            results += result.message
+            failed = failed || result.failed
+            for (replacement in result.replacements) {
+                val size = replacement.incoming.source.toByteArray(Charsets.UTF_8).size
+                if (pendingBytes + size > MAX_PENDING_SCRIPTS) { failed = true; overflow = true; continue }
+                pendingBytes += size
+                replacements += replacement
+            }
         }
-        return SyncResult(messages.joinToString("；") { it.message }, messages.any { it.failed })
+        return SyncResult(results.joinToString("；") + if (overflow) "；待确认文件过多，请分批导入" else "", failed, replacements)
     }
 
     /* Follow srcUrl while retaining the original install identity and configuration. */
     suspend fun refresh(id: String): SyncResult = updateMutex.withLock {
         val plugin = state.value.plugins.firstOrNull { it.id == id } ?: error("音源不存在")
         require(plugin.updateUrl.isNotBlank()) { "该音源没有更新地址" }
-        storeSource(download(normalizeUrl(plugin.updateUrl), MAX_SCRIPT), plugin.url, plugin.origin, plugin.id)
-        SyncResult("已更新 ${plugin.displayName}")
+        val source = download(normalizeUrl(plugin.updateUrl), MAX_SCRIPT)
+        if (source == plugin.source.removePrefix("\uFEFF")) SyncResult("已是最新版本：${plugin.displayName}")
+        else storeSource(source, plugin.url, plugin.origin, plugin.id)
     }
 
     suspend fun mediaSource(plugin: Plugin, song: Song, quality: String): JSONObject? {
@@ -212,16 +302,26 @@ class Plugins(private val context: Context, val client: PluginClient) {
     private suspend fun syncUrls(urls: List<String>, origin: String): SyncResult {
         var ok = 0
         val errors = mutableListOf<String>()
+        val replacements = mutableListOf<PluginReplacement>()
+        var pendingBytes = 0
         for (url in urls) {
             try {
                 val update = state.value.plugins.firstOrNull { it.url == url }?.updateUrl?.ifBlank { url } ?: url
-                importSource(download(normalizeUrl(update), MAX_SCRIPT), url, origin)
-                ok++
+                val result = storeSource(download(normalizeUrl(update), MAX_SCRIPT), url, origin)
+                if (result.replacements.isEmpty()) ok++
+                else for (replacement in result.replacements) {
+                    val size = replacement.incoming.source.toByteArray(Charsets.UTF_8).size
+                    if (pendingBytes + size > MAX_PENDING_SCRIPTS) errors += "待确认文件过多，请分批导入"
+                    else { pendingBytes += size; replacements += replacement }
+                }
             }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { errors.add("${url.substringAfterLast('/').take(40)}：${e.message}") }
         }
-        return SyncResult("更新成功 $ok/${urls.size}" + if (errors.isEmpty()) "" else "；失败：${errors.joinToString("、")}", errors.isNotEmpty())
+        val message = "更新成功 $ok/${urls.size}" +
+            (if (replacements.isEmpty()) "" else "；${replacements.size} 个同名插件待确认") +
+            (if (errors.isEmpty()) "" else "；失败：${errors.joinToString("、")}")
+        return SyncResult(message, errors.isNotEmpty(), replacements)
     }
 
     suspend fun setVariables(id: String, variables: JSONObject) = mutex.withLock {
@@ -267,7 +367,7 @@ class Plugins(private val context: Context, val client: PluginClient) {
                 while (true) { val n = input.read(buffer); if (n < 0) break; require(output.size() + n <= limit) { "文件过大" }; output.write(buffer, 0, n) }
                 output.toByteArray()
             }
-            bytes.toString(Charsets.UTF_8)
+            bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF")
         }
     }
     private fun normalizeUrl(url: String): String {
@@ -275,7 +375,11 @@ class Plugins(private val context: Context, val client: PluginClient) {
         require(parsed.scheme == "http" || parsed.scheme == "https") { "只支持 HTTP(S)" }
         return parsed.toString()
     }
-    companion object { const val MAX_SCRIPT = 384 * 1024; const val MAX_MANIFEST = 384 * 1024 }
+    companion object {
+        const val MAX_SCRIPT = 384 * 1024
+        const val MAX_MANIFEST = 384 * 1024
+        const val MAX_PENDING_SCRIPTS = 4 * 1024 * 1024
+    }
 }
 
 object AppPlugins {
