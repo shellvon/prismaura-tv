@@ -73,7 +73,7 @@ class Plugins(private val context: Context, val client: PluginClient) {
     private val updateMutex = Mutex()
     private val file = AtomicFile(File(context.filesDir, "plugins.json"))
     private val mediaCache = MediaSourceCache(File(context.cacheDir, "media-sources"))
-    private val http = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build()
+    private val http by lazy { OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build() }
     private val mutable = MutableStateFlow(read())
     val state: StateFlow<PluginsState> = mutable
 

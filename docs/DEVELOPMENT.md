@@ -45,6 +45,8 @@ npm test --prefix tools/plugin-runtime
 
 ## 验证
 
+真机性能验收使用与已安装应用同签名的 release 包；debug 包不作为启动速度基准。Android 9–11 侧载测试时，按 [Android 官方流程](https://developer.android.com/topic/performance/baselineprofiles/manually-create-measure) 安装对应的 Dex Metadata，确认预编译状态后测量冷启动；只把旧任务切回前台的 `0 ms` 不算冷启动。
+
 Node 测试加载真实 bundle，模拟桥接响应，覆盖模块、元数据、标准方法、原始字段、扫码方法及网络 API。Android 集成测试经过真实 WebView、Binder、网络桥和播放器，使用 MockWebServer 与程序生成的音频：
 
 ```sh

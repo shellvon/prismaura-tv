@@ -13,7 +13,7 @@
 | CommonJS / default 导出 | ✅ | 接受 module.exports / module.exports.default；platform 必须非空 |
 | search(query, page, type) | ✅ | 歌曲、歌手、专辑、歌单；按 supportedSearchType 提供入口 |
 | getMediaSource(item, quality) | ✅ | 透传有效 headers / userAgent；缺少方法时使用歌曲 url |
-| getLyric(item) | ✅ | 行级 LRC 与翻译；支持歌曲 rawLrc，缺少方法时读取 lrc URL |
+| getLyric(item) | ✅ | LRC、YRC、QRC 明文与常见 TTML；支持逐字高亮、译文及注音；支持歌曲 rawLrc，缺少方法时读取 lrc URL |
 | getRecommendSheetTags() | ✅ | 可选分类；场景入口仅映射插件实际返回的标签 |
 | getRecommendSheetsByTag(tag, page) | ✅ | 首页和发现页展示；需同时提供 getMusicSheetInfo 才列入推荐选源 |
 | getTopLists() / getTopListDetail(item, page) | ✅ | 两个方法齐全才列入榜单选源；与推荐分别选择 |
@@ -28,7 +28,7 @@
 | getMusicComments(item) | ➖ | TV 暂不提供评论界面 |
 | hints / appVersion | ➖ | 不展示自定义导入提示，不按 MusicFree 版本号限制客户端 |
 | webdav、任意 RN / Node 原生模块 | ❌ | 不在内置模块表中的 require 会报错 |
-| 逐字歌词、KRC/QRC 原始格式 | ❌ | 插件需自行转换为 LRC |
+| 加密 QRC、QRC XML 容器、KRC | ❌ | 插件需自行解密、提取或转换，返回下文支持的纯文本格式 |
 | MV 清晰度选择 | ❌ | supportedVideoQualities 仅记录元数据 |
 
 标准接口仍由插件决定是否实现；宿主不会为缺失的能力伪造结果。首次加载或更新脚本时识别能力，已有插件新增方法后需要更新才能刷新能力元数据。
@@ -81,7 +81,7 @@
 | --- | --- | --- |
 | `search(query: string, page: number, type: SearchType)` | `{ data: Entity[], isEnd?: boolean }` | type 决定实体种类 |
 | `getMediaSource(song: MusicItem, quality: string)` | `{ url, headers?, userAgent? } \| null` | 默认音质参数为 low / standard / high / super |
-| `getLyric(song)` | `{ rawLrc?, translation? } \| null` | 行级 LRC；翻译按相邻时间戳匹配 |
+| `getLyric(song)` | `{ rawLrc?, translation? } \| null` | 返回下文支持的歌词纯文本，含逐字时间戳时自动逐字高亮；翻译按相邻时间戳匹配 |
 | `getRecommendSheetTags()` | `{ pinned?: Tag[], data?: { title, data: Tag[] }[] }` | 分类项至少带 id 与 title |
 | `getRecommendSheetsByTag(tag, page)` | `{ data: SheetItem[], isEnd? }` | tag 是完整原始分类对象 |
 | `getTopLists()` | `{ title, data: TopListItem[] }[]` | 分组榜单 |
@@ -95,6 +95,36 @@
 链接导入先尝试匹配平台的启用插件，再尝试其它有导入能力的插件；同一插件先尝试歌单接口，再尝试单曲接口。第一个返回歌曲的结果胜出，单曲也保存为本机歌单。每次最多保存 5000 首；短链、编号或私有链接能否解析由插件负责。导入不写回平台账号。
 
 专辑／歌单优先使用 MusicFree 标准的 albumItem／sheetItem；Prism 新增 artistInfo／albumInfo 补充字段，同名信息以标准字段为准。单页展示限制：搜索每源最多 100 项，详情最多 200 首；插件应正确分页而不是一次返回无限列表。
+
+### 歌词格式
+
+平台仅表示常见来源，实际支持取决于插件返回的格式和时间戳。
+
+| 格式 | 常见来源 | 当前支持 |
+| --- | --- | --- |
+| 普通 LRC | 通用，非平台专属 | 行级歌词 |
+| 增强 LRC | 通用，非平台专属 | 含词级时间戳时逐字高亮 |
+| QRC | QQ 音乐 | 仅已解密、从 XML 容器提取的正文 |
+| KRC | 酷狗音乐 | 不直接支持，插件需转换为支持的格式 |
+| YRC | 网易云音乐 | 支持逐字正文，不解析 JSON 元数据行 |
+| TTML | [Apple Music](https://help.apple.com/itc/videoaudioassetguide/en.lproj/static.html)、[AMLL 国内社区](https://github.com/amll-dev/amll-ttml-db)，基于 [W3C 通用标准](https://www.w3.org/TR/ttml1/) | 支持常见行级／逐字歌词、内嵌译文与注音 |
+
+`rawLrc` 支持的正文示例：
+
+- 普通 LRC：`[00:01.00]Hello world`
+- 增强 LRC：`[00:01.00]<00:01.00>Hello <00:01.50>world<00:02.00>`，末尾空时间标记可表示最后一词结束。
+- YRC（网易云）：`[1000,1000](1000,500,0)Hello (1500,500,0)world`。
+- QRC（QQ，已解密并从容器提取的正文）：`[1000,1000]Hello (1000,500)world(1500,500)`。
+
+YRC／QRC 示例中的词起点均为相对歌曲开头的绝对毫秒，时长为毫秒。`[offset:毫秒]` 同时调整行与词时间。网易云歌词中的 JSON 元数据行不作为逐字歌词解析。
+
+是否启用逐字高亮取决于插件实际返回的数据，不由歌曲所属平台决定；客户端不会额外联网补找歌词。不要直接返回加密数据或 QRC XML 容器；KRC 即使已解密，也需由插件转换成上述格式。
+
+TTML 文本同样放入 `rawLrc`，支持 `<p>` 行、`<span>` 词时间、`begin/end/dur`，以及 Apple／AMLL 的 `x-translation`、`x-roman` 和按行 key 关联的元数据。Ruby 注音及背景人声降为附属文本，不复刻 TTML 的完整排版或多声部动画。XML 不允许 DTD／外部实体；无法解析时显示无可用歌词。
+
+双语歌词也可分别通过 `rawLrc`（原文）和 `translation`（译文）返回。每行原文匹配起点时间最近、相差不超过 150 毫秒的一行译文；原文可逐字高亮，译文和注音在下方按行显示，不自动生成翻译或词时间。
+
+相同时间戳的多行文本会合并为一组并去重，优先以含词时间的一行为主行，否则保留第一行为主行，其余附在下方；不猜测各行语言或角色。TV 最多显示三行附属文本，超出时省略。
 
 ## 内置模块：准确版本
 

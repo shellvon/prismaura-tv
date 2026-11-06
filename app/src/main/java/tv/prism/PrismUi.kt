@@ -1,5 +1,9 @@
 package tv.prism
 
+import android.app.Activity
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.Animatable
@@ -51,8 +55,6 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.drawscope.rotate
@@ -71,6 +73,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
@@ -514,7 +517,6 @@ fun prismColors(theme: String): PrismColors = when (theme) {
         val url = song?.artwork.orEmpty()
         if (url.startsWith("http://") || url.startsWith("https://")) {
             AsyncImage(model = coverRequest(url), contentDescription = "${song?.title}封面", contentScale = ContentScale.Crop,
-                colorFilter = if (c.background == Color(0xFF0A0A0A)) ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) }) else null,
                 modifier = Modifier.fillMaxSize(if (record) .46f else .75f).clip(if (record) CircleShape else RoundedCornerShape(16.dp)))
         } else {
             Canvas(Modifier.fillMaxSize(.32f)) { drawCircle(c.background); drawCircle(c.accent.copy(alpha = .55f), radius = size.minDimension * .07f) }
@@ -559,6 +561,15 @@ private fun VipBadge(modifier: Modifier = Modifier) {
 }
 
 private fun time(ms: Long): String = "%02d:%02d".format(ms / 60_000, (ms / 1000) % 60)
+
+@Composable
+private fun rememberLyricPosition(position: Long, playing: Boolean, readPosition: () -> Long): State<Long> {
+    val readCurrent by rememberUpdatedState(readPosition)
+    return produceState(initialValue = position, position, playing) {
+        value = readCurrent()
+        while (playing) withFrameNanos { value = readCurrent() }
+    }
+}
 
 /* ─────────────────────────────────────────────────────────────────────────────
    Player.
@@ -735,6 +746,18 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
                 corner(.18f, .82f, .16f, -.16f)
                 corner(.82f, .82f, -.16f, -.16f)
             }
+            "bulbOff" -> {
+                drawPath(path {
+                    moveTo(s * .34f, s * .62f)
+                    cubicTo(s * .34f, s * .51f, s * .22f, s * .47f, s * .22f, s * .34f)
+                    cubicTo(s * .22f, s * .19f, s * .35f, s * .10f, s * .50f, s * .10f)
+                    cubicTo(s * .65f, s * .10f, s * .78f, s * .19f, s * .78f, s * .34f)
+                    cubicTo(s * .78f, s * .47f, s * .66f, s * .51f, s * .66f, s * .62f)
+                }, color, style = Stroke(w, cap = StrokeCap.Round))
+                drawLine(color, p(.34f, .72f), p(.66f, .72f), w, StrokeCap.Round)
+                drawLine(color, p(.40f, .84f), p(.60f, .84f), w, StrokeCap.Round)
+                drawLine(color, p(.14f, .14f), p(.86f, .86f), w, StrokeCap.Round)
+            }
         }
     }
 }
@@ -830,6 +853,8 @@ private fun BareButton(icon: String, size: Dp, onClick: () -> Unit, modifier: Mo
     streamFormat: String,
     hasMv: Boolean,
     mvOpen: Boolean = false,
+    readPosition: () -> Long,
+    onScreenOff: () -> Unit,
     onBack: () -> Unit, onPlay: () -> Unit, onPrevious: () -> Unit, onNext: () -> Unit,
     onShuffle: () -> Unit, onFavorite: () -> Unit, onQueue: () -> Unit, onMv: () -> Unit,
     onRadioMenu: () -> Unit = {},
@@ -886,6 +911,8 @@ private fun BareButton(icon: String, size: Dp, onClick: () -> Unit, modifier: Mo
             runCatching { playFocus.requestFocus() }
         }
     }
+    val hasWordLyrics = remember(lyrics) { lyrics.any { !it.words.isNullOrEmpty() } }
+    val lyricPosition = if (hasWordLyrics) rememberLyricPosition(position, playing, readPosition).value else position
     LaunchedEffect(playMode, favorite, playing, playingTier) {
         focusedControl = when {
             focusedControl.startsWith("播放模式") -> "播放模式：$playMode"
@@ -962,9 +989,9 @@ private fun BareButton(icon: String, size: Dp, onClick: () -> Unit, modifier: Mo
                 Modifier.focusProperties { down = when { canCycle -> qualityFocus; albumLink -> albumFocus; artistLink -> artistFocus; else -> progressFocus } },
                 onFocused = { chromeFocus = true; focusedControl = "待机模式" })
             Spacer(Modifier.width(10.dp))
-            PlayerIcon("list", "播放列表 $queueSize", onQueue,
+            PlayerIcon("bulbOff", "熄屏播放", onScreenOff,
                 Modifier.focusRequester(topFocus).focusProperties { down = when { canCycle -> qualityFocus; albumLink -> albumFocus; artistLink -> artistFocus; else -> progressFocus } },
-                onFocused = { chromeFocus = true; focusedControl = "播放列表" })
+                onFocused = { chromeFocus = true; focusedControl = "熄屏播放 · 确定或返回恢复" })
         }
         Box(Modifier.offset(x = w * .035f, y = h * .135f).size(h * .52f), contentAlignment = Alignment.Center) {
             AuraOrbit(Modifier.fillMaxSize(), playing)
@@ -1051,15 +1078,25 @@ private fun BareButton(icon: String, size: Dp, onClick: () -> Unit, modifier: Mo
                 }
             }
             Spacer(Modifier.height(18.dp))
-            val active = lyrics.indexOfLast { it.timeMs <= position }
+            val active = lyrics.indexOfLast { it.timeMs <= lyricPosition }
                 Column {
                     val line = active
                     Text(lyrics.getOrNull(line - 1)?.text ?: " ", color = c.muted, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Spacer(Modifier.height(12.dp))
-                    Text(lyrics.getOrNull(line)?.text ?: if (lyrics.isNotEmpty()) "静候前奏，慢慢入境" else lyricStatus,
-                        color = if (line >= 0) c.accent else c.muted, fontSize = if (line >= 0) 23.sp else 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    lyrics.getOrNull(line)?.translation?.takeIf { it.isNotBlank() }?.let { translation ->
-                        Text(translation, color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+                    val current = lyrics.getOrNull(line)
+                    AnimatedContent(current, contentKey = { it?.timeMs }, label = "lyric line",
+                        transitionSpec = {
+                            (fadeIn(tween(if (motion) 300 else 0)) + slideInVertically(tween(if (motion) 300 else 0)) { it / 5 }) togetherWith
+                                fadeOut(tween(if (motion) 140 else 0))
+                        }) { displayed ->
+                        Column {
+                            if (displayed != null) LyricText(displayed, lyricPosition)
+                            else Text(if (lyrics.isNotEmpty()) "静候前奏，慢慢入境" else lyricStatus, color = c.muted, fontSize = 16.sp)
+                            displayed?.supportingLines?.takeIf { it.isNotEmpty() }?.let { supporting ->
+                                Text(supporting.joinToString("\n"), color = c.muted, fontSize = 12.sp, maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
+                            }
+                        }
                     }
                     Spacer(Modifier.height(12.dp))
                     Text(lyrics.getOrNull(line + 1)?.text ?: " ", color = c.muted, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1110,7 +1147,10 @@ private fun BareButton(icon: String, size: Dp, onClick: () -> Unit, modifier: Mo
                     PlayerIcon(if (favorite) "heartFilled" else "heart", if (favorite) "取消收藏" else "收藏", onFavorite, upToRail,
                         onFocused = { chromeFocus = true; focusedControl = if (favorite) "取消收藏" else "收藏" })
                 }
-                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End) {
+                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                    PlayerIcon("list", "播放列表 $queueSize", onQueue,
+                        Modifier.focusProperties { up = progressFocus },
+                        onFocused = { chromeFocus = true; focusedControl = "播放列表 · $queueSize 首" })
                     PlayerIcon("radio", if (radioActive) "关闭电台" else if (radioLoading) "取消准备电台" else "开启电台", onRadioToggle,
                         Modifier.focusProperties { up = progressFocus }.onFocusChanged {
                             radioFocused = it.isFocused
@@ -1119,8 +1159,39 @@ private fun BareButton(icon: String, size: Dp, onClick: () -> Unit, modifier: Mo
                 }
             }
         }
-        if (standby) PrismStandby(song, lyrics, lyricStatus, position, duration, focus = standbyFocus)
+        if (standby) PrismStandby(song, lyrics, lyricStatus, position, duration, lyricPosition, focus = standbyFocus)
     }
+}
+
+@Composable
+internal fun PrismScreenOff(keepAwake: Boolean, onWake: () -> Unit) {
+    val window = (LocalContext.current as? Activity)?.window
+    val view = LocalView.current
+    val focus = remember { FocusRequester() }
+    val wake by rememberUpdatedState(onWake)
+    DisposableEffect(view, keepAwake) {
+        val previous = view.keepScreenOn
+        view.keepScreenOn = previous || keepAwake
+        onDispose { view.keepScreenOn = previous }
+    }
+    DisposableEffect(window) {
+        val previousBrightness = window?.attributes?.screenBrightness
+        if (window != null) {
+            window.attributes = window.attributes.apply { screenBrightness = 0f }
+        }
+        onDispose {
+            if (window != null && previousBrightness != null) {
+                window.attributes = window.attributes.apply { screenBrightness = previousBrightness }
+            }
+        }
+    }
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        focus.requestFocus()
+    }
+    Box(Modifier.fillMaxSize().background(Color.Black)
+        .focusRequester(focus).focusable()
+        .pointerInput(Unit) { detectTapGestures { wake() } })
 }
 
 /* 待机：电视不该让一块亮着的界面一直要求你操作。封面铺满整屏，像房间里的光；歌词是
@@ -1128,12 +1199,12 @@ private fun BareButton(icon: String, size: Dp, onClick: () -> Unit, modifier: Mo
 @Composable
 private fun PrismStandby(
     song: Song?, lyrics: List<LyricLine>, lyricStatus: String, position: Long, duration: Long,
-    focus: FocusRequester,
+    lyricPosition: Long, focus: FocusRequester,
 ) {
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
     val progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
-    val active = lyrics.indexOfLast { it.timeMs <= position }
+    val active = lyrics.indexOfLast { it.timeMs <= lyricPosition }
     var hintVisible by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) { delay(4200); hintVisible = false }
     /* A very slow zoom keeps the still frame alive without turning the cover into a widget. */
@@ -1160,7 +1231,7 @@ private fun PrismStandby(
             Spacer(Modifier.height(5.dp))
             Text(song?.artist.orEmpty(), color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        StandbyLyrics(lyrics, active, lyricStatus, Modifier.align(Alignment.Center).width(w * .78f))
+        StandbyLyrics(lyrics, active, lyricStatus, lyricPosition, Modifier.align(Alignment.Center).width(w * .78f))
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(start = 56.dp, end = 56.dp, bottom = 38.dp)) {
             Box(Modifier.fillMaxWidth().height(2.dp).background(c.line.copy(alpha = .45f))) {
                 Box(Modifier.fillMaxWidth(progress).fillMaxHeight().background(c.accent.copy(alpha = .9f)))
@@ -1184,7 +1255,7 @@ private fun PrismStandby(
    and the column rolls one line at a time. A vertical DstIn mask softens both edges so lines
    enter and leave the screen instead of being clipped. */
 @Composable
-private fun StandbyLyrics(lyrics: List<LyricLine>, active: Int, status: String, modifier: Modifier = Modifier) {
+private fun StandbyLyrics(lyrics: List<LyricLine>, active: Int, status: String, position: Long, modifier: Modifier = Modifier) {
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
     if (lyrics.isEmpty()) {
@@ -1222,21 +1293,15 @@ private fun StandbyLyrics(lyrics: List<LyricLine>, active: Int, status: String, 
                 val current = index == active
                 val distance = if (active < 0) Int.MAX_VALUE else kotlin.math.abs(index - active)
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        line.text,
-                        color = if (current) c.accent else c.muted.copy(alpha = when {
+                    if (current) LyricText(line, position, Modifier.fillMaxWidth(), 36.sp, 46.sp, TextAlign.Center)
+                    else Text(line.text,
+                        color = c.muted.copy(alpha = when {
                             distance == 1 -> .55f; distance == 2 -> .34f; distance == 3 -> .2f; else -> .1f
-                        }),
-                        fontSize = when { current -> 36.sp; distance == 1 -> 20.sp; else -> 17.sp },
-                        lineHeight = if (current) 44.sp else 24.sp,
-                        fontWeight = if (current) FontWeight.Medium else FontWeight.Normal,
-                        maxLines = if (current) 2 else 1,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (current) line.translation?.takeIf { it.isNotBlank() }?.let { translation ->
-                        Text(translation, color = c.muted.copy(alpha = .9f), fontSize = 15.sp, maxLines = 2,
+                        }), fontSize = if (distance == 1) 20.sp else 17.sp, lineHeight = 24.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth())
+                    if (current) line.supportingLines.takeIf { it.isNotEmpty() }?.let { supporting ->
+                        Text(supporting.joinToString("\n"), color = c.muted.copy(alpha = .9f), fontSize = 15.sp, maxLines = 3,
                             overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
                             modifier = Modifier.padding(top = 10.dp))
                     }
@@ -1248,18 +1313,21 @@ private fun StandbyLyrics(lyrics: List<LyricLine>, active: Int, status: String, 
             while (state.layoutInfo.viewportSize.height == 0) withFrameNanos { }
             /* Let the highlight resize its row before the distance is measured. */
             withFrameNanos { }
-            val viewport = state.layoutInfo.viewportSize.height
             val target = state.layoutInfo.visibleItemsInfo.firstOrNull { it.index == active }
             if (target != null) {
-                val delta = viewport / 2f - (target.offset + target.size / 2f)
+                val info = state.layoutInfo
+                val center = (info.viewportStartOffset + info.viewportEndOffset) / 2f
+                val delta = target.offset + target.size / 2f - center
                 if (kotlin.math.abs(delta) > .5f) {
                     state.animateScrollBy(delta, tween(if (motion) 520 else 0, easing = FastOutSlowInEasing))
                 }
             } else {
                 state.scrollToItem(active)
                 withFrameNanos { }
-                val item = state.layoutInfo.visibleItemsInfo.firstOrNull { it.index == active }
-                if (item != null) state.scrollBy(viewport / 2f - (item.offset + item.size / 2f))
+                val info = state.layoutInfo
+                val item = info.visibleItemsInfo.firstOrNull { it.index == active }
+                val center = (info.viewportStartOffset + info.viewportEndOffset) / 2f
+                if (item != null) state.scrollBy(item.offset + item.size / 2f - center)
             }
         }
     }
@@ -1373,7 +1441,6 @@ private fun CoverArt(song: Song?, modifier: Modifier = Modifier, radius: android
         if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("content://")) {
             AsyncImage(
                 model = coverRequest(url), contentDescription = "${song?.title}封面", contentScale = ContentScale.Crop,
-                colorFilter = if (c.background == Color(0xFF0A0A0A)) ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) }) else null,
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -2104,6 +2171,28 @@ internal fun PrismConfigChoice(title: String, subtitle: String, icon: String, on
             Text(subtitle, color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Text("›", color = c.accent, fontSize = 23.sp)
+    }
+}
+
+@Composable
+internal fun PrismConfirmDialog(
+    title: String, message: String, confirmLabel: String,
+    onDismiss: () -> Unit, onConfirm: () -> Unit,
+) {
+    val c = LocalPrismColors.current
+    val cancelFocus = remember { FocusRequester() }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; cancelFocus.requestFocus() }
+        Column(Modifier.width(420.dp).clip(RoundedCornerShape(20.dp)).background(c.panel)
+            .border(1.dp, c.line, RoundedCornerShape(20.dp)).padding(24.dp)) {
+            Text(title, color = c.foreground, fontSize = 20.sp, fontWeight = FontWeight.Medium)
+            Text(message, color = c.muted, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+            Row(Modifier.fillMaxWidth().padding(top = 24.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
+                PrismAction("取消", onDismiss, Modifier.widthIn(min = 96.dp).focusRequester(cancelFocus))
+                PrismAction(confirmLabel, onConfirm, Modifier.widthIn(min = 96.dp), primary = true)
+            }
+        }
     }
 }
 

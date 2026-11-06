@@ -34,6 +34,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -58,6 +59,8 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
@@ -74,6 +77,7 @@ import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.platform.LocalDensity
 import androidx.core.content.ContextCompat
+import androidx.core.view.doOnPreDraw
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -85,6 +89,8 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
+import androidx.tv.material3.Switch
+import androidx.tv.material3.SwitchDefaults
 import androidx.tv.material3.Text
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.Dispatchers
@@ -117,6 +123,7 @@ private data class TrackMenuTarget(val song: Song, val list: String? = null, val
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MainActivity : ComponentActivity() {
     private lateinit var appUpdates: AppUpdates
+    private var firstFrameDrawn by mutableStateOf(false)
     private var updateDialogOpen by mutableStateOf(false)
     private var updateJob: Job? = null
 
@@ -143,6 +150,8 @@ class MainActivity : ComponentActivity() {
     private var status by mutableStateOf("正在连接播放器…")
     private var page by mutableStateOf("home")
     private var playerOpen by mutableStateOf(false)
+    private var playerScreenOff by mutableStateOf(false)
+    private val wakeKeys = mutableSetOf<Int>()
     private var selectedPlugin by mutableStateOf("")
     private var searchSources by mutableStateOf<Set<String>>(emptySet())
     private var recommendationPluginId by mutableStateOf("")
@@ -294,7 +303,16 @@ class MainActivity : ComponentActivity() {
             /* The stream died; re-picking this song must go through the resolver again
                instead of taking the "already loaded" shortcut. */
             loadedKey = ""
-            status = "播放失败：${error.message ?: "未知错误"}"
+            val httpCode = generateSequence(error as Throwable) { it.cause }.take(6)
+                .mapNotNull { Regex("Response code: (\\d{3})").find(it.message.orEmpty())?.groupValues?.get(1) }.firstOrNull()
+            val reason = when {
+                httpCode != null -> "音频地址不可访问（HTTP $httpCode）"
+                error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "音频地址请求失败，可重试或更换音源"
+                error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED -> "网络连接失败"
+                error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "网络连接超时"
+                else -> error.message ?: "未知错误"
+            }
+            status = "播放失败：$reason"
             if (ActiveQueue.radio) queue.getOrNull(queueIndex)?.let {
                 advanceAfterFailure(it, "播放失败", status, controller?.playWhenReady == true) { }
             }
@@ -339,10 +357,6 @@ class MainActivity : ComponentActivity() {
         }
         SourcePlatforms.initialize(this)
         appUpdates = (application as PrismApplication).appUpdates
-        lifecycleScope.launch {
-            delay(10_000)
-            if (updateJob?.isActive != true) updateJob = lifecycleScope.launch { appUpdates.check() }
-        }
         plugins = AppPlugins.get(this)
         library = MusicLibrary(this)
         resumeStore = ResumeStore(this)
@@ -360,7 +374,6 @@ class MainActivity : ComponentActivity() {
         homeShelfHidden = getSharedPreferences("home", MODE_PRIVATE).getStringSet("hidden_shelves", null)?.toSet() ?: emptySet()
         recommendationPluginId = getSharedPreferences("home", MODE_PRIVATE).getString("recommendation_plugin", "") ?: ""
         chartPluginId = getSharedPreferences("home", MODE_PRIVATE).getString("chart_plugin", "") ?: ""
-        AppPlugins.schedule(this)
         /* The queue lives outside the activity, so a recreated activity keeps playing; only a
            cold start needs the saved queue and needle position back. */
         if (queue.isEmpty()) resumeStore.read()?.let { saved ->
@@ -371,42 +384,56 @@ class MainActivity : ComponentActivity() {
             positionMs = saved.position
             resumePending = saved.position
         }
-        /* Subscriptions are remote code: check them once per launch window, not on every launch,
-           so an offline box does not stall and a plugin update lands without waiting for WorkManager. */
-        lifecycleScope.launch {
-            val prefs = getSharedPreferences("sync", MODE_PRIVATE)
-            val now = System.currentTimeMillis()
-            if (now - prefs.getLong("at", 0L) < 6 * 60 * 60 * 1000L) return@launch
-            prefs.edit().putLong("at", now).apply()
-            try {
-                val result = plugins.syncAll()
-                if (result.failed) status = "订阅更新：${result.message}"
-            } catch (e: kotlinx.coroutines.CancellationException) { throw e
-            } catch (_: Exception) { /* Startup sync is a quiet convenience; manual sync reports. */ }
-        }
-        connect()
-        queue.getOrNull(queueIndex)?.let { song ->
-            plugins.state.value.plugins.firstOrNull { it.id == song.pluginId }?.let { loadLyrics(it, song) }
-        }
-        lifecycleScope.launch {
-            var ticks = 0
-            while (isActive) {
-                val p = controller
-                /* While a restored track is still being prepared, the controller reports 0 and
-                   would overwrite the saved position with it. */
-                if (p != null && resumePending < 0 && pendingSeekMs == null) {
-                    val duration = p.duration.coerceAtLeast(0)
-                    if (duration > 0 || p.playbackState != Player.STATE_IDLE) {
-                        positionMs = p.currentPosition.coerceAtLeast(0)
-                        durationMs = duration
+        setContent { MaterialTheme { Screen() } }
+        // Let the first home frame draw before starting services and background maintenance.
+        window.decorView.doOnPreDraw { view ->
+            view.post {
+                if (!isDestroyed) {
+                    firstFrameDrawn = true
+                    val restoringQueue = resumePending >= 0
+                    connect()
+                    if (!restoringQueue) queue.getOrNull(queueIndex)?.let { song ->
+                        plugins.state.value.plugins.firstOrNull { it.id == song.pluginId }?.let { loadLyrics(it, song) }
                     }
-                    if (ActiveQueue.radio && p.isPlaying) ensureRadioTail()
+                    lifecycleScope.launch(Dispatchers.IO) { AppPlugins.schedule(this@MainActivity) }
+                    lifecycleScope.launch {
+                        delay(10_000)
+                        if (updateJob?.isActive != true) updateJob = lifecycleScope.launch { appUpdates.check() }
+                    }
+                    /* Subscriptions are remote code: check them once per launch window, not on every launch,
+                       so an offline box does not stall and a plugin update lands without waiting for WorkManager. */
+                    lifecycleScope.launch {
+                        val prefs = getSharedPreferences("sync", MODE_PRIVATE)
+                        val now = System.currentTimeMillis()
+                        if (now - prefs.getLong("at", 0L) < 6 * 60 * 60 * 1000L) return@launch
+                        prefs.edit().putLong("at", now).apply()
+                        try {
+                            val result = plugins.syncAll()
+                            if (result.failed) status = "订阅更新：${result.message}"
+                        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+                        } catch (_: Exception) { /* Startup sync is a quiet convenience; manual sync reports. */ }
+                    }
+                    lifecycleScope.launch {
+                        var ticks = 0
+                        while (isActive) {
+                            val p = controller
+                            /* While a restored track is still being prepared, the controller reports 0 and
+                               would overwrite the saved position with it. */
+                            if (p != null && resumePending < 0 && pendingSeekMs == null) {
+                                val duration = p.duration.coerceAtLeast(0)
+                                if (duration > 0 || p.playbackState != Player.STATE_IDLE) {
+                                    positionMs = p.currentPosition.coerceAtLeast(0)
+                                    durationMs = duration
+                                }
+                                if (ActiveQueue.radio && p.isPlaying) ensureRadioTail()
+                            }
+                            if (++ticks >= 30) { ticks = 0; saveResume() }
+                            delay(500)
+                        }
+                    }
                 }
-                if (++ticks >= 30) { ticks = 0; saveResume() }
-                delay(500)
             }
         }
-        setContent { MaterialTheme { Screen() } }
     }
 
     private fun connect() {
@@ -1229,12 +1256,14 @@ class MainActivity : ComponentActivity() {
                 val result = if (supplied.isNotBlank()) JSONObject().put("rawLrc", supplied)
                 else if (!plugin.capabilities.has("lyric") && song.data.optString("lrc").isBlank()) null
                 else plugins.client.call(plugin.source, plugin.variables, "getLyric", JSONArray().put(song.data), plugin.id) as? JSONObject
-                if (token != lyricToken) return@launch
                 val text = result?.optString("rawLrc").orEmpty()
-                val parsed = Lyrics.parse(text, result?.optString("translation").orEmpty())
+                val translated = result?.optString("translation").orEmpty()
+                val parsed = withContext(Dispatchers.Default) { Lyrics.parse(text, translated) }
+                if (token != lyricToken) return@launch
                 lyrics = parsed
                 lyricStatus = when {
                     parsed.isNotEmpty() -> ""
+                    text.trimStart('\uFEFF', ' ', '\t', '\r', '\n').startsWith("<") -> "暂无可用歌词"
                     text.isNotBlank() -> text.take(3000)
                     else -> "暂无歌词"
                 }
@@ -1488,6 +1517,27 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("RestrictedApi") // Forward unhandled keys through ComponentActivity's dispatcher.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // Consume the whole wake press; a fresh down also recovers from a missing key-up.
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) wakeKeys.remove(event.keyCode)
+        if (event.keyCode in wakeKeys) {
+            if (event.action == KeyEvent.ACTION_UP) wakeKeys.remove(event.keyCode)
+            return true
+        }
+        val wakeKey = when (event.keyCode) {
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
+            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE, KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_SEARCH,
+            KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BUTTON_SELECT -> true
+            else -> false
+        }
+        if (playerScreenOff && playerOpen && wakeKey) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                wakeKeys.add(event.keyCode)
+                playerScreenOff = false
+            }
+            return true
+        }
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_MEDIA_NEXT -> { step(1); return true }
@@ -1573,15 +1623,6 @@ class MainActivity : ComponentActivity() {
         val versionName = remember { runCatching { packageManager.getPackageInfo(packageName, 0).versionName.orEmpty() }.getOrDefault("") }
         val deviceInfo = remember {
             "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} · Android ${android.os.Build.VERSION.RELEASE}"
-        }
-        val webViewInfo = remember {
-            runCatching {
-                val provider = if (android.os.Build.VERSION.SDK_INT >= 26) android.webkit.WebView.getCurrentWebViewPackage()
-                else listOf("com.google.android.webview", "com.android.webview").firstNotNullOfOrNull { name ->
-                    runCatching { packageManager.getPackageInfo(name, 0) }.getOrNull()
-                }
-                provider?.let { "${it.packageName} ${it.versionName.orEmpty()}" } ?: "未检测到 WebView"
-            }.getOrDefault("未检测到 WebView")
         }
         LaunchedEffect(settingsSection) {
             if (settingsSection == "关于") cacheSize = withContext(Dispatchers.IO) { directorySize(cacheDir) }
@@ -1908,6 +1949,8 @@ class MainActivity : ComponentActivity() {
             )
         }
         val homeFocus = remember { FocusRequester() }
+        val updatePromptFocus = remember { FocusAnchor() }
+        val showUpdatePrompt = updateState.release != null && !updateState.skipped && updateState.remind
         val heroFocus = remember { FocusAnchor() }
         val radioCardFocus = remember { FocusAnchor() }
         val discoverFocus = remember { FocusRequester() }
@@ -1991,7 +2034,7 @@ class MainActivity : ComponentActivity() {
         /* The bar and the page bodies live in different scroll/focus spaces, so a directional
            search from the bar sometimes finds nothing. Name the landing spot per page instead. */
         fun entryFocus(target: String): FocusAnchor? = when (target) {
-            "home" -> heroFocus
+            "home" -> if (showUpdatePrompt) updatePromptFocus else heroFocus
             "search" -> searchInputFocus
             "library" -> if (selectedPlaylist != null) playlistBackFocus else libraryTabs[libraryTabKey]
             "plugins" -> if (configured == null) bannerFocus else configEntryFocus
@@ -2165,6 +2208,7 @@ class MainActivity : ComponentActivity() {
             availableTiers = qualityOptions(plugin, target)
         }
         LaunchedEffect(playerOpen) {
+            if (!playerOpen) playerScreenOff = false
             if (playerOpen) playerWasOpen = true
             else if (playerWasOpen) {
                 withFrameNanos { }
@@ -2383,6 +2427,7 @@ class MainActivity : ComponentActivity() {
         }
         BackHandler {
             when {
+                playerScreenOff && playerOpen -> playerScreenOff = false
                 playerOpen -> playerOpen = false
                 /* Back steps out of 管理 first: leaving the page while the confirm dialog
                    is open would hide the confirmation. */
@@ -2468,7 +2513,8 @@ class MainActivity : ComponentActivity() {
                 loadRecommendations(plugin, recommendationTag, reset = reset)
             }
         }
-        LaunchedEffect(chartPluginId, pluginSignature) {
+        LaunchedEffect(firstFrameDrawn, chartPluginId, pluginSignature) {
+            if (!firstFrameDrawn) return@LaunchedEffect
             chartGeneration++
             chartJob?.cancel(); chartSelection = null; chartSongs = emptyList()
             charts = emptyList(); chartPreviews = emptyMap()
@@ -2491,7 +2537,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         val motionEnabled = !reduceMotion && (android.os.Build.VERSION.SDK_INT < 26 || android.animation.ValueAnimator.areAnimatorsEnabled())
-        CompositionLocalProvider(LocalPrismColors provides prismColors(theme), LocalAuraMotion provides motionEnabled) {
+        CompositionLocalProvider(LocalPrismColors provides prismColors(theme), LocalAuraMotion provides (motionEnabled && !playerScreenOff)) {
             val c = LocalPrismColors.current
             Box(Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize().focusProperties { canFocus = !playerOpen }) {
@@ -2537,10 +2583,16 @@ class MainActivity : ComponentActivity() {
                         Box(Modifier.fillMaxSize()) {
                         when (page) {
                             "home" -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                                if (updateState.release != null && !updateState.skipped) {
+                                if (showUpdatePrompt) {
                                     Row(Modifier.fillMaxWidth().padding(bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        val promptEdges = Modifier.focusProperties { up = homeFocus; down = heroFocus.requester }
                                         Text("新版本 ${updateState.release?.tag}", color = c.accent, fontSize = 13.sp)
-                                        PrismAction("查看更新", { updateDialogOpen = true })
+                                        PrismAction("查看更新", { updateDialogOpen = true },
+                                            modifier = Modifier.focusAnchor(updatePromptFocus).then(promptEdges))
+                                        PrismAction("忽略", {
+                                            appUpdates.skip()
+                                            pageScope.launch { withFrameNanos { }; heroFocus.requestIfAttached() }
+                                        }, promptEdges)
                                     }
                                 }
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -2554,7 +2606,7 @@ class MainActivity : ComponentActivity() {
                                     continueAnchor = heroFocus,
                                     /* Keep the card clear of the clipped page edge so the focus
                                        ring reads as a frame, not as something the screen cut. */
-                                    modifier = Modifier.weight(1f).padding(start = 10.dp).focusProperties { up = homeFocus },
+                                    modifier = Modifier.weight(1f).padding(start = 10.dp).focusProperties { up = if (showUpdatePrompt && updatePromptFocus.attached) updatePromptFocus.requester else homeFocus },
                                     hasSources = activePlugins.isNotEmpty(),
                                     favorite = queue.getOrNull(queueIndex)?.let { s -> libraryState.favorites.any { it.key == s.key } } == true,
                                     playing = playing && playbackState != Player.STATE_IDLE && playbackState != Player.STATE_ENDED,
@@ -2567,7 +2619,7 @@ class MainActivity : ComponentActivity() {
                                    the cards' focus scale inside the page clip, like the hero. */
                                 Column(Modifier.width(288.dp).height(172.dp).padding(horizontal = 10.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                     AuraRadioCard(ActiveQueue.radio, radioLoading, radioStatus, { startRadio() },
-                                        Modifier.weight(1f).focusAnchor(radioCardFocus).focusProperties { up = homeFocus }, onLongPress = { radioMenuOpen = true })
+                                        Modifier.weight(1f).focusAnchor(radioCardFocus).focusProperties { up = if (showUpdatePrompt && updatePromptFocus.attached) updatePromptFocus.requester else homeFocus }, onLongPress = { radioMenuOpen = true })
                                     val hotChart = charts.firstOrNull()
                                     AuraHotCard(
                                         title = hotChart?.optString("title").orEmpty(),
@@ -2585,7 +2637,7 @@ class MainActivity : ComponentActivity() {
                                         status = if (chartSource == null) "添加支持榜单的音源" else if (chartLoading) "正在更新，确定进入发现" else "暂未获取榜单，确定重试",
                                         /* Top of the scrolling page: without a named Up target the
                                            remote had no way back to the bar from here. */
-                                        modifier = Modifier.weight(1f).focusProperties { up = homeFocus },
+                                        modifier = Modifier.weight(1f).focusProperties { up = if (showUpdatePrompt && updatePromptFocus.attached) updatePromptFocus.requester else homeFocus },
                                         onLongPress = { val chart = charts.firstOrNull(); val source = chartSource
                                             if (chart != null && source != null) subjectMenu = SavedSubject(source.id, "chart", chart, source.displayName, primaryKeys(source.metadata))
                                         },
@@ -3635,12 +3687,44 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
                                     if (settingsSection == "关于") {
+                                    val webViewInfo = remember {
+                                        runCatching {
+                                            val provider = if (android.os.Build.VERSION.SDK_INT >= 26) android.webkit.WebView.getCurrentWebViewPackage()
+                                            else listOf("com.google.android.webview", "com.android.webview").firstNotNullOfOrNull { name ->
+                                                runCatching { packageManager.getPackageInfo(name, 0) }.getOrNull()
+                                            }
+                                            provider?.let { "${it.packageName} ${it.versionName.orEmpty()}" } ?: "未检测到 WebView"
+                                        }.getOrDefault("未检测到 WebView")
+                                    }
                                     Text("版本", fontSize = 18.sp, color = c.foreground)
-                                    Text("PrismAura $versionName", color = c.foreground, fontSize = 16.sp)
-                                    Text(updateState.message, color = c.muted, fontSize = 12.sp)
-                                    PrismAction(if (updateState.checking) "正在检查…" else if (updateState.release != null) "查看更新 ${updateState.release?.tag}" else "检查更新", {
-                                        checkAppUpdates()
-                                    }, Modifier.focusAnchor(sectionEntryFocus.getValue("关于")).then(entryEdge).rememberFocus(bodyFocusMemory))
+                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text("PrismAura $versionName", color = c.foreground, fontSize = 16.sp)
+                                            Text(updateState.message, color = c.muted, fontSize = 12.sp)
+                                        }
+                                        PrismAction(if (updateState.checking) "正在检查…" else if (updateState.release != null) "查看更新" else "检查更新", {
+                                            checkAppUpdates()
+                                        }, Modifier.focusAnchor(sectionEntryFocus.getValue("关于")).then(entryEdge).rememberFocus(bodyFocusMemory))
+                                    }
+                                    Row(edgeToRail.rememberFocus(bodyFocusMemory).fillMaxWidth()
+                                        .auraFocus(scale = 1f)
+                                        .background(c.panel, androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                                        .toggleable(updateState.remind, role = Role.Switch, onValueChange = appUpdates::setRemind)
+                                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text("新版本提醒", color = c.foreground, fontSize = 14.sp)
+                                            Text("在首页提示新版本", color = c.muted, fontSize = 12.sp)
+                                        }
+                                        Switch(checked = updateState.remind, onCheckedChange = null,
+                                            modifier = Modifier.clearAndSetSemantics { },
+                                            colors = SwitchDefaults.colors(
+                                                checkedThumbColor = c.onAccent, checkedTrackColor = c.accent,
+                                                checkedBorderColor = Color.Transparent,
+                                                uncheckedThumbColor = c.muted, uncheckedTrackColor = c.background,
+                                                uncheckedBorderColor = c.line))
+                                    }
                                     Text("运行环境", fontSize = 18.sp, color = c.foreground, modifier = Modifier.padding(top = 14.dp))
                                     Text(deviceInfo, color = c.foreground, fontSize = 14.sp)
                                     Text("WebView · $webViewInfo", color = c.muted, fontSize = 12.sp)
@@ -3766,17 +3850,14 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
                                     removingSubscription?.let { url ->
-                                        val first = remember { FocusRequester() }
-                                        PrismContextMenu("移除订阅？", "同时移除订阅内音源，保留本机歌单和收藏", { removingSubscription = null }, first) {
-                                            PrismAction("取消", { removingSubscription = null }, Modifier.focusRequester(first), primary = true)
-                                            PrismAction("移除订阅", {
+                                        PrismConfirmDialog("移除订阅？", "同时移除订阅内音源，保留本机歌单和收藏", "移除订阅",
+                                            onDismiss = { removingSubscription = null }, onConfirm = {
                                                 removingSubscription = null
                                                 lifecycleScope.launch {
                                                     try { plugins.removeSubscription(url); status = "已移除订阅及其音源"; sourceRemoved() }
                                                     catch (e: Exception) { status = e.message ?: "移除失败" }
                                                 }
                                             })
-                                        }
                                     }
 
                                     /* A subscription is the thing that can be updated, so it is the row
@@ -3890,7 +3971,11 @@ class MainActivity : ComponentActivity() {
             }
             }
             AnimatedVisibility(visible = playerOpen, enter = fadeIn(tween(if (motionEnabled) 180 else 0)), exit = fadeOut(tween(if (motionEnabled) 120 else 0))) {
-                PrismBackground {
+                if (playerScreenOff) PrismScreenOff(
+                    keepAwake = playing && playbackState in setOf(Player.STATE_READY, Player.STATE_BUFFERING),
+                    onWake = { playerScreenOff = false },
+                )
+                else PrismBackground {
                     val song = queue.getOrNull(queueIndex)
                     PrismPlayer(song, lyrics, lyricStatus, positionMs, durationMs, playing, playMode,
                         song != null && libraryState.favorites.any { it.key == song.key }, quality, playingQuality,
@@ -3898,6 +3983,8 @@ class MainActivity : ComponentActivity() {
                         streamFormat,
                         hasMv = song?.let { it.hasMv && state.plugins.firstOrNull { p -> p.id == it.pluginId }?.capabilities?.has("mvSource") == true } == true,
                         mvOpen = activeMv != null,
+                        readPosition = { controller?.currentPosition?.coerceAtLeast(0) ?: positionMs },
+                        onScreenOff = { playerScreenOff = true },
                         onBack = { playerOpen = false }, onPlay = { controller?.let { if (it.playWhenReady) it.pause() else it.play() } },
                         onPrevious = { step(-1) }, onNext = { step(1) }, onShuffle = {
                             leaveRadio()
@@ -3976,7 +4063,12 @@ class MainActivity : ComponentActivity() {
                 onInstall = { if (updateJob?.isActive != true) updateJob = lifecycleScope.launch { appUpdates.install(this@MainActivity) } },
                 onCancel = { cancelAppUpdate() }, onSkip = {
                     appUpdates.skip(); updateDialogOpen = false
-                    pageScope.launch { withFrameNanos { }; pageEntryFocus?.requestIfAttached() }
+                    pageScope.launch {
+                        withFrameNanos { }
+                        if (page == "home") heroFocus.requestIfAttached()
+                        else if (page == "plugins" && settingsSection == "关于") sectionEntryFocus.getValue("关于").requestIfAttached()
+                        else pageEntryFocus?.requestIfAttached()
+                    }
                 },
                 onDismiss = {
                     updateDialogOpen = false
@@ -4420,7 +4512,6 @@ class MainActivity : ComponentActivity() {
         val clearFocus = remember(plugin.id) { FocusRequester() }
         val platformFocus = remember(plugin.id) { FocusRequester() }
         val platformOptionFocus = remember(plugin.id) { FocusRequester() }
-        val dialogFocus = remember(plugin.id) { FocusRequester() }
         val fieldFocuses = remember(plugin.id, entries.size) { List(entries.size) { FocusRequester() } }
         val loginFocus = remember(plugin.id) { FocusRequester() }
         val phoneFocus = remember(plugin.id) { FocusRequester() }
@@ -4604,16 +4695,14 @@ class MainActivity : ComponentActivity() {
                 PrismAction("关闭", { infoOpen = false }, Modifier.focusRequester(closeInfoFocus).focusProperties { up = readFocus }, primary = true)
             }
         }
-            if (clearCookiesOpen) PrismContextMenu("清除自动 Cookie？", "手动填写的配置会保留", { clearCookiesOpen = false }, dialogFocus) {
-                PrismAction("取消", { clearCookiesOpen = false }, Modifier.focusRequester(dialogFocus), primary = true)
-                PrismAction("清除", {
+            if (clearCookiesOpen) PrismConfirmDialog("清除自动 Cookie？", "手动填写的配置会保留", "清除",
+                onDismiss = { clearCookiesOpen = false }, onConfirm = {
                     clearCookiesOpen = false
                     lifecycleScope.launch {
                         try { plugins.client.call("", JSONObject(), "clearCookies", pluginId = plugin.id); status = "已清除自动 Cookie" }
                         catch (e: Exception) { error = e.message ?: "清除失败" }
                     }
                 })
-            }
     }
 
     /* 弹窗只留四行给提示，而平台原话可能是一整个响应体；这里裁短，完整文本留在 logcat。 */
@@ -4779,6 +4868,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        playerScreenOff = false
+        wakeKeys.clear()
         saveResume()
         closePhoneInput()
         super.onStop()

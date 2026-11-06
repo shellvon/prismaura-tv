@@ -14,6 +14,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -35,6 +36,7 @@ internal data class AppUpdateState(
     val release: AppRelease? = null, val message: String = "可检查新版本并查看更新说明",
     val checking: Boolean = false, val downloading: Boolean = false,
     val received: Long = 0, val total: Long = 0, val ready: File? = null, val skipped: Boolean = false,
+    val remind: Boolean = true,
 ) { val busy get() = checking || downloading }
 
 /** Owns release metadata, network fallback, APK verification and the installer handoff. */
@@ -45,11 +47,11 @@ internal class AppUpdates(
 ) {
     private val mutex = Mutex()
     private val prefs = context.getSharedPreferences("app_updates_${repository.hashCode()}_${mirrorBase.hashCode()}", Context.MODE_PRIVATE)
-    private val http = OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
-        .callTimeout(5, TimeUnit.MINUTES).followSslRedirects(false).build()
+    private val http by lazy { OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(5, TimeUnit.MINUTES).followSslRedirects(false).build() }
     @Volatile private var activeCall: Call? = null
     private val directory = File(context.cacheDir, "app-updates/downloads")
-    private val mutable = MutableStateFlow(AppUpdateState())
+    private val mutable = MutableStateFlow(AppUpdateState(remind = prefs.getBoolean("remind_updates", true)))
     val state: StateFlow<AppUpdateState> = mutable
     val releasePage get() = "https://github.com/$repository/releases/latest"
     private val githubMetadata get() = "https://api.github.com/repos/$repository/releases/latest"
@@ -57,9 +59,16 @@ internal class AppUpdates(
 
     fun cancelNetwork() { activeCall?.cancel() }
     fun skip() {
-        if (mutable.value.busy) return
-        mutable.value.release?.let { prefs.edit().putString("skip", it.tag).apply() }
-        mutable.value = mutable.value.copy(skipped = true, message = "已跳过此版本")
+        val release = mutable.value.release ?: return
+        prefs.edit().putString("skip", release.tag).apply()
+        mutable.update { current ->
+            if (current.release?.tag != release.tag) current
+            else current.copy(skipped = true, message = if (current.busy) current.message else "已跳过此版本")
+        }
+    }
+    fun setRemind(value: Boolean) {
+        prefs.edit().putBoolean("remind_updates", value).apply()
+        mutable.update { it.copy(remind = value) }
     }
 
     suspend fun check(force: Boolean = false) = mutex.withLock {
@@ -103,8 +112,9 @@ internal class AppUpdates(
                 val unchanged = mutable.value.release?.let { it.tag == release.tag && it.sha256 == release.sha256 } == true
                 mutable.value = AppUpdateState(release, "发现新版本 ${release.tag}",
                     ready = mutable.value.ready?.takeIf { unchanged && it.exists() },
-                    skipped = !force && prefs.getString("skip", "") == release.tag)
-            } else mutable.value = AppUpdateState(message = "当前已是最新版本（${BuildConfig.VERSION_NAME}）")
+                    skipped = prefs.getString("skip", "") == release.tag,
+                    remind = mutable.value.remind)
+            } else mutable.value = AppUpdateState(message = "当前已是最新版本", remind = mutable.value.remind)
         } catch (e: CancellationException) {
             mutable.value = mutable.value.copy(checking = false, message = "已取消检查")
             throw e
@@ -248,11 +258,11 @@ internal class AppUpdates(
                         output.write(buffer, 0, count)
                         val now = android.os.SystemClock.elapsedRealtime()
                         if (now - lastProgress >= 150) {
-                            mutable.value = mutable.value.copy(received = received); lastProgress = now
+                            mutable.update { it.copy(received = received) }; lastProgress = now
                         }
                     }
                     if (received != release.size) throw IOException("下载未完成")
-                    mutable.value = mutable.value.copy(received = received)
+                    mutable.update { it.copy(received = received) }
                 } }
             }
         } finally { activeCall = null }

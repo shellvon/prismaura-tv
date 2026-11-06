@@ -37,7 +37,7 @@ export interface MusicItem extends Entity {
   duration?: number;
   /** 音频直链；未提供 getMediaSource 时作为回退。 */
   url?: string;
-  /** 内嵌 LRC 歌词原文。 */
+  /** 内嵌歌词，支持格式同 LyricSource.rawLrc。 */
   rawLrc?: string;
   /** LRC 文件 URL；没有 getLyric 方法时由宿主获取。 */
   lrc?: string;
@@ -77,9 +77,9 @@ export interface MediaSource {
 }
 
 export interface LyricSource {
-  /** 带时间戳的行级 LRC。 */
+  /** 普通／增强 LRC、YRC、QRC 明文或常见 TTML；逐字高亮需要词级时间戳。 */
   rawLrc?: string;
-  /** 带时间戳的译文 LRC；与原文时间轴匹配。 */
+  /** 带时间戳的译文；与原文按行匹配。 */
   translation?: string;
 }
 
@@ -226,7 +226,7 @@ export interface PrismPlugin {
   search?(query: string, page: number, type: SearchType): Awaitable<SearchResult>;
   /** 标准：接收原始歌曲和音质档位，返回音频地址与请求头。 */
   getMediaSource?(song: MusicItem, quality: Quality): Awaitable<MediaSource | null>;
-  /** 标准：返回原文及译文 LRC，无歌词返回 null 或空原文。 */
+  /** 标准：返回歌词及可选译文，无歌词返回 null 或空原文。 */
   getLyric?(song: MusicItem): Awaitable<LyricSource | null>;
   /** 标准：返回歌单分类；可省略而仅提供默认推荐。 */
   getRecommendSheetTags?(): Awaitable<TagResult>;
