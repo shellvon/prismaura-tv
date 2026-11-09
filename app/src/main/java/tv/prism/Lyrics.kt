@@ -1,5 +1,8 @@
 package tv.prism
 
+import android.content.Context
+import org.json.JSONArray
+
 data class LyricWord(val startMs: Long, val text: String, val endMs: Long? = null)
 
 data class LyricLine(
@@ -191,5 +194,47 @@ object Lyrics {
             words[words.size - 1] = last.copy(text = last.text + trailing)
         }
         return words
+    }
+}
+
+/* 歌词时间校准：按「音源＋歌曲」记，正值=延后（歌词出现得更晚），负值=提前。
+   判断当前行用 播放时间 − d。文件自身的 [offset:] 已在解析时应用，这里是额外修正。
+   只保留最近 50 条，同名不同歌的 key 不同，不会串。 */
+object LyricCalibration {
+    const val LIMIT_MS = 5000L
+    private const val MAX_ENTRIES = 50
+    private const val PREFS = "lyric_calibration"
+
+    private fun entries(context: Context): JSONArray = runCatching {
+        JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("entries", "[]"))
+    }.getOrDefault(JSONArray())
+
+    fun load(context: Context, key: String): Long {
+        val array = entries(context)
+        for (i in 0 until array.length()) {
+            val pair = array.optJSONArray(i) ?: continue
+            if (pair.optString(0) == key) return pair.optLong(1, 0L).coerceIn(-LIMIT_MS, LIMIT_MS)
+        }
+        return 0L
+    }
+
+    fun save(context: Context, key: String, ms: Long) {
+        val clamped = ms.coerceIn(-LIMIT_MS, LIMIT_MS)
+        val array = entries(context)
+        val next = JSONArray()
+        next.put(JSONArray().put(key).put(clamped))
+        for (i in 0 until array.length()) {
+            val pair = array.optJSONArray(i) ?: continue
+            if (pair.optString(0) == key) continue
+            next.put(pair)
+            if (next.length() >= MAX_ENTRIES) break
+        }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("entries", next.toString()).apply()
+    }
+
+    fun describe(ms: Long): String = when {
+        ms > 0 -> "延后 %.1f 秒".format(ms / 1000f)
+        ms < 0 -> "提前 %.1f 秒".format(-ms / 1000f)
+        else -> "无校准"
     }
 }

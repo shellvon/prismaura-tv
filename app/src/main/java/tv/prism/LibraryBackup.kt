@@ -11,7 +11,7 @@ import java.util.Locale
     自动保存的登录 Cookie 由 Android Keystore 加密，换设备无法解密，因此不写入备份。
     电视上没有文件选择器，导出与恢复走手机遥控页面（H5）。 */
 object LibraryBackup {
-    private val prefFiles = listOf("appearance", "playback", "search", "home", "source_platforms")
+    private val prefFiles = listOf("appearance", "playback", "search", "home", "source_platforms", "lyric_calibration")
 
     suspend fun build(context: Context, library: MusicLibrary, plugins: Plugins): JSONObject {
         val preferences = JSONObject()
@@ -44,6 +44,7 @@ object LibraryBackup {
         plugins.restoreBackup(root.optJSONObject("plugins") ?: JSONObject())
         val preferences = root.optJSONObject("preferences") ?: return
         preferences.keys().forEach { name ->
+            if (name !in prefFiles) return@forEach
             val values = preferences.optJSONObject(name) ?: return@forEach
             val edit = context.getSharedPreferences(name, Context.MODE_PRIVATE).edit().clear()
             values.keys().forEach { key ->
