@@ -718,10 +718,19 @@ private fun AuraAmbience(song: Song?, modifier: Modifier = Modifier) {
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
     val raw = rememberAmbience(song)
-    /* 换歌时新封面还在分析，旧光晕多留一会儿，避免颜色突然消失。 */
-    var previous by remember { mutableStateOf<List<Color>>(emptyList()) }
-    LaunchedEffect(raw) { if (raw.isNotEmpty()) previous = raw.map { Color(it) } }
-    val stops = if (raw.isNotEmpty()) raw.map { Color(it) } else previous
+    /* 换歌时新封面还在分析，旧光晕多留一会儿，避免颜色突然消失——但只对同一张封面。
+       换到没有封面（或取色失败）的歌还留着上一首的颜色，等于把别人的唱片光打在这张
+       脸上，比暂时没有光晕更错。 */
+    val artwork = song?.artwork.orEmpty()
+    var previous by remember { mutableStateOf("" to emptyList<Color>()) }
+    LaunchedEffect(artwork, raw) {
+        when {
+            raw.isNotEmpty() -> previous = artwork to raw.map { Color(it) }
+            previous.first != artwork -> previous = "" to emptyList()
+        }
+    }
+    val stops = if (raw.isNotEmpty()) raw.map { Color(it) }
+        else previous.second.takeIf { previous.first == artwork }.orEmpty()
     if (stops.isEmpty()) return
     val a0 by animateColorAsState(stops.getOrElse(0) { c.accent }, tween(if (motion) 1600 else 0), label = "ambience a0")
     val a1 by animateColorAsState(stops.getOrElse(1) { stops[0] }, tween(if (motion) 1600 else 0), label = "ambience a1")

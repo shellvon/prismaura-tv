@@ -57,7 +57,10 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.BeyondBoundsLayout
+import androidx.compose.ui.layout.ModifierLocalBeyondBoundsLayout
+import androidx.compose.ui.modifier.modifierLocalConsumer
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
@@ -117,7 +120,7 @@ private object ActiveQueue {
 }
 
 private data class SearchEntity(val pluginId: String, val sourceName: String, val data: JSONObject)
-private data class CardFocusRow(val listIndex: Int, val cards: List<FocusRequester>, val horizontal: LazyListState? = null)
+private data class CardFocusRow(val cards: List<FocusRequester>, val horizontal: LazyListState? = null)
 private data class CollectionMenuTarget(val title: String, val songs: List<Song>, val playlistId: String? = null)
 private data class TrackMenuTarget(val song: Song, val list: String? = null, val originFocus: String = "")
 
@@ -986,7 +989,7 @@ class MainActivity : ComponentActivity() {
 
     @Composable private fun RecommendationShelf(plugin: Plugin, up: FocusRequester, entry: FocusAnchor, firstCard: FocusAnchor, below: FocusAnchor,
                                                 cardFocus: (JSONObject) -> FocusRequester, edges: (Int) -> Modifier, rowState: LazyListState,
-                                                onMenu: (JSONObject, FocusRequester) -> Unit, onOpen: (JSONObject) -> Unit) {
+                                                onMenu: (JSONObject, FocusRequester) -> Unit, modifier: Modifier = Modifier, onOpen: (JSONObject) -> Unit) {
         val c = LocalPrismColors.current
         var categoriesOpen by remember { mutableStateOf(false) }
         val categoryFocus = remember { FocusRequester() }
@@ -997,7 +1000,7 @@ class MainActivity : ComponentActivity() {
             categoriesOpen = false
             scope.launch { withFrameNanos { }; categoryFocus.requestFocus() }
         }
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             PrismShelfHeader("歌单推荐", null, if (recommendationLoading) "加载中" else "刷新", {
                 if (!recommendationLoading) lifecycleScope.launch { loadRecommendations(plugin) }
             }, actionFocus = refreshFocus, actionEdges = Modifier.focusProperties {
@@ -2994,9 +2997,13 @@ class MainActivity : ComponentActivity() {
                                     }
                                 } else {
                                 val focusScope = rememberCoroutineScope()
-                                val focusMargin = with(LocalDensity.current) { 10.dp.toPx() }
                                 val cardCoordinates = remember { mutableMapOf<FocusRequester, LayoutCoordinates>() }
-                                fun trackCard(requester: FocusRequester) = Modifier.keepFocusVisible().onGloballyPositioned { cardCoordinates[requester] = it }
+                                var beyondBounds by remember { mutableStateOf<BeyondBoundsLayout?>(null) }
+                                // Read the vertical list's provider before a nested LazyRow replaces it.
+                                @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+                                val rowLayout = Modifier.modifierLocalConsumer { ModifierLocalBeyondBoundsLayout.current?.let { beyondBounds = it } }
+                                fun trackCard(requester: FocusRequester) = Modifier.keepFocusVisible()
+                                    .onPlaced { cardCoordinates[requester] = it }
                                 fun centerX(requester: FocusRequester): Float? = cardCoordinates[requester]
                                     ?.takeIf { it.isAttached }?.let { it.positionInRoot().x + it.size.width / 2f }
                                 val recommendationRow = remember(recommendationSource?.id) { LazyListState() }
@@ -3041,19 +3048,12 @@ class MainActivity : ComponentActivity() {
                                 val artistCards = savedArtists.map { detailFocus("${it.kind}:${it.pluginId}:${it.data.optString("id")}") }
                                 val albumCards = savedAlbums.map { detailFocus("${it.kind}:${it.pluginId}:${it.data.optString("id")}") }
                                 val chartCardRows = charts.chunked(3).map { group -> group.map { detailFocus("chart:${it.optString("id")}") } }
-                                /* 每一行在 LazyColumn 里的 item 下标：跨行点名要先把目标行
-                                   滚进来，否则它的 FocusRequester 根本没绑上节点。 */
-                                var shelfCursor = if (recommendationSource != null) 1 else 0
-                                val seedRowItem = shelfCursor + 1; if (artistSeeds.isNotEmpty()) shelfCursor += 2
-                                val artistRowItem = shelfCursor + 1; if (savedArtists.isNotEmpty()) shelfCursor += 2
-                                val albumRowItem = shelfCursor + 1; if (savedAlbums.isNotEmpty()) shelfCursor += 2
-                                val chartRowItem = shelfCursor + 1
                                 val shelfRows = buildList {
-                                    if (recommendCards.isNotEmpty()) add(CardFocusRow(0, recommendCards, recommendationRow))
-                                    if (seedCards.isNotEmpty()) add(CardFocusRow(seedRowItem, seedCards, seedRow))
-                                    if (artistCards.isNotEmpty()) add(CardFocusRow(artistRowItem, artistCards, artistRow))
-                                    if (albumCards.isNotEmpty()) add(CardFocusRow(albumRowItem, albumCards, albumRow))
-                                    chartCardRows.forEachIndexed { chunkIndex, row -> add(CardFocusRow(chartRowItem + chunkIndex, row)) }
+                                    if (recommendCards.isNotEmpty()) add(CardFocusRow(recommendCards, recommendationRow))
+                                    if (seedCards.isNotEmpty()) add(CardFocusRow(seedCards, seedRow))
+                                    if (artistCards.isNotEmpty()) add(CardFocusRow(artistCards, artistRow))
+                                    if (albumCards.isNotEmpty()) add(CardFocusRow(albumCards, albumRow))
+                                    chartCardRows.forEach { add(CardFocusRow(it)) }
                                 }
                                 fun stepRow(direction: Key, row: List<FocusRequester>, column: Int): Modifier {
                                     val ordinal = shelfRows.indexOfFirst { it.cards === row }
@@ -3063,25 +3063,25 @@ class MainActivity : ComponentActivity() {
                                         if (event.type != KeyEventType.KeyDown || event.key != direction) return@onPreviewKeyEvent false
                                         val x = row.getOrNull(column)?.let(::centerX) ?: return@onPreviewKeyEvent false
                                         focusScope.coroutineContext.cancelChildren()
-                                        focusScope.launch {
-                                            fun nearest(): FocusRequester? {
-                                                val visible = target.horizontal?.layoutInfo?.visibleItemsInfo?.map { it.index }
-                                                    ?: target.cards.indices.toList()
-                                                return visible.mapNotNull { index ->
-                                                    target.cards.getOrNull(index)?.let { card -> centerX(card)?.let { card to kotlin.math.abs(it - x) } }
-                                                }.minByOrNull { it.second }?.first
-                                            }
-                                            val mounted = nearest()
-                                            if (mounted != null && mounted.requestAfterScroll { }) return@launch
-                                            discoverListState.scrollToItem(target.listIndex, -focusMargin.toInt())
-                                            repeat(8) {
-                                                withFrameNanos { }
-                                                val card = nearest()
-                                                if (card != null && card.requestAfterScroll { }) return@launch
-                                            }
-                                            discoverEntryFocus.requestIfAttached()
+                                        fun focusNearest(): Boolean {
+                                            val visible = target.horizontal?.layoutInfo?.visibleItemsInfo?.map { it.index }
+                                                ?: target.cards.indices.toList()
+                                            val nearest = visible.mapNotNull { index ->
+                                                target.cards.getOrNull(index)?.let { card -> centerX(card)?.let { card to kotlin.math.abs(it - x) } }
+                                            }.minByOrNull { it.second }?.first ?: return false
+                                            return runCatching { nearest.requestFocus() }.isSuccess
                                         }
-                                        true
+                                        if (focusNearest()) return@onPreviewKeyEvent true
+                                        // Compose the next row without moving the viewport; focus then scrolls it into view.
+                                        val searchDirection = if (direction == Key.DirectionUp) BeyondBoundsLayout.LayoutDirection.Above
+                                            else BeyondBoundsLayout.LayoutDirection.Below
+                                        beyondBounds?.layout(searchDirection) {
+                                            when {
+                                                focusNearest() -> true
+                                                !hasMoreContent -> false
+                                                else -> null
+                                            }
+                                        } == true
                                     }
                                 }
                                 /* MusicFree has no global artist/album listing to fill the
@@ -3094,13 +3094,13 @@ class MainActivity : ComponentActivity() {
                                     if (recommendationSource != null) item {
                                         RecommendationShelf(recommendationSource, discoverEntryFocus.requester, recommendEntryFocus, recommendFirstCardFocus, discoverBelowFocus,
                                             cardFocus = { sheet -> detailFocus("recommend:${recommendationSource.id}:${sheet.optString("id")}") },
-                                            edges = { index -> trackCard(recommendCards[index]).then(stepRow(Key.DirectionDown, recommendCards, index)) }, rowState = recommendationRow,
+                                            edges = { index -> trackCard(recommendCards[index]).then(stepRow(Key.DirectionDown, recommendCards, index)) }, rowState = recommendationRow, modifier = rowLayout,
                                             onMenu = { item, focus -> showSubjectMenu(recommendationSource, "sheet", item, focus) }) { openBrowse(recommendationSource, it, "sheet") }
                                     }
                                     if (artistSeeds.isNotEmpty()) {
                                         item { PrismShelfHeader("从常听歌手继续", null, "", {}) }
                                         item {
-                                            LazyRow(state = seedRow, horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
+                                            LazyRow(state = seedRow, modifier = rowLayout, horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
                                                 itemsIndexed(artistSeeds) { index, seed ->
                                                     PrismSheetCard(seed.artist, seed.data.optString("artistArtwork"), "来自你的收藏与曲库 · ${seed.sourceLabel}", portrait = true,
                                                         modifier = Modifier.focusRequester(seedCards[index]).then(trackCard(seedCards[index]))
@@ -3120,7 +3120,7 @@ class MainActivity : ComponentActivity() {
                                     if (artistsFirst) {
                                         item { PrismShelfHeader("歌手", null, "", {}) }
                                         item {
-                                            LazyRow(state = artistRow, horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
+                                            LazyRow(state = artistRow, modifier = rowLayout, horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
                                                 itemsIndexed(savedArtists) { index, subject ->
                                                     PrismSheetCard(subject.title, subject.artwork, "${subject.kindLabel} · ${subject.sourceName.ifBlank { "已收藏" }}", portrait = subject.kind == "artist",
                                                         modifier = Modifier.focusRequester(artistCards[index]).then(trackCard(artistCards[index]))
@@ -3141,7 +3141,7 @@ class MainActivity : ComponentActivity() {
                                     if (savedAlbums.isNotEmpty()) {
                                         item { PrismShelfHeader("专辑", null, "", {}) }
                                         item {
-                                            LazyRow(state = albumRow, horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
+                                            LazyRow(state = albumRow, modifier = rowLayout, horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
                                                 itemsIndexed(savedAlbums) { index, subject ->
                                                     PrismSheetCard(subject.title, subject.artwork, "${subject.kindLabel} · ${subject.sourceName.ifBlank { "已收藏" }}", portrait = subject.kind == "artist",
                                                         modifier = Modifier.focusRequester(albumCards[index]).then(trackCard(albumCards[index]))
@@ -3163,7 +3163,7 @@ class MainActivity : ComponentActivity() {
                                     if (charts.isEmpty()) item { Text(chartStatus, color = c.muted, fontSize = 13.sp) }
                                     else itemsIndexed(charts.chunked(3)) { chunkIndex, group ->
                                         val rowCards = chartCardRows.getOrNull(chunkIndex).orEmpty()
-                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                        Row(rowLayout.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                                             group.forEachIndexed { column, chart ->
                                                 val chartId = chart.optString("id")
                                                 val cardFocus = detailFocus("chart:$chartId")
