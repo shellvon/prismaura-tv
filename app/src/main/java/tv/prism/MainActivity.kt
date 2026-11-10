@@ -57,9 +57,6 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.BeyondBoundsLayout
-import androidx.compose.ui.layout.ModifierLocalBeyondBoundsLayout
-import androidx.compose.ui.modifier.modifierLocalConsumer
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.input.key.type
@@ -840,7 +837,7 @@ class MainActivity : ComponentActivity() {
                 .put("items", JSONArray(charts.take(60))).put("previews", previews).toString()
             if (snapshot.length < 512_000) cache.edit().putString("charts", snapshot).apply()
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-        catch (e: Exception) { if (generation == chartGeneration) chartStatus = "榜单加载失败，可刷新重试：${e.message ?: "未知错误"}" }
+        catch (e: Exception) { if (generation == chartGeneration) chartStatus = "榜单加载失败，请稍后重试：${e.message ?: "未知错误"}" }
         finally { if (generation == chartGeneration) chartLoading = false }
     }
 
@@ -993,30 +990,19 @@ class MainActivity : ComponentActivity() {
         val c = LocalPrismColors.current
         var categoriesOpen by remember { mutableStateOf(false) }
         val categoryFocus = remember { FocusRequester() }
-        /* 刷新是这条 shelf 的动作，锚点单独给：分类条按上落到它，它按下去回分类条。 */
-        val refreshFocus = remember { FocusRequester() }
         val scope = rememberCoroutineScope()
         fun closeCategories() {
             categoriesOpen = false
             scope.launch { withFrameNanos { }; categoryFocus.requestFocus() }
         }
         Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            PrismShelfHeader("歌单推荐", null, if (recommendationLoading) "加载中" else "刷新", {
-                if (!recommendationLoading) lifecycleScope.launch { loadRecommendations(plugin) }
-            }, actionFocus = refreshFocus, actionEdges = Modifier.focusProperties {
-                /* 让「刷新」有一条说得通的边：上回页头（发现设置），下回分类条。
-                   以前它没有任何显式边，从最后一个分类按右就被几何搜索吸过来，
-                   看起来像是「右键打开刷新」。 */
-                this.up = up
-                if (entry.attached) down = entry.requester
-            })
+            PrismShelfHeader("歌单推荐", null, "", {})
             val scenes = Discovery.scenes(recommendationTags)
             val sceneIds = scenes.map { it.second.optString("id") }.toSet()
             val choices = scenes + recommendationTags.filterNot { it.optString("id") in sceneIds }.map { it.optString("title") to it }
             val tailChips = choices.take(3)
             val moreChip = choices.size > 3
-            /* 分类条是横向列表：到最后一个 chip 按右就停住，别让它横穿到
-               右上角的「刷新」去。 */
+            // Keep Right inside the category strip at its last item.
             val stopRight = Modifier.onPreviewKeyEvent { event ->
                 event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight
             }
@@ -1024,7 +1010,7 @@ class MainActivity : ComponentActivity() {
                 item { PrismAction(if (recommendationTag.optString("id").isEmpty()) "✓ 推荐" else "推荐", {
                     recommendationTag = JSONObject().put("id", "").put("title", "推荐")
                 }, Modifier.focusAnchor(entry).focusProperties {
-                    this.up = refreshFocus
+                    this.up = up
                     if (recommendations.isNotEmpty() && firstCard.attached) down = firstCard.requester
                     else if (below.attached) down = below.requester
                 }.then(if (tailChips.isEmpty() && !moreChip) stopRight else Modifier)) }
@@ -1032,7 +1018,7 @@ class MainActivity : ComponentActivity() {
                     PrismAction("${if (recommendationTag.optString("id") == tag.optString("id")) "✓ " else ""}$label", {
                         recommendationTag = tag
                     }, Modifier.focusProperties {
-                        this.up = refreshFocus
+                        this.up = up
                         if (recommendations.isNotEmpty() && firstCard.attached) down = firstCard.requester
                         else if (below.attached) down = below.requester
                     }.then(if (!moreChip && index == tailChips.lastIndex) stopRight else Modifier))
@@ -1042,7 +1028,7 @@ class MainActivity : ComponentActivity() {
                         val selected = choices.drop(3).firstOrNull { it.second.optString("id") == recommendationTag.optString("id") }
                         PrismAction(selected?.let { "${it.first} ▾" } ?: "全部分类 ▾", { categoriesOpen = true },
                             Modifier.focusRequester(categoryFocus).focusProperties {
-                                this.up = refreshFocus
+                                this.up = up
                                 if (recommendations.isNotEmpty() && firstCard.attached) down = firstCard.requester
                                 else if (below.attached) down = below.requester
                             }.then(stopRight))
@@ -1469,19 +1455,19 @@ class MainActivity : ComponentActivity() {
        One JSON object under the old "history" key; a plain array there is the
        pre-type history, which belongs to 歌曲. */
     private fun loadSearchHistory(): Map<String, List<String>> = runCatching {
-        val stored = getSharedPreferences("search", MODE_PRIVATE).getString("history", "[]")
-        val root = JSONObject(stored)
-        root.keys().asSequence().associateWith { key ->
-            root.optJSONArray(key)?.let { a ->
-                (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }.take(30)
-            } ?: emptyList()
-        }
-    }.getOrDefault(
+        val stored = getSharedPreferences("search", MODE_PRIVATE).getString("history", "[]") ?: "[]"
         runCatching {
-            val legacy = JSONArray(getSharedPreferences("search", MODE_PRIVATE).getString("history", "[]"))
+            val root = JSONObject(stored)
+            root.keys().asSequence().associateWith { key ->
+                root.optJSONArray(key)?.let { a ->
+                    (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }.take(30)
+                } ?: emptyList()
+            }
+        }.getOrElse {
+            val legacy = JSONArray(stored)
             mapOf("music" to (0 until legacy.length()).map { legacy.optString(it) }.filter { it.isNotBlank() }.take(30))
-        }.getOrDefault(emptyMap())
-    )
+        }
+    }.getOrDefault(emptyMap())
 
     private fun saveSearchHistory() {
         val root = JSONObject()
@@ -2127,8 +2113,7 @@ class MainActivity : ComponentActivity() {
         val sectionEntryFocus = remember { mapOf("外观" to FocusAnchor(), "推荐" to FocusAnchor(), "音源" to sourceActionFocus, "播放" to FocusAnchor(), "关于" to FocusAnchor()) }
         val configEntryFocus = remember { FocusAnchor() }
         val miniFocus = remember { FocusRequester() }
-        /* 发现页的落点是内容，不是页头的配置链接：第一次下键就该落进歌单推荐
-           的分类条（没有推荐时落到下面第一个 shelf），「发现设置」按上才回去。 */
+        // 发现页先进入推荐分类，没有推荐时进入首张卡片或空状态入口。
         fun discoverContentEntry(): FocusAnchor = when {
             recommendEntryFocus.attached -> recommendEntryFocus
             discoverBelowFocus.attached -> discoverBelowFocus
@@ -2331,7 +2316,7 @@ class MainActivity : ComponentActivity() {
                 withFrameNanos { }
                 if (!importDialog) {
                     if (selectedPlaylist != null) playlistBackFocus.requestIfAttached()
-                    else libraryHeaderFocus.requestIfAttached()
+                    else if (!libraryHeaderFocus.requestIfAttached()) libraryEmptyFocus.requestIfAttached()
                 }
                 importWasOpen = false
             }
@@ -2631,6 +2616,9 @@ class MainActivity : ComponentActivity() {
             if (plugin == null) chartStatus = "暂无提供榜单的音源，可在设置中添加"
             else loadCharts(plugin, force = false)
         }
+        LaunchedEffect(page) {
+            if (firstFrameDrawn && page == "discover" && !chartLoading) chartSource?.let { loadCharts(it, force = false) }
+        }
         LaunchedEffect(page, chartPluginId, charts.take(3).map { it.optString("id") }) {
             if (page != "discover") return@LaunchedEffect
             val plugin = chartSource ?: return@LaunchedEffect
@@ -2761,7 +2749,7 @@ class MainActivity : ComponentActivity() {
                                     AuraRadioCard(ActiveQueue.radio, radioLoading, radioStatus, { startRadio() },
                                         Modifier.weight(1f).focusAnchor(radioCardFocus).focusProperties {
                                             up = if (showUpdatePrompt && updatePromptFocus.attached) updatePromptFocus.requester else homeFocus
-                                        }.then(downToCard(0, 0)), onLongPress = { radioMenuOpen = true })
+                                        }, onLongPress = { radioMenuOpen = true })
                                     val hotChart = charts.firstOrNull()
                                     AuraHotCard(
                                         title = hotChart?.optString("title").orEmpty(),
@@ -2777,10 +2765,8 @@ class MainActivity : ComponentActivity() {
                                             }
                                         },
                                         status = if (chartSource == null) "添加支持榜单的音源" else if (chartLoading) "正在更新，确定进入发现" else "暂未获取榜单，确定重试",
-                                        /* Top of the scrolling page: without a named Up target the
-                                           remote had no way back to the bar from here. */
                                         modifier = Modifier.weight(1f).focusProperties {
-                                            up = if (showUpdatePrompt && updatePromptFocus.attached) updatePromptFocus.requester else homeFocus
+                                            upTo(radioCardFocus)
                                         }.then(downToCard(0, 0)),
                                         onLongPress = { val chart = charts.firstOrNull(); val source = chartSource
                                             if (chart != null && source != null) subjectMenu = SavedSubject(source.id, "chart", chart, source.displayName, primaryKeys(source.metadata))
@@ -2912,7 +2898,13 @@ class MainActivity : ComponentActivity() {
                                                     Text(browseAlbumStatus, color = c.muted, fontSize = 13.sp)
                                                 } else item {
                                                     val (albumReveal, revealAlbums) = rememberRowRevealer(pageScope)
-                                                    LazyRow(albumReveal, state = browseAlbumRowState, horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                                    val firstSongFocus = browseSongs.firstOrNull()?.let { trackFocus(it.key) }
+                                                    val (albumLayout, focusAlbumExit) = rememberVerticalFocusSearch()
+                                                    val albumNavigation = albumLayout.onPreviewKeyEvent { event ->
+                                                        if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionDown || firstSongFocus == null) return@onPreviewKeyEvent false
+                                                        focusAlbumExit(event.key) { firstSongFocus }
+                                                    }
+                                                    LazyRow(albumReveal.then(albumNavigation), state = browseAlbumRowState, horizontalArrangement = Arrangement.spacedBy(10.dp),
                                                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
                                                         itemsIndexed(browseAlbums) { index, album ->
                                                             val albumId = album.optString("id")
@@ -2998,10 +2990,7 @@ class MainActivity : ComponentActivity() {
                                 } else {
                                 val focusScope = rememberCoroutineScope()
                                 val cardCoordinates = remember { mutableMapOf<FocusRequester, LayoutCoordinates>() }
-                                var beyondBounds by remember { mutableStateOf<BeyondBoundsLayout?>(null) }
-                                // Read the vertical list's provider before a nested LazyRow replaces it.
-                                @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
-                                val rowLayout = Modifier.modifierLocalConsumer { ModifierLocalBeyondBoundsLayout.current?.let { beyondBounds = it } }
+                                val (rowLayout, focusDiscoverRow) = rememberVerticalFocusSearch()
                                 fun trackCard(requester: FocusRequester) = Modifier.keepFocusVisible()
                                     .onPlaced { cardCoordinates[requester] = it }
                                 fun centerX(requester: FocusRequester): Float? = cardCoordinates[requester]
@@ -3020,24 +3009,10 @@ class MainActivity : ComponentActivity() {
                                         if (!target.requestIfAttached()) fallback.requestIfAttached()
                                     }
                                 }
-                                val headDownReveals = Modifier.onPreviewKeyEvent { event ->
-                                    if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown && recommendationSource != null && !recommendEntryFocus.attached) {
-                                        revealRecommendation(recommendEntryFocus, discoverBelowFocus); true
-                                    } else false
-                                }
                                 val belowUpReveals = Modifier.onPreviewKeyEvent { event ->
                                     if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp && recommendationSource != null && recommendations.isEmpty() && !recommendEntryFocus.attached) {
                                         revealRecommendation(recommendFirstCardFocus, recommendEntryFocus); true
                                     } else false
-                                }
-                                PrismPageHead("发现") {
-                                    PrismLink("发现设置", { settingsSection = "推荐"; page = "plugins" },
-                                        Modifier.focusAnchor(discoverEntryFocus).focusProperties {
-                                            up = discoverFocus
-                                            /* Down 逐层进 shelf：先分类条，无推荐时落下面第一个首卡。 */
-                                            if (recommendEntryFocus.attached) down = recommendEntryFocus.requester
-                                            else if (discoverBelowFocus.attached) down = discoverBelowFocus.requester
-                                        }.then(headDownReveals))
                                 }
                                 val artistsFirst = savedArtists.isNotEmpty()
                                 // Adjacent rows have different card widths; choose by screen position, not item number.
@@ -3058,30 +3033,23 @@ class MainActivity : ComponentActivity() {
                                 fun stepRow(direction: Key, row: List<FocusRequester>, column: Int): Modifier {
                                     val ordinal = shelfRows.indexOfFirst { it.cards === row }
                                     if (ordinal < 0) return Modifier
-                                    val target = shelfRows.getOrNull(ordinal + if (direction == Key.DirectionUp) -1 else 1) ?: return Modifier
+                                    val target = shelfRows.getOrNull(ordinal + if (direction == Key.DirectionUp) -1 else 1)
+                                        ?: return Modifier.focusProperties {
+                                            if (direction == Key.DirectionUp) {
+                                                up = if (recommendEntryFocus.attached) recommendEntryFocus.requester else discoverFocus
+                                            } else down = miniFocus
+                                        }
                                     return Modifier.onPreviewKeyEvent { event ->
                                         if (event.type != KeyEventType.KeyDown || event.key != direction) return@onPreviewKeyEvent false
                                         val x = row.getOrNull(column)?.let(::centerX) ?: return@onPreviewKeyEvent false
                                         focusScope.coroutineContext.cancelChildren()
-                                        fun focusNearest(): Boolean {
+                                        focusDiscoverRow(direction) {
                                             val visible = target.horizontal?.layoutInfo?.visibleItemsInfo?.map { it.index }
                                                 ?: target.cards.indices.toList()
-                                            val nearest = visible.mapNotNull { index ->
+                                            visible.mapNotNull { index ->
                                                 target.cards.getOrNull(index)?.let { card -> centerX(card)?.let { card to kotlin.math.abs(it - x) } }
-                                            }.minByOrNull { it.second }?.first ?: return false
-                                            return runCatching { nearest.requestFocus() }.isSuccess
+                                            }.minByOrNull { it.second }?.first
                                         }
-                                        if (focusNearest()) return@onPreviewKeyEvent true
-                                        // Compose the next row without moving the viewport; focus then scrolls it into view.
-                                        val searchDirection = if (direction == Key.DirectionUp) BeyondBoundsLayout.LayoutDirection.Above
-                                            else BeyondBoundsLayout.LayoutDirection.Below
-                                        beyondBounds?.layout(searchDirection) {
-                                            when {
-                                                focusNearest() -> true
-                                                !hasMoreContent -> false
-                                                else -> null
-                                            }
-                                        } == true
                                     }
                                 }
                                 /* MusicFree has no global artist/album listing to fill the
@@ -3092,7 +3060,7 @@ class MainActivity : ComponentActivity() {
                                        底部留白让最后一行能完整滚入。 */
                                     contentPadding = PaddingValues(bottom = 14.dp)) {
                                     if (recommendationSource != null) item {
-                                        RecommendationShelf(recommendationSource, discoverEntryFocus.requester, recommendEntryFocus, recommendFirstCardFocus, discoverBelowFocus,
+                                        RecommendationShelf(recommendationSource, discoverFocus, recommendEntryFocus, recommendFirstCardFocus, discoverBelowFocus,
                                             cardFocus = { sheet -> detailFocus("recommend:${recommendationSource.id}:${sheet.optString("id")}") },
                                             edges = { index -> trackCard(recommendCards[index]).then(stepRow(Key.DirectionDown, recommendCards, index)) }, rowState = recommendationRow, modifier = rowLayout,
                                             onMenu = { item, focus -> showSubjectMenu(recommendationSource, "sheet", item, focus) }) { openBrowse(recommendationSource, it, "sheet") }
@@ -3105,7 +3073,6 @@ class MainActivity : ComponentActivity() {
                                                     PrismSheetCard(seed.artist, seed.data.optString("artistArtwork"), "来自你的收藏与曲库 · ${seed.sourceLabel}", portrait = true,
                                                         modifier = Modifier.focusRequester(seedCards[index]).then(trackCard(seedCards[index]))
                                                             .then(if (index == 0) Modifier.focusAnchor(discoverBelowFocus) else Modifier)
-                                                            .focusProperties { upTo(recommendEntryFocus, discoverEntryFocus) }
                                                             .then(stepRow(Key.DirectionUp, seedCards, index))
                                                             .then(stepRow(Key.DirectionDown, seedCards, index))
                                                             .then(belowUpReveals),
@@ -3159,8 +3126,13 @@ class MainActivity : ComponentActivity() {
                                             }
                                         }
                                     }
-                                    item { PrismShelfHeader("音乐榜单", null, if (plugin == null) "" else "刷新", { if (plugin != null) lifecycleScope.launch { loadCharts(plugin) } }) }
-                                    if (charts.isEmpty()) item { Text(chartStatus, color = c.muted, fontSize = 13.sp) }
+                                    item { PrismShelfHeader("音乐榜单", null, "", {}) }
+                                    if (charts.isEmpty()) item {
+                                        if (recommendationSource == null && shelfRows.isEmpty()) {
+                                            PrismEmptyState(chartStatus, "发现设置", { settingsSection = "推荐"; page = "plugins" },
+                                                Modifier.focusAnchor(discoverEntryFocus).focusProperties { up = discoverFocus; down = miniFocus })
+                                        } else Text(chartStatus, color = c.muted, fontSize = 13.sp)
+                                    }
                                     else itemsIndexed(charts.chunked(3)) { chunkIndex, group ->
                                         val rowCards = chartCardRows.getOrNull(chunkIndex).orEmpty()
                                         Row(rowLayout.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -3196,18 +3168,17 @@ class MainActivity : ComponentActivity() {
                             }
                             "search" -> Column(Modifier.fillMaxSize()) {
                                 val focusScope = searchNavigationScope
+                                val (searchRowLayout, focusSearchRow) = rememberVerticalFocusSearch()
                                 var moreFocused by remember(searchTerm, searchType, pluginSignature, searchSources) { mutableStateOf(false) }
                                 val showMore = hasMore || moreFocused
                                 val moreLabel = if (busy) "正在加载…" else if (hasMore) "加载更多" else "已加载全部"
-                                suspend fun focusLastResult() {
+                                fun focusLastResult() {
                                     val last = if (searchType == "music") results.lastIndex else entities.lastIndex
                                     if (last < 0) { searchInputFocus.requestIfAttached(); return }
                                     val target = if (searchType == "music") {
                                         if (last == 0) searchResultsFocus.requester else trackFocus(results[last].key)
                                     } else entities[last].let { detailFocus("$searchType:${it.pluginId}:${it.data.optString("id")}") }
-                                    if (!target.requestAfterScroll {
-                                        searchListState.scrollToItem(if (searchType == "music") last else last / 6)
-                                    }) searchInputFocus.requestIfAttached()
+                                    if (!focusSearchRow(Key.DirectionUp) { target }) searchInputFocus.requestIfAttached()
                                 }
                                 // Keep the focused footer until focus has actually returned to a result.
                                 LaunchedEffect(hasMore, busy, moreFocused) {
@@ -3217,19 +3188,10 @@ class MainActivity : ComponentActivity() {
                                     .onPreviewKeyEvent { event ->
                                         if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp) {
                                             focusScope.coroutineContext.cancelChildren()
-                                            focusScope.launch { focusLastResult() }
+                                            focusLastResult()
                                             true
                                         } else false
-                                    }.focusProperties { if (queue.isNotEmpty()) down = miniFocus }
-                                fun focusMore() {
-                                    focusScope.coroutineContext.cancelChildren()
-                                    focusScope.launch {
-                                        if (!searchMoreFocus.requester.requestAfterScroll {
-                                            searchListState.scrollToItem((searchListState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
-                                        }) searchInputFocus.requestIfAttached()
-                                    }
-                                }
-                                PrismPageHead("搜索音乐")
+                                    }.focusProperties { down = miniFocus }
                                 /* Pressing 搜索 is the end of typing. Leaving the IME up covers half the
                                    results you just asked for — the same mistake as opening a page and
                                    covering it with a dialog. */
@@ -3329,13 +3291,8 @@ class MainActivity : ComponentActivity() {
                                         true
                                     } else false
                                 }
-                                /* 逐行点名移动：几何搜索只看得到已经组合出来的行，滚到中段时
-                                   上一行还没有节点，按「上」就落到页头的分类 tab 上——从此
-                                   回不到列表，也上不去上一行（只能再从第一行重新往下走）。
-                                   这里按行号点名：先当场要焦点，要不到再按行号滚过去一次。
-                                   unit = 1（歌曲列表）或 6（网格一行六张）。 */
-                                fun stepRows(state: LazyListState, index: Int, unit: Int, total: Int,
-                                             scrollRow: (Int) -> Int, requester: (Int) -> FocusRequester): Modifier =
+                                // Keep the column across rows; the last row exits to the footer or mini player.
+                                fun stepRows(index: Int, unit: Int, total: Int, requester: (Int) -> FocusRequester): Modifier =
                                     Modifier.onPreviewKeyEvent { event ->
                                         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                                         val delta = when (event.key) {
@@ -3346,36 +3303,14 @@ class MainActivity : ComponentActivity() {
                                         val nextRow = index / unit + delta
                                         if (nextRow < 0) return@onPreviewKeyEvent false
                                         if (nextRow > (total - 1) / unit) {
-                                            if (delta > 0 && showMore) { focusMore(); return@onPreviewKeyEvent true }
-                                            return@onPreviewKeyEvent false
+                                            return@onPreviewKeyEvent focusSearchRow(Key.DirectionDown) {
+                                                if (showMore) searchMoreFocus.requester else miniFocus
+                                            }
                                         }
                                         val next = (nextRow * unit + index % unit).coerceAtMost(total - 1)
-                                        val target = requester(next)
                                         focusScope.coroutineContext.cancelChildren()
-                                        focusScope.launch {
-                                            if (!target.requestAfterScroll { state.scrollToItem(scrollRow(next)) }) searchInputFocus.requestIfAttached()
-                                        }
-                                        true
+                                        focusSearchRow(event.key) { requester(next) }
                                     }
-                                /* 焦点滚到列表下沿时，Compose 只保证那一行「露出来」：半截
-                                   压在裁剪线上也算可见，聚焦环就落在视口外面——按下去像
-                                   没反应，再按一次才滚上来，序号看起来跳了一个。这里补一把，
-                                   让整行连同 12dp 留白真正停进视口。 */
-                                val searchDensity = LocalDensity.current
-                                fun revealRow(index: Int) {
-                                    pageScope.launch {
-                                        repeat(2) { withFrameNanos { } }
-                                        val info = searchListState.layoutInfo
-                                        val item = info.visibleItemsInfo.firstOrNull { it.index == index } ?: return@launch
-                                        val margin = with(searchDensity) { 12.dp.toPx() }
-                                        val below = item.offset + item.size - (info.viewportEndOffset - margin)
-                                        val above = (info.viewportStartOffset + margin) - item.offset
-                                        when {
-                                            below > 0 -> runCatching { searchListState.scrollBy(below) }
-                                            above > 0 -> runCatching { searchListState.scrollBy(-above) }
-                                        }
-                                    }
-                                }
                                 /* Input first, then the source row. The source is a filter on the
                                    search, not a separate page — you pick it before you type, because
                                    switching it afterwards silently changes what you're looking at. */
@@ -3517,7 +3452,10 @@ class MainActivity : ComponentActivity() {
                                                         keyword = item.keyword; ime?.hide(); searchInputFocus.requestIfAttached(); if (!busy) search(item.keyword)
                                                     }, Modifier.weight(1f).focusRequester(focus)
                                                         .then(if (rowIndex == 0 && columnIndex == 0) Modifier.focusAnchor(firstSuggestionFocus) else Modifier)
-                                                        .then(if (rowIndex == 0) Modifier.focusProperties { upTo(chipAnchor(searchType), searchInputFocus) } else Modifier)
+                                                        .focusProperties {
+                                                            if (rowIndex == 0) upTo(chipAnchor(searchType), searchInputFocus)
+                                                            if (rowIndex == suggestionRows.lastIndex / 4) down = miniFocus
+                                                        }
                                                         .onFocusChanged { if (it.isFocused) bodyFocusMemory.value = focus })
                                                 }
                                                 repeat(4 - group.size) { Spacer(Modifier.weight(1f)) }
@@ -3532,7 +3470,10 @@ class MainActivity : ComponentActivity() {
                                                 { keyword = item.keyword; ime?.hide(); searchInputFocus.requestIfAttached(); if (!busy) search(item.keyword) },
                                                 Modifier.focusRequester(focus)
                                                     .then(if (index == 0) Modifier.focusAnchor(firstSuggestionFocus) else Modifier)
-                                                    .then(if (index == 0) Modifier.focusProperties { upTo(chipAnchor(searchType), searchInputFocus) } else Modifier)
+                                                    .focusProperties {
+                                                        if (index == 0) upTo(chipAnchor(searchType), searchInputFocus)
+                                                        if (index == suggestionRows.lastIndex) down = miniFocus
+                                                    }
                                                     .onFocusChanged { if (it.isFocused) bodyFocusMemory.value = focus },
                                                 artwork = item.artwork, subtitle = item.subtitle,
                                             )
@@ -3573,16 +3514,17 @@ class MainActivity : ComponentActivity() {
                                         /* 末排聚焦边框要能完整滚入视口，底部留白与发现页榜单一致。 */
                                         contentPadding = PaddingValues(start = 6.dp, end = 6.dp, top = 8.dp, bottom = 22.dp)) {
                                         itemsIndexed(entities.chunked(6)) { rowIndex, row ->
-                                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                            Row(searchRowLayout, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                                 row.forEachIndexed { col, entry ->
                                                     PrismSheetCard(entry.data.optString("title").ifBlank { entry.data.optString("name").ifBlank { "未命名" } }, entry.data.optString("artwork").ifBlank { entry.data.optString("coverImg") }, entry.sourceName, portrait = searchType == "artist",
                                                         modifier = Modifier
                                                             .focusRequester(detailFocus("$searchType:${entry.pluginId}:${entry.data.optString("id")}"))
+                                                            .keepFocusVisible()
                                                             .then(if (entry === entities.first()) Modifier.focusAnchor(searchResultsFocus) else Modifier)
                                                             /* 只有首排按上回分类 tab；其余排在行内点名上下，
                                                                不再被绑死在页头。 */
                                                             .then(if (rowIndex == 0) Modifier.focusProperties { upTo(chipAnchor(searchType), searchInputFocus) } else Modifier)
-                                                            .then(stepRows(searchListState, rowIndex * 6 + col, 6, entities.size, { it / 6 }) { i ->
+                                                            .then(stepRows(rowIndex * 6 + col, 6, entities.size) { i ->
                                                                 val target = entities[i]
                                                                 detailFocus("$searchType:${target.pluginId}:${target.data.optString("id")}")
                                                             })
@@ -3590,7 +3532,6 @@ class MainActivity : ComponentActivity() {
                                                             .onFocusChanged { focused ->
                                                                 if (focused.isFocused) {
                                                                     searchFocusMemory.value = Triple(detailFocus("$searchType:${entry.pluginId}:${entry.data.optString("id")}"), rowIndex, col)
-                                                                    revealRow(rowIndex)
                                                                 }
                                                             },
                                                         onLongPress = { state.plugins.firstOrNull { it.id == entry.pluginId }?.let {
@@ -3605,7 +3546,7 @@ class MainActivity : ComponentActivity() {
                                             /* 加载下一页是用户明确按的：以前滚到末排自动追加，
                                                与歌手/专辑/歌单网格的「加载更多」不是一套交互。 */
                                             PrismAction(moreLabel, { if (hasMore && !busy) search(searchTerm, append = true) },
-                                                Modifier.focusAnchor(searchMoreFocus).then(moreEdges))
+                                                searchRowLayout.keepFocusVisible().focusAnchor(searchMoreFocus).then(moreEdges))
                                         }
                                     }
                                 } else {
@@ -3618,29 +3559,29 @@ class MainActivity : ComponentActivity() {
                                         if (busy) "正在搜索…" else if (hasMore) "本页暂无歌曲，可继续加载" else "没有找到「$keyword」的歌曲。换个关键词，或换一个音源试试",
                                         color = c.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 16.dp)
                                     )
-                                } else LazyColumn(Modifier.weight(1f).padding(top = 4.dp, bottom = 10.dp), state = searchListState) {
+                                } else LazyColumn(Modifier.weight(1f).padding(top = 4.dp, bottom = 10.dp), state = searchListState,
+                                    contentPadding = PaddingValues(vertical = 10.dp)) {
                                     itemsIndexed(results, key = { _, song -> song.key }) { index, song ->
                                         val rowFocus = if (index == 0) searchResultsFocus.requester else trackFocus(song.key)
                                         detailCardFocus["song:${song.key}"] = rowFocus
                                         PrismTrackRow(song, index, { playQueue(results.toList(), index) },
                                             current = queue.getOrNull(queueIndex)?.key == song.key,
                                             onLongPress = { trackMenu = TrackMenuTarget(song, originFocus = "song:${song.key}") },
-                                            onFocus = { revealRow(index) },
                                             /* 只有首行按上回分类 tab；其余行按行号上下点名，
                                                一路走回第一行，再按上才离开列表。以前每一行
                                                都被绑在分类 tab 上，进列表后按上就只剩「回页头」
                                                一条路。 */
                                             modifier = (if (index == 0) Modifier.focusAnchor(searchResultsFocus)
                                                 else Modifier.focusRequester(rowFocus))
+                                                .then(searchRowLayout).keepFocusVisible()
                                                 .then(if (index == 0) Modifier.focusProperties { upTo(chipAnchor(searchType), searchInputFocus) } else Modifier)
-                                                .then(stepRows(searchListState, index, 1, results.size, { it }) { i ->
+                                                .then(stepRows(index, 1, results.size) { i ->
                                                     if (i == 0) searchResultsFocus.requester else trackFocus(results[i].key)
                                                 })
                                                 /* 末行按下去落「加载更多」。 */
                                                 .onFocusChanged {
                                                     if (it.isFocused) {
                                                         searchFocusMemory.value = Triple(rowFocus, index, -1)
-                                                        revealRow(index)
                                                     }
                                                 })
                                     }
@@ -3649,7 +3590,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                     if (showMore) item(key = "search-more") {
                                         PrismAction(moreLabel, { if (hasMore && !busy) search(searchTerm, append = true) },
-                                            Modifier.focusAnchor(searchMoreFocus).then(moreEdges))
+                                            searchRowLayout.keepFocusVisible().focusAnchor(searchMoreFocus).then(moreEdges))
                                     }
                                 }
                                 }
@@ -3682,9 +3623,33 @@ class MainActivity : ComponentActivity() {
                                 val subjectSections = listOf((if (subjectKind == "artist") "歌手" else "专辑") to visibleSubjects)
                                     .filter { it.second.isNotEmpty() }
                                 val firstSubject = subjectSections.firstOrNull()?.second?.firstOrNull()
+                                val (libraryRowLayout, focusLibraryRow) = rememberVerticalFocusSearch()
+                                val libraryCardRows = when {
+                                    showingSubjects -> visibleSubjects.chunked(6).map { row -> row.map {
+                                        detailFocus("${it.kind}:${it.pluginId}:${it.data.optString("id")}")
+                                    } }
+                                    showingPlaylists -> libraryState.playlists.chunked(6).map { row -> row.map {
+                                        detailFocus("playlist:${it.id}")
+                                    } } + if (libraryManage) emptyList() else savedSheets.chunked(6).map { row -> row.map {
+                                        detailFocus("sheet:${it.pluginId}:${it.data.optString("id")}")
+                                    } }
+                                    else -> emptyList()
+                                }
+                                fun libraryCardEdges(row: Int, column: Int) = Modifier.onPreviewKeyEvent { event ->
+                                    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                    val delta = when (event.key) {
+                                        Key.DirectionUp -> -1
+                                        Key.DirectionDown -> 1
+                                        else -> return@onPreviewKeyEvent false
+                                    }
+                                    val next = row + delta
+                                    if (next < 0) return@onPreviewKeyEvent false
+                                    focusLibraryRow(event.key) {
+                                        if (next >= libraryCardRows.size) miniFocus
+                                        else libraryCardRows[next].let { it[column.coerceAtMost(it.lastIndex)] }
+                                    }
+                                }
 
-                                /* One bar above all four lists, always in the same slot: entering
-                                   管理 swaps the verbs on its right end and the list below stays put. */
                                 val manageTargets = when {
                                     showingSubjects -> visibleSubjects.map { it.key }
                                     showingPlaylists -> libraryState.playlists.map { it.id }
@@ -3692,14 +3657,10 @@ class MainActivity : ComponentActivity() {
                                 }
                                 val allChosen = manageTargets.isNotEmpty() && manageTargets.all { it in librarySelected }
                                 val headerEdges = Modifier.focusProperties {
-                                    /* 页头动作在 tab 行的上方：按上离开页面，按下回 tab 行。
-                                       以前按上回 tab、按下没人管，于是「导入歌单」只能靠
-                                       几何搜索够到，从 tab 按下去就横着飞到屏幕右边。 */
-                                    if (selectedPlaylist != null) upTo(playlistBackFocus) else up = libraryFocus
-                                    if (selectedPlaylist == null) {
-                                        val tab = libraryTabs.getValue(libraryTabKey)
-                                        if (tab.attached) down = tab.requester
-                                    }
+                                    if (selectedPlaylist != null) upTo(playlistBackFocus)
+                                    else upTo(libraryTabs.getValue(libraryTabKey))
+                                    if (libraryContentFocus.attached) down = libraryContentFocus.requester
+                                    else down = miniFocus
                                 }
                                 val batchVerb = when {
                                     selectedList == "recent" -> "删除记录"
@@ -3713,13 +3674,46 @@ class MainActivity : ComponentActivity() {
                                     showingSubjects || showingPlaylists -> "个"
                                     else -> "首"
                                 }
-                                /* 列表级的动作全部收进页头这一格：五个 tab 的「全部播放 /
-                                   导入歌单 / 管理」永远在同一个位置。以前卡片 tab 把它们放
-                                   页头、歌曲/最近放在 tab 下面那一行，切 tab 动作会上下跳。 */
-                                PrismPageHead(if (selectedPlaylist == null) "我的" else "歌单详情") {
-                                    if (selectedPlaylist != null) PrismAction("返回歌单", { closePlaylistTable() },
-                                        Modifier.focusAnchor(playlistBackFocus).onPreviewKeyEvent { it.key == Key.DirectionUp })
-                                    else if (libraryManage) {
+                                if (selectedPlaylist != null) {
+                                    PrismPageHead("歌单详情") {
+                                        PrismAction("返回歌单", { closePlaylistTable() },
+                                            Modifier.focusAnchor(playlistBackFocus).onPreviewKeyEvent { it.key == Key.DirectionUp })
+                                    }
+                                }
+                                val belowTabs = Modifier.focusProperties {
+                                    up = libraryFocus
+                                    when {
+                                        libraryHeaderFocus.attached -> down = libraryHeaderFocus.requester
+                                        libraryContentFocus.attached -> down = libraryContentFocus.requester
+                                        libraryEmptyFocus.attached -> down = libraryEmptyFocus.requester
+                                        else -> down = miniFocus
+                                    }
+                                }
+                                /* 空收藏的出口：位置与内边距在五个 tab 里一致，上键回当前 tab。 */
+                                val emptyActionEdges = Modifier.focusAnchor(libraryEmptyFocus).focusProperties {
+                                    val tab = libraryTabs.getValue(libraryTabKey)
+                                    if (tab.attached) up = tab.requester
+                                    down = miniFocus
+                                }
+                                if (selectedPlaylist == null) {
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)) {
+                                    val tabs = listOf(
+                                        Triple("favorites", "歌曲", libraryState.favorites.size),
+                                        Triple("albums", "专辑", libraryState.subjects.count { it.kind == "album" }),
+                                        Triple("artists", "歌手", libraryState.subjects.count { it.kind == "artist" }),
+                                        Triple("playlists", "歌单", libraryState.playlists.size + savedSheets.size),
+                                        Triple("recent", "最近", libraryState.recent.size),
+                                    )
+                                    items(tabs, key = { it.first }) { (id, label, count) ->
+                                        PrismAction("$label $count", { selectedList = id }, primary = selectedList == id,
+                                            modifier = Modifier.focusAnchor(libraryTabs.getValue(id)).then(belowTabs)
+                                                .onFocusChanged { if (it.isFocused && selectedList != id) selectedList = id })
+                                    }
+                                }
+                                // 工具栏固定高度，切换空分类或进入管理时，分类和列表都不跳动。
+                                Row(Modifier.fillMaxWidth().heightIn(min = 50.dp).padding(horizontal = 6.dp, vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                                    if (libraryManage) {
                                         Text(
                                             if (librarySelected.isEmpty()) "选中条目后再处理"
                                             else "已选 ${librarySelected.size} / ${manageTargets.size} $batchUnit",
@@ -3741,8 +3735,6 @@ class MainActivity : ComponentActivity() {
                                         Spacer(Modifier.width(8.dp))
                                         PrismAction("退出管理", { exitLibraryManage() }, Modifier.focusAnchor(libraryHeaderFocus).then(headerEdges))
                                     } else {
-                                        /* 空收藏的出口（去发现 / 导入歌单）放在提示语下面，
-                                           和提示一起出现，这里只放有内容的列表才需要的动作。 */
                                         if (manageTargets.isNotEmpty()) Text("长按确定键打开菜单", color = c.muted, fontSize = 11.sp, modifier = Modifier.padding(end = 10.dp))
                                         if (showingPlaylists && manageTargets.isNotEmpty()) {
                                             PrismAction("导入歌单", { importDialog = true }, headerEdges)
@@ -3754,49 +3746,9 @@ class MainActivity : ComponentActivity() {
                                         }
                                         if (manageTargets.isNotEmpty()) {
                                             PrismAction("管理", { enterLibraryManage() }, Modifier.focusAnchor(libraryHeaderFocus).then(headerEdges))
-                                        } else if (!showingPlaylists && !showingSubjects) {
-                                            /* 歌手/专辑/歌单的出口就在空状态提示下面，
-                                               页头再来一个「去发现」只是重复。 */
-                                            PrismAction("去发现", { page = "discover" }, Modifier.focusAnchor(libraryHeaderFocus).then(headerEdges))
                                         }
                                     }
                                 }
-                                /* The tab strip and the list beneath it are separate focus
-                                   spaces; name the first row so Down never falls through. */
-                                val belowTabs = Modifier.focusProperties {
-                                    val listShown = when {
-                                        showingSubjects -> visibleSubjects.isNotEmpty()
-                                        showingPlaylists -> libraryState.playlists.isNotEmpty() || savedSheets.isNotEmpty()
-                                        else -> songs.isNotEmpty()
-                                    }
-                                    if (listShown && libraryContentFocus.attached) down = libraryContentFocus.requester
-                                    else if (libraryEmptyFocus.attached) down = libraryEmptyFocus.requester
-                                    else if (libraryHeaderFocus.attached) down = libraryHeaderFocus.requester
-                                    /* 页头的动作（全部播放 / 导入歌单 / 管理）在 tab 上方，
-                                       按上先到它们，再按上才离开页面。 */
-                                    up = if (libraryHeaderFocus.attached) libraryHeaderFocus.requester else libraryFocus
-                                }
-                                /* 空收藏的出口：位置与内边距在五个 tab 里一致，上键回当前 tab。 */
-                                val emptyActionEdges = Modifier.focusAnchor(libraryEmptyFocus).focusProperties {
-                                    val tab = libraryTabs.getValue(libraryTabKey)
-                                    if (tab.attached) up = tab.requester
-                                }
-                                if (selectedPlaylist == null) {
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)) {
-                                    val tabs = listOf(
-                                        Triple("favorites", "歌曲", libraryState.favorites.size),
-                                        Triple("albums", "专辑", libraryState.subjects.count { it.kind == "album" }),
-                                        Triple("artists", "歌手", libraryState.subjects.count { it.kind == "artist" }),
-                                        Triple("playlists", "歌单", libraryState.playlists.size + savedSheets.size),
-                                        Triple("recent", "最近", libraryState.recent.size),
-                                    )
-                                    items(tabs, key = { it.first }) { (id, label, count) ->
-                                        PrismAction("$label $count", { selectedList = id }, primary = selectedList == id,
-                                            modifier = Modifier.focusAnchor(libraryTabs.getValue(id)).then(belowTabs)
-                                                .onFocusChanged { if (it.isFocused && selectedList != id) selectedList = id })
-                                    }
-                                }
-                                /* 标题栏撤掉以后，内容从 tab 行下面 10dp 开始：五个 tab 同一条基线。 */
                                 Spacer(Modifier.height(10.dp))
                                 }
                                 /* 歌单详情没有 tab 行，列表名和条目数留在这条标题里；
@@ -3863,9 +3815,7 @@ class MainActivity : ComponentActivity() {
                                         if (manageTargets.isNotEmpty()) {
                                             PrismAction("管理", { enterLibraryManage() }, headerEdges.then(
                                                 if (showingSubjects) Modifier.focusAnchor(libraryHeaderFocus) else Modifier))
-                                        } else if (!showingPlaylists && selectedPlaylist == null) {
-                                            PrismAction("去发现", { page = "discover" }, Modifier.focusAnchor(libraryHeaderFocus).then(headerEdges))
-                                        } else if (selectedPlaylist != null && songs.isEmpty()) {
+                                        } else if (songs.isEmpty()) {
                                             PrismAction("返回歌单", { closePlaylistTable() }, Modifier.focusAnchor(libraryHeaderFocus).then(headerEdges))
                                         }
                                     }
@@ -3881,20 +3831,18 @@ class MainActivity : ComponentActivity() {
                                     } else LazyColumn(state = librarySubjectListState, modifier = Modifier.weight(1f).padding(bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(12.dp),
                                         contentPadding = PaddingValues(start = 6.dp, end = 6.dp, top = 8.dp, bottom = 22.dp)) {
                                         subjectSections.forEach { (_, group) ->
-                                            items(group.chunked(6), key = { row -> "subject-row:${row.first().key}" }) { row ->
-                                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                                    row.forEach { subject ->
+                                            itemsIndexed(group.chunked(6), key = { _, row -> "subject-row:${row.first().key}" }) { rowIndex, row ->
+                                                Row(libraryRowLayout, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                    row.forEachIndexed { column, subject ->
                                                         val cardFocus = detailFocus("${subject.kind}:${subject.pluginId}:${subject.data.optString("id")}")
                                                         PrismSheetCard(subject.title, subject.artwork, "${subject.kindLabel} · ${subject.sourceName.ifBlank { "已收藏" }}", portrait = subject.kind == "artist",
                                                             modifier = Modifier.focusRequester(cardFocus)
+                                                                .keepFocusVisible().then(libraryCardEdges(rowIndex, column))
                                                                 .then(if (subject === firstSubject) Modifier.focusAnchor(libraryContentFocus) else Modifier)
                                                                 .focusProperties {
-                                                                    /* 卡片 tab 的页头放的是操作按钮；首行上键回到当前 tab，
-                                                                       再按上才到页头，别让上键一步跳过 tab。 */
                                                                     if (subject in visibleSubjects.take(6)) {
-                                                                        val tab = libraryTabs.getValue(libraryTabKey)
-                                                                        if (tab.attached) up = tab.requester
-                                                                        else if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester
+                                                                        if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester
+                                                                        else upTo(libraryTabs.getValue(libraryTabKey))
                                                                     }
                                                                 }
                                                                 .onFocusChanged { if (it.isFocused) bodyFocusMemory.value = cardFocus },
@@ -3922,23 +3870,23 @@ class MainActivity : ComponentActivity() {
                                         )
                                     } else LazyColumn(Modifier.weight(1f).padding(bottom = 10.dp), state = libraryPlaylistListState, verticalArrangement = Arrangement.spacedBy(10.dp),
                                         contentPadding = PaddingValues(start = 6.dp, end = 6.dp, top = 8.dp, bottom = 22.dp)) {
-                                        items(libraryState.playlists.chunked(6), key = { row -> "local:${row.first().id}" }) { row ->
-                                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                                row.forEach { list ->
+                                        itemsIndexed(libraryState.playlists.chunked(6), key = { _, row -> "local:${row.first().id}" }) { rowIndex, row ->
+                                            Row(libraryRowLayout, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                row.forEachIndexed { column, list ->
                                                         val platform = MusicPlatform.identify(list.platform)
                                                         val cardFocus = detailFocus("playlist:${list.id}")
                                                         detailCardFocus["playlist:${list.id}"] = cardFocus
                                                         PrismSheetCard(list.name, list.songs.firstOrNull { it.artwork.startsWith("http") }?.artwork.orEmpty(),
                                                             "${list.songs.size} 首 · ${platform.label}",
                                                             modifier = Modifier.focusRequester(cardFocus)
+                                                                .keepFocusVisible().then(libraryCardEdges(rowIndex, column))
                                                                 .then(
                                                                     if (list == libraryState.playlists.first()) Modifier.focusAnchor(libraryContentFocus)
                                                                     else Modifier,
                                                                 ).focusProperties {
                                                                     if (list in libraryState.playlists.take(6)) {
-                                                                        val tab = libraryTabs.getValue(libraryTabKey)
-                                                                        if (tab.attached) up = tab.requester
-                                                                        else if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester
+                                                                        if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester
+                                                                        else upTo(libraryTabs.getValue(libraryTabKey))
                                                                     }
                                                                 }.onFocusChanged { if (it.isFocused) bodyFocusMemory.value = cardFocus },
                                                             selected = if (libraryManage) list.id in librarySelected else null,
@@ -3954,19 +3902,19 @@ class MainActivity : ComponentActivity() {
                                         }
                                         if (!libraryManage && savedSheets.isNotEmpty()) {
                                             item(key = "saved-sheets") { Text("收藏的歌单", color = c.foreground, fontSize = 17.sp, modifier = Modifier.padding(top = 6.dp)) }
-                                            items(savedSheets.chunked(6), key = { row -> "saved:${row.first().key}" }) { row ->
-                                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                                    row.forEach { subject ->
+                                            itemsIndexed(savedSheets.chunked(6), key = { _, row -> "saved:${row.first().key}" }) { rowIndex, row ->
+                                                Row(libraryRowLayout, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                    row.forEachIndexed { column, subject ->
                                                         val key = "sheet:${subject.pluginId}:${subject.data.optString("id")}"
                                                         val cardFocus = detailFocus(key)
                                                         PrismSheetCard(subject.title, subject.artwork, subject.sourceName.ifBlank { "已收藏" },
                                                             modifier = Modifier.focusRequester(cardFocus)
+                                                                .keepFocusVisible().then(libraryCardEdges((libraryState.playlists.size + 5) / 6 + rowIndex, column))
                                                                 .then(if (libraryState.playlists.isEmpty() && subject == savedSheets.first()) Modifier.focusAnchor(libraryContentFocus) else Modifier)
                                                                 .focusProperties {
                                                                     if (libraryState.playlists.isEmpty() && subject in savedSheets.take(6)) {
-                                                                        val tab = libraryTabs.getValue(libraryTabKey)
-                                                                        if (tab.attached) up = tab.requester
-                                                                        else if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester
+                                                                        if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester
+                                                                        else upTo(libraryTabs.getValue(libraryTabKey))
                                                                     }
                                                                 }.onFocusChanged { if (it.isFocused) bodyFocusMemory.value = cardFocus },
                                                             onLongPress = { menuReturnFocus = cardFocus; subjectMenu = subject }) {
@@ -3982,13 +3930,14 @@ class MainActivity : ComponentActivity() {
                                 PrismTrackHeader(managing = libraryManage)
                                 Box(Modifier.fillMaxWidth().height(1.dp).background(c.line.copy(alpha = .5f)))
                                 if (songs.isEmpty()) {
-                                    Text(
+                                    PrismEmptyState(
                                         when {
                                             selectedPlaylist != null -> "这个歌单里还没有歌"
                                             selectedList == "favorites" -> "播放时按收藏，歌曲会出现在这里"
                                             else -> "播过的歌会自动记在这里"
                                         },
-                                        color = c.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 14.dp),
+                                        if (selectedPlaylist == null) "去发现" else null,
+                                        { page = "discover" }, emptyActionEdges,
                                     )
                                 } else LazyColumn(Modifier.weight(1f).padding(top = 4.dp, bottom = 10.dp)) {
                                     itemsIndexed(songs, key = { _, song -> song.key }) { index, song ->
@@ -4054,7 +4003,6 @@ class MainActivity : ComponentActivity() {
                                         if (anchor.attached) left = anchor.requester
                                         up = pluginsFocus
                                     }
-                                    PrismPageHead("设置")
                                     /* The phone is the real keyboard for this app. Put the door to it at
                                        the top of the page instead of burying it inside 外观. The whole
                                        banner is the focus target: a 40 dp icon was the only thing the

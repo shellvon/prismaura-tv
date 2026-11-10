@@ -87,6 +87,109 @@ class CoreTest {
         assertTrue(SearchSuggestions.local("sheet", library).isEmpty())
     }
 
+    @Test fun verticalListsNavigateUncomposedRowsAndReturnFromMini() = runBlocking {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val libraryField = MainActivity::class.java.getDeclaredField("library").apply { isAccessible = true }
+        val originalRepository = libraryField.get(activity) as MusicLibrary
+        val repository = MusicLibrary(isolatedContext())
+        val state = repository.state as kotlinx.coroutines.flow.MutableStateFlow<LibraryState>
+        val original = state.value
+        fun nodes(root: android.view.accessibility.AccessibilityNodeInfo?): List<android.view.accessibility.AccessibilityNodeInfo> {
+            val result = mutableListOf<android.view.accessibility.AccessibilityNodeInfo>()
+            root?.let { result.add(it) }
+            var index = 0
+            while (index < result.size) {
+                val node = result[index++]
+                for (i in 0 until node.childCount) node.getChild(i)?.let { result.add(it) }
+            }
+            return result
+        }
+        suspend fun awaitNode(description: String, predicate: (android.view.accessibility.AccessibilityNodeInfo) -> Boolean): android.view.accessibility.AccessibilityNodeInfo {
+            return try {
+                withTimeout(5000) {
+                    var found: android.view.accessibility.AccessibilityNodeInfo?
+                    do {
+                        // Resetting the service info clears cached nodes, including focus before a scroll.
+                        instrumentation.uiAutomation.serviceInfo = instrumentation.uiAutomation.serviceInfo
+                        found = nodes(instrumentation.uiAutomation.rootInActiveWindow).firstOrNull(predicate)
+                        if (found == null) delay(50)
+                    } while (found == null)
+                    requireNotNull(found)
+                }
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                instrumentation.uiAutomation.takeScreenshot()?.let { bitmap ->
+                    File(context.cacheDir, "navigation-failure.png").outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                }
+                val visible = nodes(instrumentation.uiAutomation.rootInActiveWindow)
+                val focus = visible.filter { it.isFocused }.flatMap { nodes(it) }.mapNotNull { it.text ?: it.contentDescription }
+                throw AssertionError("Expected $description; focused=$focus; visible=${visible.mapNotNull { it.text }.take(40)}", e)
+            }
+        }
+        suspend fun focused(label: String) = awaitNode("focus on $label") { node ->
+            node.isFocused && nodes(node).any { it.text?.toString() == label || it.contentDescription?.toString() == label }
+        }
+        suspend fun key(code: Int, label: String) {
+            instrumentation.sendKeyDownUpSync(code)
+            focused(label)
+        }
+        try {
+            instrumentation.runOnMainSync {
+                libraryField.set(activity, repository)
+                state.value = original.copy(subjects = (0 until 14).map { index ->
+                    SavedSubject("fixture", "album", JSONObject().put("id", index).put("title", "验证专辑 $index"))
+                })
+                MainActivity::class.java.getDeclaredMethod("setPage", String::class.java).apply { isAccessible = true }.invoke(activity, "library")
+            }
+            val tab = awaitNode("album tab") { node -> node.isFocusable && nodes(node).any { it.text?.toString() == "专辑 14" } }
+            assertTrue(tab.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_FOCUS))
+            focused("专辑 14")
+            key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "管理")
+            key(android.view.KeyEvent.KEYCODE_DPAD_UP, "专辑 14")
+            key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "管理")
+            key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "验证专辑 0")
+            key(android.view.KeyEvent.KEYCODE_DPAD_UP, "管理")
+            key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "验证专辑 0")
+            for (i in 1..5) key(android.view.KeyEvent.KEYCODE_DPAD_RIGHT, "验证专辑 $i")
+            key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "验证专辑 11")
+            key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "验证专辑 13")
+            instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_DOWN)
+            awaitNode("mini player after albums") { node -> node.isFocused && nodes(node).any {
+                it.contentDescription?.toString() in listOf("打开正在播放", "搜索音乐")
+            } }
+            key(android.view.KeyEvent.KEYCODE_DPAD_UP, "验证专辑 13")
+            key(android.view.KeyEvent.KEYCODE_DPAD_UP, "验证专辑 7")
+            instrumentation.runOnMainSync {
+                fun set(name: String, type: Class<*>, value: Any) {
+                    MainActivity::class.java.getDeclaredMethod(name, type).apply { isAccessible = true }.invoke(activity, value)
+                }
+                set("setSearchTerm", String::class.java, "验证歌曲")
+                set("setResults", List::class.java, (0 until 15).map {
+                    Song("fixture", JSONObject().put("id", it).put("title", "验证歌曲 $it"))
+                })
+                set("setHasMore", Boolean::class.javaPrimitiveType!!, false)
+                set("setFocusSearchResults", Boolean::class.javaPrimitiveType!!, true)
+                set("setPage", String::class.java, "search")
+            }
+            focused("验证歌曲 0")
+            for (i in 1..14) key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "验证歌曲 $i")
+            instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_DOWN)
+            awaitNode("mini player after songs") { node -> node.isFocused && nodes(node).any {
+                it.contentDescription?.toString() in listOf("打开正在播放", "搜索音乐")
+            } }
+            key(android.view.KeyEvent.KEYCODE_DPAD_UP, "验证歌曲 14")
+            instrumentation.runOnMainSync {
+                MainActivity::class.java.getDeclaredMethod("setHasMore", Boolean::class.javaPrimitiveType!!)
+                    .apply { isAccessible = true }.invoke(activity, true)
+            }
+            delay(100) // Let Compose apply the injected pagination state before the next key.
+            key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "加载更多")
+            key(android.view.KeyEvent.KEYCODE_DPAD_UP, "验证歌曲 14")
+        } finally {
+            instrumentation.runOnMainSync { activity.finish(); libraryField.set(activity, originalRepository) }
+        }
+    }
+
     @Test fun mvExtensionOnlyAcceptsExplicitNetworkVideoUrls() {
         assertTrue(Song("plugin", JSONObject().put("mvId", "12345")).hasMv)
         assertFalse(Song("plugin", JSONObject().put("mvId", "")).hasMv)

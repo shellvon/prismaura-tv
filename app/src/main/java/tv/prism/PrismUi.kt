@@ -82,6 +82,9 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.BeyondBoundsLayout
+import androidx.compose.ui.layout.ModifierLocalBeyondBoundsLayout
+import androidx.compose.ui.modifier.modifierLocalConsumer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -219,6 +222,34 @@ internal fun Modifier.keepFocusVisible(): Modifier = composed {
             requester.bringIntoView(Rect(-margin, -margin, itemSize.width + margin, itemSize.height + margin))
         }
     }
+}
+
+/** Mount without moving the viewport. Apply the modifier outside any nested horizontal list. */
+@Composable
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+internal fun rememberVerticalFocusSearch(): Pair<Modifier, (Key, () -> FocusRequester?) -> Boolean> {
+    var layout by remember { mutableStateOf<BeyondBoundsLayout?>(null) }
+    val modifier = Modifier.modifierLocalConsumer { ModifierLocalBeyondBoundsLayout.current?.let { layout = it } }
+    val request: (Key, () -> FocusRequester?) -> Boolean = { direction, target ->
+        fun focus() = target()?.let { runCatching { it.requestFocus() }.isSuccess } ?: false
+        val searchDirection = when (direction) {
+            Key.DirectionUp -> BeyondBoundsLayout.LayoutDirection.Above
+            Key.DirectionDown -> BeyondBoundsLayout.LayoutDirection.Below
+            else -> null
+        }
+        when {
+            searchDirection == null -> false
+            focus() -> true
+            else -> layout?.layout(searchDirection) {
+                when {
+                    focus() -> true
+                    !hasMoreContent -> false
+                    else -> null
+                }
+            } == true
+        }
+    }
+    return modifier to request
 }
 
 /** Reveal a lazy item before retrying; leave composition changes time to attach its target. */
@@ -880,14 +911,14 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
             "mv" -> {
                 drawRoundRect(color, topLeft = p(.14f, .24f), size = Size(s * .72f, s * .52f),
                     cornerRadius = CornerRadius(s * .06f), style = Stroke(w))
-                drawPath(path { moveTo(s * .42f, .38f); lineTo(s * .66f, .5f); lineTo(s * .42f, .62f); close() }, color)
+                drawPath(path { moveTo(s * .42f, s * .38f); lineTo(s * .66f, s * .5f); lineTo(s * .42f, s * .62f); close() }, color)
             }
             "artist" -> {
                 drawCircle(color, radius = s * .14f, center = p(.5f, .34f), style = Stroke(w))
                 drawPath(path {
-                    moveTo(s * .22f, .80f)
-                    cubicTo(s * .24f, .58f, s * .38f, .53f, s * .5f, .53f)
-                    cubicTo(s * .62f, .53f, s * .76f, .58f, s * .78f, .80f)
+                    moveTo(s * .22f, s * .80f)
+                    cubicTo(s * .24f, s * .58f, s * .38f, s * .53f, s * .5f, s * .53f)
+                    cubicTo(s * .62f, s * .53f, s * .76f, s * .58f, s * .78f, s * .80f)
                 }, color, style = Stroke(w, cap = StrokeCap.Round))
             }
             /* A microphone reads as "the singer" faster than a bust at 22dp. */
@@ -908,7 +939,7 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
                 drawLine(color, p(.2f, .30f), p(.8f, .30f), w, StrokeCap.Round)
                 drawLine(color, p(.4f, .22f), p(.6f, .22f), w, StrokeCap.Round)
                 drawPath(path {
-                    moveTo(s * .3f, .3f); lineTo(s * .34f, .82f); lineTo(s * .66f, .82f); lineTo(s * .7f, .3f)
+                    moveTo(s * .3f, s * .3f); lineTo(s * .34f, s * .82f); lineTo(s * .66f, s * .82f); lineTo(s * .7f, s * .3f)
                 }, color, style = Stroke(w, cap = StrokeCap.Round, join = StrokeJoin.Round))
                 drawLine(color, p(.44f, .42f), p(.45f, .7f), w * .8f, StrokeCap.Round)
                 drawLine(color, p(.56f, .42f), p(.55f, .7f), w * .8f, StrokeCap.Round)
@@ -2325,7 +2356,7 @@ fun PrismDetailHero(
 @Composable
 fun PrismPageHead(title: String, trailing: @Composable RowScope.() -> Unit = {}) {
     val c = LocalPrismColors.current
-    Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.Bottom) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 60.dp).padding(bottom = 12.dp), verticalAlignment = Alignment.Bottom) {
         Text(title, fontSize = 26.sp, fontWeight = FontWeight.SemiBold, color = c.foreground)
         Spacer(Modifier.weight(1f))
         Row(verticalAlignment = Alignment.CenterVertically, content = trailing)
@@ -2441,7 +2472,7 @@ fun PrismSuggestionRow(term: String, badge: String, onClick: () -> Unit, modifie
 internal fun PrismSearchSuggestionCard(item: SearchSuggestion, type: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = LocalPrismColors.current
     val imageShape = if (type == "artist") CircleShape else RoundedCornerShape(8.dp)
-    Column(modifier.auraFocus().clip(RoundedCornerShape(12.dp)).background(c.panel)
+    Column(modifier.keepFocusVisible().auraFocus().clip(RoundedCornerShape(12.dp)).background(c.panel)
         .clickable(onClick = onClick).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(5.dp)) {
         Box(Modifier.size(72.dp).clip(imageShape).background(c.accent.copy(alpha = .12f)), contentAlignment = Alignment.Center) {

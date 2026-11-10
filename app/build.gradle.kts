@@ -105,7 +105,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
     implementation("androidx.media3:media3-session:1.4.1")
     implementation("io.coil-kt:coil-compose:2.7.0")
-    implementation("androidx.palette:palette-ktx:1.0.0")
+    implementation("androidx.palette:palette:1.0.0")
     implementation("com.google.zxing:core:3.5.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
