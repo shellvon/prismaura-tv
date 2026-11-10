@@ -39,8 +39,8 @@ data class Song(val pluginId: String, val data: JSONObject, val sourceName: Stri
     val key get() = "$pluginId:${itemIdentity(data, primaryKey, data.toString())}"
     /* MusicFree's IMusicItem.duration is seconds. A few plugins hand back milliseconds
        instead; anything past 10 hours is certainly ms, so treat it as such. */
-    private val seconds get() = data.optDouble("duration", 0.0).let { if (it > 36_000) it / 1000 else it }
-    val durationLabel get() = if (seconds > 0) "%d:%02d".format(seconds.toInt() / 60, seconds.toInt() % 60) else "—"
+    internal val durationSeconds get() = data.optDouble("duration", 0.0).let { if (it > 36_000) it / 1000 else it }
+    val durationLabel get() = if (durationSeconds > 0) "%d:%02d".format(durationSeconds.toInt() / 60, durationSeconds.toInt() % 60) else "—"
 }
 
 data class MusicPlaylist(val id: String, val name: String, val songs: List<Song>, val platform: String = "custom")

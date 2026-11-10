@@ -1109,6 +1109,7 @@ private fun lyricSizesFor(level: String): PlayerLyricSizes = when (level) {
     onSubLyrics: (Boolean) -> Unit = {},
     lyricOffsetMs: Long = 0L,
     onLyricCalibration: (Long) -> Unit = {},
+    playbackSource: Song? = null,
 ) {
     val c = LocalPrismColors.current
     /* The preference is what to ask for; this is what is actually coming out of the speakers,
@@ -1313,6 +1314,7 @@ private fun lyricSizesFor(level: String): PlayerLyricSizes = when (level) {
                 /* One pill, not two. The source and the tier used to sit in separate capsules,
                    each naming the same stream; a separator says it at half the visual weight
                    and keeps the cycle affordance on the whole pill. */
+                val sourceSong = playbackSource ?: song
                 val index = tiers.indexOf(playingTier).takeIf { it >= 0 } ?: tiers.indexOf(quality)
                 val next = if (tiers.size > 1) tiers.getOrNull(index + 1) ?: tiers.first() else null
                 val stream = streamFormat.ifBlank { tierLabel(playingTier) }
@@ -1325,19 +1327,19 @@ private fun lyricSizesFor(level: String): PlayerLyricSizes = when (level) {
                     .border(1.dp, if (next != null) c.accent.copy(alpha = .28f) else c.line.copy(alpha = .7f), RoundedCornerShape(50))
                     .semantics {
                         contentDescription = when {
-                            next != null -> "${song.sourceLabel}，音质 ${tierLabel(playingTier)}，$stream，确定键切换为${tierLabel(next)}"
-                            tiers.isEmpty() -> "${song.sourceLabel}，音质 ${tierLabel(playingTier)}，正在确认可用档位"
-                            else -> "${song.sourceLabel}，音质 ${tierLabel(playingTier)}，该音源只提供这一档"
+                            next != null -> "${sourceSong.sourceLabel}，音质 ${tierLabel(playingTier)}，$stream，确定键切换为${tierLabel(next)}"
+                            tiers.isEmpty() -> "${sourceSong.sourceLabel}，音质 ${tierLabel(playingTier)}，正在确认可用档位"
+                            else -> "${sourceSong.sourceLabel}，音质 ${tierLabel(playingTier)}，该音源只提供这一档"
                         }
                     }
                     .padding(horizontal = 12.dp, vertical = 7.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        PlatformIcon(song.platform, Modifier.size(16.dp))
+                        PlatformIcon(sourceSong.platform, Modifier.size(16.dp))
                         Spacer(Modifier.width(8.dp))
                         /* The tier is a preference; the codec and bitrate are what the decoder
                            actually got. Printing both let "高品" sit next to 128 kbps, which
                            is the duplicate (and the lie) the design called out. */
-                        Text("${song.sourceLabel} · $stream" + if (next != null) "  ⇄" else "",
+                        Text("${sourceSong.sourceLabel} · $stream" + if (next != null) "  ⇄" else "",
                             color = c.accent, fontSize = 11.sp, maxLines = 1)
                     }
                 }
@@ -2148,6 +2150,7 @@ fun PrismMiniPlayer(
        the plain memory/entry routes run. */
     upRestore: (() -> Boolean)? = null,
     onLongPress: (() -> Unit)? = null,
+    playbackSource: Song? = null,
 ) {
     val c = LocalPrismColors.current
     val progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
@@ -2171,7 +2174,7 @@ fun PrismMiniPlayer(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             CoverArt(song, Modifier.size(36.dp), 7.dp)
-            if (song != null) { Spacer(Modifier.width(8.dp)); PlatformIcon(song.platform, Modifier.size(20.dp)) }
+            if (song != null) { Spacer(Modifier.width(8.dp)); PlatformIcon((playbackSource ?: song).platform, Modifier.size(20.dp)) }
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f).focusRequester(openFocus).then(toPageEntry).auraFocus(scale = 1f).clip(RoundedCornerShape(12.dp))
                 .semantics { contentDescription = if (song == null) "搜索音乐" else "打开正在播放" }

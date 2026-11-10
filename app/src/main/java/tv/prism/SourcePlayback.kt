@@ -1,6 +1,9 @@
 package tv.prism
 
 import android.net.Uri
+import android.os.Bundle
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import org.json.JSONObject
 
 data class VideoSource(val url: String, val headers: Map<String, String> = emptyMap())
@@ -13,6 +16,16 @@ fun sourceHeaders(result: JSONObject): Map<String, String> = buildMap {
         }
     }
     result.optString("userAgent").takeIf { it.isNotBlank() && !it.contains('\n') && !it.contains('\r') }?.let { put("User-Agent", it) }
+}
+
+internal fun audioMediaItem(song: Song, source: JSONObject, mediaId: String = ""): MediaItem {
+    val uri = Uri.parse(source.optString("url"))
+    require(uri.scheme in listOf("http", "https") && !uri.host.isNullOrBlank()) { "插件返回了无效播放地址" }
+    val headers = Bundle().apply { sourceHeaders(source).forEach { (key, value) -> putString(key, value) } }
+    val artwork = Uri.parse(song.artwork).takeIf { it.scheme in listOf("http", "https") }
+    val metadata = MediaMetadata.Builder().setTitle(song.title).setArtist(song.artist).setArtworkUri(artwork)
+        .setExtras(Bundle().apply { putBundle("headers", headers) }).build()
+    return MediaItem.Builder().setMediaId(mediaId).setUri(uri).setMediaMetadata(metadata).build()
 }
 
 fun videoSource(result: Any?): VideoSource? {

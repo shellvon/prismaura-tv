@@ -279,10 +279,10 @@ class Plugins(private val context: Context, val client: PluginClient) {
         else storeSource(source, plugin.url, plugin.origin, plugin.id)
     }
 
-    suspend fun mediaSource(plugin: Plugin, song: Song, quality: String): JSONObject? {
+    suspend fun mediaSource(plugin: Plugin, song: Song, quality: String, refresh: Boolean = false): JSONObject? {
         val policy = plugin.metadata.optString("cacheControl", "no-cache")
         val online = (context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)?.activeNetwork != null
-        if (policy == "cache" || (policy == "no-cache" && !online)) mediaCache.read(plugin, song, quality)?.let { return it }
+        if (!refresh && (policy == "cache" || (policy == "no-cache" && !online))) mediaCache.read(plugin, song, quality)?.let { return it }
         val result = client.call(plugin.source, plugin.variables, "getMediaSource", JSONArray().put(song.data).put(quality), plugin.id) as? JSONObject
         if (policy != "no-store" && result != null) {
             try { mediaCache.write(plugin, song, quality, result) }

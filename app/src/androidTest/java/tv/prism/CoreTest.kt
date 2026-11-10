@@ -925,18 +925,21 @@ class CoreTest {
             val song = plugin.song(JSONObject().put("id", "one"))
             server.enqueue(MockResponse().setBody("""{"url":"https://media.example.test/first"}"""))
             server.enqueue(MockResponse().setBody("""{"url":"https://media.example.test/second"}"""))
+            server.enqueue(MockResponse().setBody("""{"url":"https://media.example.test/third"}"""))
             assertEquals("https://media.example.test/first", repository.mediaSource(plugin, song, "standard")!!.getString("url"))
             assertEquals("https://media.example.test/first", repository.mediaSource(plugin, song, "standard")!!.getString("url"))
             assertEquals(1, server.requestCount)
+            assertEquals("https://media.example.test/second", repository.mediaSource(plugin, song, "standard", refresh = true)!!.getString("url"))
+            assertEquals("https://media.example.test/second", repository.mediaSource(plugin, song, "standard")!!.getString("url"))
             val configured = plugin.copy(variables = JSONObject().put("label", "new"))
-            assertEquals("https://media.example.test/second", repository.mediaSource(configured, song, "standard")!!.getString("url"))
-            assertEquals(2, server.requestCount)
+            assertEquals("https://media.example.test/third", repository.mediaSource(configured, song, "standard")!!.getString("url"))
+            assertEquals(3, server.requestCount)
             val replacement = repository.importSource(source.replace("cacheControl:'cache'", "cacheControl:'no-store'")).replacements.single()
             repository.confirmReplacement(replacement)
             val fresh = repository.state.value.plugins.single()
             repeat(2) { server.enqueue(MockResponse().setBody("""{"url":"https://media.example.test/uncached"}""")) }
             repeat(2) { repository.mediaSource(fresh, fresh.song(JSONObject().put("id", "one")), "standard") }
-            assertEquals(4, server.requestCount)
+            assertEquals(5, server.requestCount)
         } finally { server.shutdown() }
     }
 
