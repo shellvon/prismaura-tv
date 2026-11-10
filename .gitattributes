@@ -1,0 +1,3 @@
+docs/** linguist-detectable=false
+site/** linguist-detectable=false
+app/src/main/assets/plugin-runtime.js linguist-generated
