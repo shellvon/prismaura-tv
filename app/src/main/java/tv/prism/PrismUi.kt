@@ -474,9 +474,9 @@ fun prismColors(theme: String): PrismColors = when (theme) {
 @Composable fun AuraSourcePill(count: Int, modifier: Modifier = Modifier) {
     val c = LocalPrismColors.current
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(6.dp).clip(CircleShape).background(if (count > 0) c.accent else c.muted.copy(alpha = .45f)))
-        Spacer(Modifier.width(7.dp))
-        Text(if (count > 0) "$count 个音源已启用" else "未接入音源", color = c.muted, fontSize = 12.sp, maxLines = 1)
+        Box(Modifier.size(3.5.dp).clip(CircleShape).background(if (count > 0) c.accent else c.muted.copy(alpha = .45f)))
+        Spacer(Modifier.width(5.dp))
+        Text(if (count > 0) "$count 个音源已启用" else "未接入音源", color = c.foreground.copy(alpha = .55f), fontSize = 8.5.sp, maxLines = 1)
     }
 }
 
@@ -485,7 +485,23 @@ fun prismColors(theme: String): PrismColors = when (theme) {
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { delay(15_000); now = System.currentTimeMillis() } }
     Text(java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(now)),
-        modifier = modifier, color = c.foreground.copy(alpha = .72f), fontSize = 15.sp, letterSpacing = 1.5.sp, maxLines = 1)
+        modifier = modifier, color = c.foreground.copy(alpha = .7f), fontSize = 9.5.sp, letterSpacing = 1.2.sp, maxLines = 1)
+}
+
+/* 顶栏常驻的手机遥控入口：低权重胶囊，任何页面都在，不占用页面自己的布局。 */
+@Composable fun AuraRemotePill(modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val c = LocalPrismColors.current
+    val shape = RoundedCornerShape(50)
+    Row(modifier.height(30.dp).auraFocus(shape, 1f)
+        .clip(shape)
+        .border(1.dp, c.accent.copy(alpha = .24f), shape)
+        .background(c.accent.copy(alpha = .035f))
+        .clickable(onClick = onClick)
+        .padding(horizontal = 8.5.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.5.dp)) {
+        Glyph("remote", Modifier.size(13.dp), c.muted)
+        Text("手机遥控", color = c.muted, fontSize = 11.sp, maxLines = 1)
+    }
 }
 
 /* An irregular comb of light, not a music visualiser: it stands for the strand the station was
@@ -855,7 +871,7 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
                 drawLine(color, p(.34f, .66f), p(.66f, .66f), w, StrokeCap.Round)
             }
             "list" -> for (y in listOf(.28f, .5f, .72f)) drawLine(color, p(.22f, y), p(.78f, y), w, StrokeCap.Round)
-            "add" -> {
+            "add", "plus" -> {
                 drawLine(color, p(.5f, .2f), p(.5f, .8f), w, StrokeCap.Round)
                 drawLine(color, p(.2f, .5f), p(.8f, .5f), w, StrokeCap.Round)
             }
@@ -982,6 +998,55 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
                 drawLine(color, p(.38f, .46f), p(.55f, .41f), w, StrokeCap.Round)
                 drawLine(color, p(.58f, .63f), p(.84f, .63f), w, StrokeCap.Round)
                 drawLine(color, p(.50f, .82f), p(.84f, .82f), w, StrokeCap.Round)
+            }
+            "palette" -> {
+                drawCircle(color, radius = s * .40f, center = p(.5f, .5f), style = Stroke(w))
+                for (dot in listOf(p(.32f, .52f), p(.41f, .33f), p(.60f, .31f))) drawCircle(color, s * .05f, dot)
+                drawCircle(color, radius = s * .07f, center = p(.62f, .63f), style = Stroke(w * .8f))
+            }
+            "compass" -> {
+                drawCircle(color, radius = s * .42f, center = p(.5f, .5f), style = Stroke(w))
+                drawPath(path {
+                    moveTo(s * .66f, s * .34f); lineTo(s * .57f, s * .57f); lineTo(s * .34f, s * .66f); lineTo(s * .43f, s * .43f); close()
+                }, color, style = Stroke(w * .9f, join = StrokeJoin.Round))
+            }
+            "layers" -> {
+                drawPath(path {
+                    moveTo(s * .5f, s * .14f); lineTo(s * .86f, s * .34f); lineTo(s * .5f, s * .54f); lineTo(s * .14f, s * .34f); close()
+                }, color, style = Stroke(w, join = StrokeJoin.Round))
+                drawPath(path { moveTo(s * .14f, s * .52f); lineTo(s * .5f, s * .72f); lineTo(s * .86f, s * .52f) },
+                    color, style = Stroke(w, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                drawPath(path { moveTo(s * .14f, s * .68f); lineTo(s * .5f, s * .88f); lineTo(s * .86f, s * .68f) },
+                    color, style = Stroke(w, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            }
+            "info" -> {
+                drawCircle(color, radius = s * .42f, center = p(.5f, .5f), style = Stroke(w))
+                drawLine(color, p(.5f, .46f), p(.5f, .68f), w, StrokeCap.Round)
+                drawCircle(color, s * .045f, p(.5f, .32f))
+            }
+            "chev" -> drawPath(path {
+                moveTo(s * .26f, s * .38f); lineTo(s * .5f, s * .62f); lineTo(s * .74f, s * .38f)
+            }, color, style = Stroke(w, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            "refresh" -> {
+                drawArc(color, startAngle = -90f, sweepAngle = -285f, useCenter = false,
+                    topLeft = p(.18f, .18f), size = Size(s * .64f, s * .64f), style = Stroke(w, cap = StrokeCap.Round))
+                val tip = p(.82f, .41f)
+                drawLine(color, tip, Offset(tip.x - s * .13f, tip.y - s * .12f), w, StrokeCap.Round)
+                drawLine(color, tip, Offset(tip.x - s * .12f, tip.y + s * .12f), w, StrokeCap.Round)
+            }
+            "link" -> {
+                drawArc(color, startAngle = 40f, sweepAngle = 200f, useCenter = false,
+                    topLeft = p(.24f, .24f), size = Size(s * .26f, s * .52f), style = Stroke(w, cap = StrokeCap.Round))
+                drawArc(color, startAngle = 220f, sweepAngle = 200f, useCenter = false,
+                    topLeft = p(.50f, .24f), size = Size(s * .26f, s * .52f), style = Stroke(w, cap = StrokeCap.Round))
+            }
+            "remote" -> {
+                drawRoundRect(color, topLeft = p(.29f, .10f), size = Size(s * .42f, s * .80f),
+                    cornerRadius = CornerRadius(s * .13f), style = Stroke(w))
+                drawCircle(color, radius = s * .07f, center = p(.5f, .32f), style = Stroke(w))
+                drawLine(color, p(.42f, .52f), p(.58f, .52f), w, StrokeCap.Round)
+                drawLine(color, p(.42f, .64f), p(.58f, .64f), w, StrokeCap.Round)
+                drawLine(color, p(.42f, .76f), p(.58f, .76f), w, StrokeCap.Round)
             }
         }
     }
@@ -1670,23 +1735,27 @@ private fun StandbyLyrics(lyrics: List<LyricLine>, active: Int, status: String, 
 }
 
 /* 统一的开关行：整行聚焦、确定键切换，胶囊滑块左右滑动；减少动效时直接到位。
-   新版本提醒、播放条歌词、减少动效、翻译注音共用这一种样式。 */
+   新版本提醒、播放条歌词、减少动效、翻译注音共用这一种样式。
+   panel=false 时去掉自带底衬，嵌进设置分组卡片里。 */
 @Composable
 internal fun PrismSwitchRow(
     label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit,
-    modifier: Modifier = Modifier, description: String? = null,
+    modifier: Modifier = Modifier, description: String? = null, panel: Boolean = true,
 ) {
     val c = LocalPrismColors.current
     val shape = RoundedCornerShape(12.dp)
-    Row(modifier.fillMaxWidth().auraFocus(shape, 1f)
-        .clip(shape).background(c.panel)
-        .border(1.dp, c.line.copy(alpha = .35f), shape)
+    Row(modifier.fillMaxWidth().heightIn(min = 48.dp).auraFocus(shape, 1f, ring = c.foreground)
+        .clip(shape)
         .toggleable(checked, role = Role.Switch, onValueChange = onCheckedChange)
-        .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(label, color = c.foreground, fontSize = 14.sp)
-            if (description != null) Text(description, color = c.muted, fontSize = 12.sp)
+        .then(if (panel) Modifier.background(c.panel).border(1.dp, c.line.copy(alpha = .35f), shape)
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+        else Modifier.padding(horizontal = 6.dp, vertical = 8.dp)),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.5.dp)) {
+            Text(label, color = c.foreground, fontSize = if (panel) 16.sp else 12.sp,
+                lineHeight = if (panel) 22.sp else 16.sp, fontWeight = FontWeight.Medium)
+            if (description != null) Text(description, color = c.muted, fontSize = if (panel) 12.sp else 10.sp,
+                lineHeight = if (panel) 18.sp else 14.sp)
         }
         PrismCapsule(checked)
     }
@@ -1698,12 +1767,163 @@ internal fun PrismCapsule(checked: Boolean) {
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
     val t by animateFloatAsState(if (checked) 1f else 0f, tween(if (motion) 180 else 0), label = "capsule switch")
-    Box(Modifier.size(44.dp, 24.dp).clip(RoundedCornerShape(50))
-        .background(lerp(c.background, c.accent, t))
-        .border(1.dp, lerp(c.line, Color.Transparent, t), RoundedCornerShape(50)),
+    Box(Modifier.size(42.dp, 22.dp).clip(RoundedCornerShape(50))
+        .background(Brush.verticalGradient(listOf(
+            lerp(c.foreground.copy(alpha = .09f), lerp(c.accent, Color.White, .05f), t),
+            lerp(c.foreground.copy(alpha = .09f), lerp(c.accent, c.glow, .35f), t))))
+        .border(1.dp, lerp(c.foreground.copy(alpha = .09f), c.accent.copy(alpha = .75f), t), RoundedCornerShape(50)),
         contentAlignment = Alignment.CenterStart) {
-        Box(Modifier.padding(start = 3.dp).offset(x = 20.dp * t).size(18.dp)
+        Box(Modifier.padding(start = 2.dp).offset(x = 20.dp * t).size(17.dp)
             .clip(CircleShape).background(lerp(c.muted, c.onAccent, t)))
+    }
+}
+
+/* 分组容器不参与聚焦，焦点由里面的实际控件持有。 */
+@Composable
+internal fun SettingsCard(
+    title: String? = null, hint: String? = null,
+    modifier: Modifier = Modifier, tight: Boolean = false, content: @Composable ColumnScope.() -> Unit,
+) {
+    val c = LocalPrismColors.current
+    val shape = RoundedCornerShape(12.dp)
+    Column(modifier.fillMaxWidth().clip(shape)
+        .background(Brush.verticalGradient(listOf(lerp(c.panel, c.glow, .055f), lerp(c.background, c.glow, .05f))))
+        .border(1.dp, c.accent.copy(alpha = .16f), shape)
+        .padding(horizontal = if (tight) 12.dp else 14.dp, vertical = if (tight) 8.dp else 10.dp)) {
+        if (title != null) {
+            Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(title, Modifier.weight(1f), color = c.foreground, fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium)
+                if (hint != null) Text(hint, color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
+            }
+            SettingsDivider()
+            Spacer(Modifier.height(3.dp))
+        }
+        content()
+    }
+}
+
+@Composable
+internal fun SettingsDivider() {
+    val c = LocalPrismColors.current
+    Box(Modifier.fillMaxWidth().height(1.dp).background(c.foreground.copy(alpha = .05f)))
+}
+
+/* 设置行的焦点由右侧控件持有；开关使用整行可操作的 PrismSwitchRow。 */
+@Composable
+internal fun SettingsRow(
+    label: String, description: String? = null, labelDim: Boolean = false,
+    modifier: Modifier = Modifier, control: @Composable RowScope.() -> Unit,
+) {
+    val c = LocalPrismColors.current
+    Row(modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.5.dp)) {
+            Text(label, color = if (labelDim) c.muted else c.foreground,
+                fontSize = 12.sp, lineHeight = 16.sp,
+                fontWeight = if (labelDim) FontWeight.Normal else FontWeight.Medium)
+            if (description != null) Text(description, color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
+        }
+        control()
+    }
+}
+
+/* 左右键调整当前值；在最左端继续按左可返回侧栏。 */
+@Composable
+internal fun <T> SettingsSeg(
+    options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier, entry: Modifier = Modifier,
+) {
+    val c = LocalPrismColors.current
+    val shape = RoundedCornerShape(9.dp)
+    var focused by remember { mutableStateOf(false) }
+    Row(modifier.then(entry)
+        .onFocusChanged { focused = it.isFocused }
+        .onPreviewKeyEvent { event ->
+            if (event.type == KeyEventType.KeyDown) {
+                val index = options.indexOfFirst { it.first == selected }
+                when (event.key) {
+                    Key.DirectionLeft -> if (index > 0) { onSelect(options[index - 1].first); true } else false
+                    Key.DirectionRight -> { if (index < options.lastIndex) onSelect(options[index + 1].first); true }
+                    else -> false
+                }
+            } else false
+        }.focusable().clip(shape).background(c.foreground.copy(alpha = .035f))
+        .border(if (focused) 2.dp else 1.dp, if (focused) c.foreground else c.line.copy(alpha = .65f), shape)
+        .padding(5.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            options.forEach { (value, label) ->
+                val on = value == selected
+                val cell = RoundedCornerShape(5.dp)
+                Box(Modifier.height(32.dp).widthIn(min = 54.dp)
+                    .clip(cell)
+                    .background(if (on) c.accent else Color.Transparent)
+                    .focusProperties { canFocus = false }
+                    .clickable { onSelect(value) }
+                    .semantics { this.selected = on }
+                    .padding(horizontal = 10.dp),
+                    contentAlignment = Alignment.Center) {
+                    Text(label, color = if (on) c.onAccent else c.muted, fontSize = 12.sp, lineHeight = 16.sp,
+                        fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
+                }
+            }
+    }
+}
+
+/* 金底和对勾表示启用；焦点环与填色之间始终留出间隔。 */
+@Composable
+internal fun SettingsChip(label: String, checked: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val c = LocalPrismColors.current
+    val shape = RoundedCornerShape(6.dp)
+    Row(modifier.auraFocus(RoundedCornerShape(10.dp), 1f, ring = c.foreground)
+        .clip(RoundedCornerShape(10.dp)).clickable(onClick = onClick)
+        .padding(4.dp).height(32.dp)
+        .clip(shape)
+        .then(if (checked) Modifier.background(Brush.verticalGradient(listOf(c.accent, lerp(c.accent, c.glow, .35f))))
+            else Modifier.border(1.dp, c.foreground.copy(alpha = .10f), shape))
+        .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.5.dp)) {
+        if (checked) Glyph("check", Modifier.size(8.dp), c.onAccent)
+        Text(label, color = if (checked) c.onAccent else c.muted, fontSize = 12.sp,
+            fontWeight = if (checked) FontWeight.Medium else FontWeight.Normal, maxLines = 1)
+    }
+}
+
+/* 设置侧栏条目：选中 = 横向金色渐变 + 左侧金条。 */
+@Composable
+internal fun SettingsRailItem(label: String, icon: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val c = LocalPrismColors.current
+    val shape = RoundedCornerShape(8.dp)
+    Box(modifier.fillMaxWidth().height(42.dp).auraFocus(shape, 1f)
+        .clip(shape)
+        .then(if (selected) Modifier.background(Brush.horizontalGradient(listOf(c.accent.copy(alpha = .17f), c.accent.copy(alpha = .05f), Color.Transparent))) else Modifier)
+        .clickable(onClick = onClick)) {
+        if (selected) Box(Modifier.align(Alignment.CenterStart).padding(start = 1.dp).size(2.dp, 23.dp).background(c.accent))
+        Row(Modifier.fillMaxSize().padding(start = 11.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Glyph(icon, Modifier.size(15.dp), if (selected) c.accent else c.muted)
+            Text(label, color = if (selected) c.foreground else c.muted, fontSize = 13.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+        }
+    }
+}
+
+/* 设置页的主要与次要操作。 */
+@Composable
+internal fun SettingsButton(
+    label: String, onClick: () -> Unit, modifier: Modifier = Modifier,
+    primary: Boolean = false, icon: String? = null,
+) {
+    val c = LocalPrismColors.current
+    val shape = RoundedCornerShape(7.dp)
+    val contentColor = if (primary) c.onAccent else c.accent
+    Row(modifier.height(34.dp).auraFocus(shape, 1f)
+        .clip(shape)
+        .then(if (primary) Modifier.background(Brush.verticalGradient(listOf(lerp(c.accent, Color.White, .05f), lerp(c.accent, c.glow, .35f))))
+            else Modifier.background(c.accent.copy(alpha = .05f)).border(1.dp, c.accent.copy(alpha = .30f), shape))
+        .clickable(onClick = onClick)
+        .padding(horizontal = 13.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        if (icon != null) Glyph(icon, Modifier.size(13.dp), contentColor)
+        Text(label, color = contentColor, fontSize = 12.sp,
+            fontWeight = if (primary) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
     }
 }
 
@@ -1771,7 +1991,7 @@ private fun LyricStrip(
             Text("无时间轴，无法校准", color = c.muted, fontSize = 12.sp)
         }
         Spacer(Modifier.width(8.dp))
-        Row(Modifier.auraFocus(RoundedCornerShape(50), 1.04f).clip(RoundedCornerShape(50))
+        Row(Modifier.auraFocus(RoundedCornerShape(50), 1f, ring = c.foreground).clip(RoundedCornerShape(50))
             .then(upToRail)
             .onFocusChanged { if (it.isFocused) onFocusHint("翻译与注音 · ${if (subLyrics) "显示" else "隐藏"}") }
             .toggleable(subLyrics, role = Role.Switch, onValueChange = onSubLyrics)
@@ -2125,15 +2345,41 @@ fun PrismHero(
     }
 }
 
+/* 对勾表示正在使用的主题，焦点环只跟随遥控器选中的单张卡片。 */
 @Composable fun AuraThemeCard(label: String, subtitle: String, colors: PrismColors, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = LocalPrismColors.current
-    Column(modifier.auraFocus().clip(RoundedCornerShape(12.dp)).background(colors.background)
-        .border(1.dp, if (selected) c.accent else c.line, RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(14.dp)) {
-        CompositionLocalProvider(LocalPrismColors provides colors) { AuraMark(Modifier.size(54.dp)) }
-        Spacer(Modifier.height(8.dp))
-        Text(label + if (selected) " · 已选" else "", color = colors.foreground, fontSize = 14.sp)
-        Spacer(Modifier.height(5.dp))
-        Text(subtitle, color = colors.muted, fontSize = 12.sp)
+    val shape = RoundedCornerShape(10.dp)
+    Column(modifier.auraFocus(shape, 1f).clip(shape)
+        .background(if (selected) c.accent.copy(alpha = .07f) else c.background.copy(alpha = .5f))
+        .border(1.dp, if (selected) c.accent.copy(alpha = .65f) else c.line.copy(alpha = .6f), shape)
+        .semantics { this.selected = selected }
+        .clickable(onClick = onClick)
+    ) {
+        Box(Modifier.fillMaxWidth().height(54.dp).background(colors.background)) {
+            Canvas(Modifier.align(Alignment.Center).size(18.dp)) {
+                val prism = Path().apply {
+                    moveTo(size.width / 2, size.height * .16f)
+                    lineTo(size.width * .17f, size.height * .84f)
+                    lineTo(size.width * .83f, size.height * .84f)
+                    close()
+                }
+                drawPath(prism, colors.accent, style = Stroke(1.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+            }
+            Column(Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 5.dp)) {
+                Box(Modifier.size(35.dp, 2.dp).background(colors.accent.copy(alpha = .34f)))
+                Spacer(Modifier.height(3.dp))
+                Box(Modifier.size(21.dp, 2.dp).background(colors.accent.copy(alpha = .18f)))
+            }
+            if (selected) Box(Modifier.align(Alignment.TopEnd).padding(7.dp).size(14.dp).clip(CircleShape).background(c.accent),
+                contentAlignment = Alignment.Center) {
+                Glyph("check", Modifier.size(9.dp), c.onAccent)
+            }
+        }
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(label, color = c.foreground, fontSize = 12.sp, lineHeight = 16.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium, maxLines = 1)
+            Text(subtitle, color = c.muted, fontSize = 10.sp, lineHeight = 14.sp, maxLines = 1)
+        }
     }
 }
 

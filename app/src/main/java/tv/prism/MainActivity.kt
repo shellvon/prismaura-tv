@@ -22,6 +22,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -35,6 +36,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -52,6 +55,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -62,6 +66,7 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
@@ -1115,18 +1120,41 @@ class MainActivity : ComponentActivity() {
         var open by remember { mutableStateOf(false) }
         val current = options.firstOrNull { it.id == selected } ?: options.firstOrNull()
         Box {
-            PrismAction("${current?.displayName ?: "暂无支持此能力的音源"} ▾", { open = true }, modifier)
-            if (open) Popup(alignment = Alignment.TopStart, offset = IntOffset(0, with(LocalDensity.current) { 52.dp.roundToPx() }),
+            /* 选择音源只影响对应的推荐或榜单。 */
+            Row(modifier.height(34.dp).auraFocus(RoundedCornerShape(7.dp), 1f)
+                .clip(RoundedCornerShape(7.dp))
+                .border(1.dp, c.accent.copy(alpha = .24f), RoundedCornerShape(7.dp))
+                .background(c.accent.copy(alpha = .055f))
+                .clickable { open = true }
+                .padding(start = 11.dp, end = 9.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                Text(current?.displayName ?: "暂无支持此能力的音源", color = c.foreground.copy(alpha = .9f), fontSize = 12.sp, maxLines = 1)
+                Glyph("chev", Modifier.size(10.dp), lerp(c.accent, c.glow, .5f))
+            }
+            if (open) Popup(alignment = Alignment.TopEnd, offset = IntOffset(0, with(LocalDensity.current) { 38.dp.roundToPx() }),
                 onDismissRequest = { open = false }, properties = PopupProperties(focusable = true)) {
                 val focus = remember { FocusRequester() }
+                val entryIndex = options.indexOfFirst { it.id == current?.id }.coerceAtLeast(0)
                 LaunchedEffect(Unit) { withFrameNanos { }; runCatching { focus.requestFocus() } }
-                Column(Modifier.width(260.dp).heightIn(max = 280.dp).background(c.panel)
-                    .border(1.dp, c.line).verticalScroll(rememberScrollState()).padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (options.isEmpty()) PrismAction("暂无支持的音源 · 返回", { open = false }, Modifier.focusRequester(focus))
+                val menuShape = RoundedCornerShape(12.dp)
+                Column(Modifier.width(268.dp).heightIn(max = 280.dp).clip(menuShape).background(c.panel)
+                    .border(1.dp, c.line, menuShape).padding(6.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (options.isEmpty()) SettingsButton("暂无支持的音源 · 返回", { open = false }, Modifier.fillMaxWidth().focusRequester(focus))
                     options.forEachIndexed { index, plugin ->
-                        PlatformAction(plugin.platform, "${if (plugin.id == current?.id) "✓ " else ""}${plugin.displayName}",
-                            modifier = if (index == 0) Modifier.focusRequester(focus) else Modifier) {
-                            onSelect(plugin); open = false
+                        val chosen = plugin.id == current?.id
+                        val rowShape = RoundedCornerShape(8.dp)
+                        Row(Modifier.fillMaxWidth().heightIn(min = 42.dp)
+                            .then(if (index == entryIndex) Modifier.focusRequester(focus) else Modifier)
+                            .auraFocus(rowShape, 1f).clip(rowShape)
+                            .background(if (chosen) c.accent.copy(alpha = .12f) else Color.Transparent)
+                            .selectable(chosen, role = Role.RadioButton, onClick = { onSelect(plugin); open = false })
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            PlatformIcon(plugin.platform, Modifier.size(22.dp))
+                            Text(plugin.displayName, Modifier.weight(1f), color = c.foreground,
+                                fontSize = 14.sp, lineHeight = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (chosen) Glyph("check", Modifier.size(14.dp), c.accent)
                         }
                     }
                 }
@@ -1794,6 +1822,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @OptIn(ExperimentalLayoutApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
     @Composable private fun Screen() {
         val state by plugins.state.collectAsState()
         val updateState by appUpdates.state.collectAsState()
@@ -1863,7 +1892,6 @@ class MainActivity : ComponentActivity() {
            against items the remote never chose. */
         LaunchedEffect(selectedList) { libraryManage = false; librarySelected = emptySet(); confirmBatchOpen = false }
         var searchFiltersOpen by remember { mutableStateOf(false) }
-        var shelvesMenuOpen by remember { mutableStateOf(false) }
         var statusVisible by remember { mutableStateOf(false) }
         val statusNotice = status.takeUnless {
             it.startsWith("正在播放") || it.startsWith("正在解析") || it.startsWith("已暂停") || it.startsWith("上次听到") || it == "播放完毕"
@@ -2276,15 +2304,13 @@ class MainActivity : ComponentActivity() {
         /* A chart keeps its scroll while a detail opened from one of its rows is on screen. */
         val chartSongListState = remember(chartSelection) { LazyListState() }
         val pluginsFocus = remember { FocusRequester() }
+        val remotePillFocus = remember { FocusRequester() }
         /* The settings content scrolls, which makes it a separate focus space: a directional
            search from the rail never reaches it, so the rail<->content edges are declared. */
-        /* Rail order in one place: Down from the banner enters the rail at its top, so the list
+        /* Rail order in one place: Down from 设置 enters the rail at its top, so the list
            the remote walks and the map of anchors cannot drift apart. */
         val settingsSections = remember { listOf("外观", "推荐", "音源", "播放", "关于") }
         val sectionFocus = remember { mapOf("外观" to FocusAnchor(), "推荐" to FocusAnchor(), "音源" to FocusAnchor(), "播放" to FocusAnchor(), "关于" to FocusAnchor()) }
-        /* The phone-remote banner sits between the bar and the rail. Down from 设置 lands on
-           its QR button, so the page's first stop is the thing that needs a keyboard. */
-        val bannerFocus = remember { FocusAnchor() }
         val sourceActionFocus = remember { FocusAnchor() }
         val sectionEntryFocus = remember { mapOf("外观" to FocusAnchor(), "推荐" to FocusAnchor(), "音源" to sourceActionFocus, "播放" to FocusAnchor(), "关于" to FocusAnchor()) }
         val configEntryFocus = remember { FocusAnchor() }
@@ -2301,7 +2327,7 @@ class MainActivity : ComponentActivity() {
             "home" -> if (showUpdatePrompt) updatePromptFocus else heroFocus
             "search" -> searchInputFocus
             "library" -> if (selectedPlaylist != null) playlistBackFocus else libraryTabs[libraryTabKey]
-            "plugins" -> if (configured == null) bannerFocus else configEntryFocus
+            "plugins" -> if (configured == null) sectionFocus.getValue(settingsSections.first()) else configEntryFocus
             "discover" -> when {
                 browseItem != null -> detailHeaderFocus
                 chartSelection != null -> discoverEntryFocus.takeIf { chartSongs.isNotEmpty() }
@@ -2338,8 +2364,9 @@ class MainActivity : ComponentActivity() {
         /* Moving along the top bar previews each page; only leaving the bar hands focus to the
            body. Without this, the page focus effect and the preview would fight each other. */
         var navBarFocused by remember { mutableStateOf(false) }
+        var remotePillFocused by remember { mutableStateOf(false) }
         /* Settings rows remember themselves here; the mini player's Up returns to the last
-           one instead of the page entry (the banner). */
+           one instead of the page entry (the rail). */
         val bodyFocusMemory = remember { mutableStateOf<FocusRequester?>(null) }
         LaunchedEffect(configured, settingsSection) { bodyFocusMemory.value = null }
         /* A TV tab bar previews the page the highlight lands on; OK only hands focus to the
@@ -2501,7 +2528,7 @@ class MainActivity : ComponentActivity() {
             if (page != "search") focusSearchResults = false
             /* The bar already owns focus while previewing; moving it now would stop the user
                from continuing left/right along the tabs. */
-            if (navBarFocused) return@LaunchedEffect
+            if (navBarFocused || remotePillFocused) return@LaunchedEffect
             /* Back from a detail restores the card that opened it; that effect owns focus. */
             if (pendingReturnFocus.isNotBlank()) return@LaunchedEffect
             withFrameNanos { }
@@ -2515,7 +2542,7 @@ class MainActivity : ComponentActivity() {
                 /* Opening 我的 from 设置 should land on the list tab that is lit, not on the
                    bar's copy of it — otherwise the highlight and the remote disagree. */
                 "library" -> if (selectedPlaylist != null) playlistBackFocus.requestIfAttached() else libraryTabs[libraryTabKey].requestIfAttached()
-                "plugins" -> if (configured == null) bannerFocus.requestIfAttached() else configEntryFocus.requestIfAttached()
+                "plugins" -> if (configured == null) sectionFocus.getValue(settingsSections.first()).requestIfAttached() else configEntryFocus.requestIfAttached()
             }
         }
         /* 发现 swaps between the chart grid and two lists. Swapping recomposes away the node that
@@ -2829,14 +2856,24 @@ class MainActivity : ComponentActivity() {
                                Right press. */
                             if (state.hasFocus) pageScope.launch {
                                 withFrameNanos { }
-                                if (navBarFocused) navTabs.firstOrNull { it.first == page }?.second?.requestFocus()
+                                if (navBarFocused && !remotePillFocused) navTabs.firstOrNull { it.first == page }?.second?.requestFocus()
                             }
                         }
                         .onPreviewKeyEvent { event ->
                             if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                             val step = when (event.key) { Key.DirectionLeft -> -1; Key.DirectionRight -> 1; else -> return@onPreviewKeyEvent false }
+                            /* The remote pill is the bar's right end but an action, not a page:
+                               Left returns to the current tab without previewing; Right is a wall. */
+                            if (remotePillFocused) {
+                                if (step < 0) navTabs.firstOrNull { it.first == page }?.second?.requestFocus()
+                                return@onPreviewKeyEvent true
+                            }
                             val index = navTabs.indexOfFirst { it.first == page }
-                            val next = navTabs.getOrNull(index + step) ?: return@onPreviewKeyEvent index >= 0
+                            val next = navTabs.getOrNull(index + step)
+                            if (next == null) {
+                                if (step > 0 && index == navTabs.lastIndex) remotePillFocus.requestFocus()
+                                return@onPreviewKeyEvent index >= 0
+                            }
                             page = next.first
                             next.second.requestFocus()
                             true
@@ -2849,8 +2886,15 @@ class MainActivity : ComponentActivity() {
                         PrismNav("发现", page == "discover", { enterPage("discover") }, navModifier(discoverFocus))
                         PrismNav("设置", page == "plugins", { enterPage("plugins") }, navModifier(pluginsFocus))
                         Spacer(Modifier.weight(1f))
+                        AuraRemotePill(Modifier.focusRequester(remotePillFocus)
+                            .onFocusChanged { remotePillFocused = it.isFocused }
+                            .focusProperties { pageEntryFocus?.takeIf { it.attached }?.let { down = it.requester } },
+                            onClick = { openPhoneHub() })
+                        Spacer(Modifier.width(12.dp))
                         AuraSourcePill(activePlugins.size)
-                        Spacer(Modifier.width(24.dp))
+                        Spacer(Modifier.width(12.dp))
+                        Box(Modifier.width(0.5.dp).height(9.dp).background(c.foreground.copy(alpha = .12f)))
+                        Spacer(Modifier.width(12.dp))
                         AuraClock()
                     }
                     Spacer(Modifier.height(18.dp))
@@ -4136,6 +4180,9 @@ class MainActivity : ComponentActivity() {
                             else -> {
                                 val selected = state.plugins.firstOrNull { it.id == configured }
                                 val settingsScroll = rememberScrollState()
+                                /* Each section starts at its own top: a scroll position carried
+                                   across would hide the new section's header and entry row. */
+                                LaunchedEffect(settingsSection) { settingsScroll.scrollTo(0) }
                                 if (selected != null) PluginConfig(selected, configEntryFocus, bodyFocusMemory, onBack = closeConfig)
                                 else Column(Modifier.fillMaxSize()) {
                                     /* The rail and the panel are separate focus spaces, so a
@@ -4164,65 +4211,13 @@ class MainActivity : ComponentActivity() {
                                         if (anchor.attached) left = anchor.requester
                                         up = pluginsFocus
                                     }.then(entryUpScrollsBack)
-                                    /* Down lands on the section rail, not inside the panel.
-                                       The rail is where 外观/推荐/音源 live; dropping straight
-                                       into the content skipped it, which read as "the tabs are
-                                       unreachable" even though Left could find them. Right from
-                                       the rail, or OK on it, enters the open section. */
-                                    val bannerDown = Modifier.focusProperties {
-                                        val anchor = sectionFocus.getValue(settingsSection)
-                                        /* Down walks into the rail from its first entry: jumping straight to
-                                           whichever section is lit made the top of the list look unreachable.
-                                           Left still lands on the lit one so the bar-style horizontal preview
-                                           keeps working. */
-                                        val entry = sectionFocus.getValue(settingsSections.first())
-                                        if (entry.attached) down = entry.requester
-                                        if (anchor.attached) left = anchor.requester
-                                        up = pluginsFocus
-                                    }
-                                    /* The phone is the real keyboard for this app. Put the door to it at
-                                       the top of the page instead of burying it inside 外观. The whole
-                                       banner is the focus target: a 40 dp icon was the only thing the
-                                       ring could reach, which read as a decoration rather than a door. */
-                                    var bannerFocused by remember { mutableStateOf(false) }
-                                    val bannerLight by animateFloatAsState(if (bannerFocused) 1f else 0f,
-                                        tween(if (LocalAuraMotion.current) 170 else 0), label = "remote banner")
-                                    val bannerShape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)
-                                    Row(Modifier.fillMaxWidth().padding(bottom = 14.dp).focusAnchor(bannerFocus)
-                                        .onFocusChanged { bannerFocused = it.isFocused }
-                                        /* focusProperties only steers the focus target that
-                                           follows it. Applying it after `clickable` left the
-                                           banner on the geometric search, which dropped Down
-                                           into the panel and made the rail look unreachable. */
-                                        .then(bannerDown)
-                                        .clip(bannerShape)
-                                        .background(Brush.horizontalGradient(listOf(
-                                            c.accent.copy(alpha = .16f + .10f * bannerLight),
-                                            c.panel.copy(alpha = .55f + .10f * bannerLight),
-                                            c.panel.copy(alpha = .2f),
-                                        )))
-                                        .border(if (bannerLight > .5f) 2.dp else 1.dp,
-                                            c.accent.copy(alpha = .22f + .5f * bannerLight), bannerShape)
-                                        .clickable { openPhoneHub() }
-                                        .padding(horizontal = 18.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Box(Modifier.size(30.dp).clip(bannerShape).background(c.accent.copy(alpha = .16f)), contentAlignment = Alignment.Center) {
-                                            Text("⌁", color = c.accent, fontSize = 17.sp)
-                                        }
-                                        Spacer(Modifier.width(12.dp))
-                                        Column(Modifier.weight(1f)) {
-                                            Text("手机遥控", color = c.foreground, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                                            Text("同一 Wi-Fi 扫码：遥控播放、管理音源、搜索与换主题", color = c.muted, fontSize = 12.sp, maxLines = 1)
-                                        }
-                                        Spacer(Modifier.width(12.dp))
-                                        Box(Modifier.size(40.dp).clip(androidx.compose.foundation.shape.CircleShape)
-                                            .background(if (bannerFocused) c.accent else c.panel), contentAlignment = Alignment.Center) {
-                                            Glyph("qr", Modifier.size(18.dp), if (bannerFocused) c.onAccent else c.foreground.copy(alpha = .82f))
-                                        }
-                                    }
-                                    Row(Modifier.weight(1f).fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                                    Column(Modifier.width(130.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                        settingsSections.forEach { section ->
-                                            PrismNav(section, settingsSection == section, {
+                                    Row(Modifier.weight(1f).fillMaxWidth().padding(top = 5.dp), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
+                                    Column(Modifier.width(150.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                        Text("设置", color = c.accent.copy(alpha = .5f), fontSize = 10.sp, lineHeight = 14.sp, letterSpacing = 2.4.sp,
+                                            modifier = Modifier.padding(start = 11.dp, bottom = 8.dp))
+                                        val railIcons = listOf("palette", "compass", "layers", "play", "info")
+                                        settingsSections.forEachIndexed { index, section ->
+                                            SettingsRailItem(section, railIcons[index], settingsSection == section, {
                                                 settingsSection = section
                                                 /* The panel for the new section is composed in
                                                    the next frame. Ask for its first control by
@@ -4236,7 +4231,7 @@ class MainActivity : ComponentActivity() {
                                                     focusManager.moveFocus(FocusDirection.Right)
                                                 }
                                             },
-                                                Modifier.fillMaxWidth().focusAnchor(sectionFocus.getValue(section))
+                                                Modifier.focusAnchor(sectionFocus.getValue(section))
                                                     /* Same contract as the top bar: the panel changes
                                                        with the highlight, so one press both previews
                                                        and selects. */
@@ -4246,6 +4241,7 @@ class MainActivity : ComponentActivity() {
                                                     .focusProperties {
                                                         val entry = sectionEntryFocus.getValue(section)
                                                         if (section == settingsSection && entry.attached) right = entry.requester
+                                                        if (index == 0) up = pluginsFocus
                                                     }
                                                     /* An unselected section's content isn't on
                                                        screen yet: Right would find no candidate
@@ -4253,69 +4249,78 @@ class MainActivity : ComponentActivity() {
                                                     .onPreviewKeyEvent {
                                                         it.type == KeyEventType.KeyDown && it.key == Key.DirectionRight &&
                                                             section != settingsSection
-                                                    }, dense = true)
+                                                    })
                                         }
                                     }
-                                    Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(settingsScroll), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(settingsScroll), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     if (settingsSection == "外观") {
-                                    Text("主题", fontSize = 18.sp, color = c.foreground)
-                                    Text("三种光线，同一种专注", color = c.muted, fontSize = 12.sp)
-                                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                        listOf(Triple("gold", "极夜暖金", "温暖、沉浸"), Triple("porcelain", "晨光白瓷", "明亮、柔和"), Triple("mono", "静谧黑白", "纯粹、克制")).forEachIndexed { index, (value, label, detail) ->
-                                            AuraThemeCard(label, detail, prismColors(value), theme == value, {
-                                                theme = value; getSharedPreferences("appearance", MODE_PRIVATE).edit().putString("theme", value).apply()
-                                            }, if (index == 0) Modifier.weight(1f).focusAnchor(sectionEntryFocus.getValue("外观")).then(entryEdge).rememberFocus(bodyFocusMemory) else Modifier.weight(1f).rememberFocus(bodyFocusMemory))
+                                    val themes = listOf(Triple("gold", "极夜暖金", "温暖、沉浸"), Triple("porcelain", "晨光白瓷", "明亮、柔和"), Triple("mono", "静谧黑白", "纯粹、克制"))
+                                    fun pickTheme(value: String) {
+                                        theme = value
+                                        getSharedPreferences("appearance", MODE_PRIVATE).edit().putString("theme", value).apply()
+                                    }
+                                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                        Text("外观", fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, color = c.foreground)
+                                        Text("左右选择主题，按确定应用", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
+                                    }
+                                    SettingsCard("主题", "当前使用 ${themes.first { it.first == theme }.second}", tight = true) {
+                                        val themeTargets = remember { themes.map { FocusRequester() } }
+                                        Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                            themes.forEachIndexed { index, (value, label, detail) ->
+                                                AuraThemeCard(label, detail, prismColors(value), theme == value, { pickTheme(value) },
+                                                    Modifier.weight(1f).focusRequester(themeTargets[index])
+                                                        .then(if (theme == value) Modifier.focusAnchor(sectionEntryFocus.getValue("外观")) else Modifier)
+                                                        .focusProperties {
+                                                            left = if (index > 0) themeTargets[index - 1] else sectionFocus.getValue("外观").requester
+                                                            right = themeTargets.getOrNull(index + 1) ?: FocusRequester.Cancel
+                                                            up = pluginsFocus
+                                                        }
+                                                        .then(entryUpScrollsBack).rememberFocus(bodyFocusMemory))
+                                            }
                                         }
                                     }
-                                    PrismSwitchRow("播放条歌词", showMiniLyrics, {
-                                        showMiniLyrics = it
-                                        getSharedPreferences("appearance", MODE_PRIVATE).edit().putBoolean("mini_lyrics", it).apply()
-                                    }, edgeToRail.rememberFocus(bodyFocusMemory), description = "迷你播放条显示当前歌词")
-                                    PrismSwitchRow("减少动态效果", reduceMotion, {
-                                        reduceMotion = it
-                                        getSharedPreferences("appearance", MODE_PRIVATE).edit().putBoolean("reduce_motion", it).apply()
-                                    }, Modifier.rememberFocus(bodyFocusMemory), description = "关闭环境光流动与过渡动画")
+                                    SettingsCard("播放界面", "影响全屏播放页与底部播放条", tight = true) {
+                                        PrismSwitchRow("播放条歌词", showMiniLyrics, {
+                                            showMiniLyrics = it
+                                            getSharedPreferences("appearance", MODE_PRIVATE).edit().putBoolean("mini_lyrics", it).apply()
+                                        }, edgeToRail.rememberFocus(bodyFocusMemory), description = "迷你播放条显示当前歌词", panel = false)
+                                        SettingsDivider()
+                                        PrismSwitchRow("减少动态效果", reduceMotion, {
+                                            reduceMotion = it
+                                            getSharedPreferences("appearance", MODE_PRIVATE).edit().putBoolean("reduce_motion", it).apply()
+                                        }, edgeToRail.rememberFocus(bodyFocusMemory), description = "关闭环境光流动与过渡动画", panel = false)
+                                    }
                                     }
                                     if (settingsSection == "播放") {
-                                        Text("播放", fontSize = 18.sp, color = c.foreground)
-                                        Text("拿不到更高档时自动降档", color = c.muted, fontSize = 12.sp)
-
-                                        Text("首选音质", fontSize = 13.sp, color = c.foreground, modifier = Modifier.padding(top = 10.dp))
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            listOf("low" to "流畅", "standard" to "标准", "high" to "高品", "super" to "无损优先").forEachIndexed { index, pair ->
-                                                val (value, label) = pair
-                                                PrismAction(if (quality == value) "✓ $label" else label, {
-                                                    quality = value
-                                                    getSharedPreferences("playback", MODE_PRIVATE).edit().putString("quality", value).apply()
-                                                }, if (index == 0) Modifier.focusAnchor(sectionEntryFocus.getValue("播放")).then(entryEdge).rememberFocus(bodyFocusMemory) else Modifier.rememberFocus(bodyFocusMemory))
-                                            }
+                                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                            Text("播放", fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, color = c.foreground)
+                                            Text("音质偏好与播放失败后的处理方式", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
                                         }
-
-                                        PrismSwitchRow("播放失败自动换源", autoSourceFallback, { setAutoSourceFallback(it) },
-                                            edgeToRail.rememberFocus(bodyFocusMemory), description = "本源所有音质均不可用时，尝试其他音源的同版本歌曲")
-
-                                        Text("播放模式", fontSize = 13.sp, color = c.foreground, modifier = Modifier.padding(top = 10.dp))
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            listOf("顺序播放", "列表循环", "单曲循环", "随机播放").forEachIndexed { index, mode ->
-                                                PrismAction(if (playMode == mode) "✓ $mode" else mode, {
+                                        SettingsCard("音质与换源", "实际音质取决于音源") {
+                                            SettingsRow("首选音质", "拿不到更高档时自动降档") {
+                                                SettingsSeg(listOf("low" to "流畅", "standard" to "标准", "high" to "高品", "super" to "无损优先"), quality, {
+                                                    quality = it
+                                                    getSharedPreferences("playback", MODE_PRIVATE).edit().putString("quality", it).apply()
+                                                }, entry = Modifier.focusAnchor(sectionEntryFocus.getValue("播放")).then(entryEdge).rememberFocus(bodyFocusMemory))
+                                            }
+                                            SettingsDivider()
+                                            PrismSwitchRow("播放失败自动换源", autoSourceFallback, { setAutoSourceFallback(it) },
+                                                edgeToRail.rememberFocus(bodyFocusMemory), description = "本源所有音质均不可用时，尝试其他音源的同版本歌曲", panel = false)
+                                        }
+                                        SettingsCard("播放与搜索", "左右键切换选项") {
+                                            SettingsRow("播放模式", "启动应用时沿用上次的模式") {
+                                                SettingsSeg(listOf("顺序播放", "列表循环", "单曲循环", "随机播放").map { it to it }, playMode, {
                                                     leaveRadio()
-                                                    playMode = mode
-                                                    getSharedPreferences("playback", MODE_PRIVATE).edit().putString("mode", mode).apply()
-                                                }, if (index == 0) edgeToRail.rememberFocus(bodyFocusMemory) else Modifier.rememberFocus(bodyFocusMemory))
+                                                    playMode = it
+                                                    getSharedPreferences("playback", MODE_PRIVATE).edit().putString("mode", it).apply()
+                                                }, entry = edgeToRail.rememberFocus(bodyFocusMemory))
                                             }
-                                        }
-
-                                        Text("搜索并发", fontSize = 13.sp, color = c.foreground, modifier = Modifier.padding(top = 10.dp))
-                                        Text(
-                                            "自动按电视性能选择（当前 ${PluginWorkers.automatic(this@MainActivity)} 个），调大更快也更占内存",
-                                            color = c.muted, fontSize = 12.sp,
-                                        )
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            listOf(0 to "自动", 1 to "1 个", 2 to "2 个", 3 to "3 个", 4 to "4 个").forEach { (value, label) ->
-                                                PrismAction(if (pluginWorkerLimit == value) "✓ $label" else label, {
-                                                    pluginWorkerLimit = value
-                                                    PluginWorkers.save(this@MainActivity, value)
-                                                }, if (value == 0) edgeToRail.rememberFocus(bodyFocusMemory) else Modifier.rememberFocus(bodyFocusMemory))
+                                            SettingsDivider()
+                                            SettingsRow("搜索并发", "自动按电视性能选择（当前 ${PluginWorkers.automatic(this@MainActivity)} 个），调大更快也更占内存") {
+                                                SettingsSeg(listOf(0 to "自动", 1 to "1 个", 2 to "2 个", 3 to "3 个", 4 to "4 个"), pluginWorkerLimit, {
+                                                    pluginWorkerLimit = it
+                                                    PluginWorkers.save(this@MainActivity, it)
+                                                }, entry = edgeToRail.rememberFocus(bodyFocusMemory))
                                             }
                                         }
                                     }
@@ -4329,81 +4334,95 @@ class MainActivity : ComponentActivity() {
                                             provider?.let { "${it.packageName} ${it.versionName.orEmpty()}" } ?: "未检测到 WebView"
                                         }.getOrDefault("未检测到 WebView")
                                     }
-                                    Text("版本", fontSize = 18.sp, color = c.foreground)
-                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            Text("PrismAura $versionName", color = c.foreground, fontSize = 16.sp)
-                                            Text(updateState.message, color = c.muted, fontSize = 12.sp)
+                                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                        Text("关于", fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, color = c.foreground)
+                                        Text("PrismAura 极光音乐 · 为客厅而做的播放器。", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
+                                    }
+                                    SettingsCard(tight = true) {
+                                        SettingsRow("PrismAura $versionName", updateState.message) {
+                                            SettingsButton(if (updateState.checking) "正在检查…" else if (updateState.release != null) "查看更新" else "检查更新", {
+                                                checkAppUpdates()
+                                            }, Modifier.focusAnchor(sectionEntryFocus.getValue("关于")).then(entryEdge).rememberFocus(bodyFocusMemory), icon = "refresh")
                                         }
-                                        PrismAction(if (updateState.checking) "正在检查…" else if (updateState.release != null) "查看更新" else "检查更新", {
-                                            checkAppUpdates()
-                                        }, Modifier.focusAnchor(sectionEntryFocus.getValue("关于")).then(entryEdge).rememberFocus(bodyFocusMemory))
+                                        SettingsDivider()
+                                        PrismSwitchRow("新版本提醒", updateState.remind, appUpdates::setRemind,
+                                            edgeToRail.rememberFocus(bodyFocusMemory), description = "在首页提示新版本", panel = false)
                                     }
-                                    PrismSwitchRow("新版本提醒", updateState.remind, appUpdates::setRemind,
-                                        edgeToRail.rememberFocus(bodyFocusMemory), description = "在首页提示新版本")
-                                    Text("运行环境", fontSize = 18.sp, color = c.foreground, modifier = Modifier.padding(top = 14.dp))
-                                    Text(deviceInfo, color = c.foreground, fontSize = 14.sp)
-                                    Text("WebView · $webViewInfo", color = c.muted, fontSize = 12.sp)
-                                    Text("缓存", fontSize = 18.sp, color = c.foreground, modifier = Modifier.padding(top = 14.dp))
-                                    Text(
-                                        if (cacheSize < 0) "正在统计缓存…" else "本机缓存 ${formatBytes(cacheSize)} · 封面、歌词与音源脚本",
-                                        color = c.muted, fontSize = 12.sp,
-                                    )
-                                    PrismAction(if (clearingCache) "清理中…" else "清理缓存", {
-                                        if (!clearingCache) lifecycleScope.launch {
-                                            clearingCache = true
-                                            cacheSize = withContext(Dispatchers.IO) { directorySize(cacheDir) }
-                                            withContext(Dispatchers.IO) { clearDirectory(cacheDir) }
-                                            getSharedPreferences("discovery", MODE_PRIVATE).edit().clear().apply()
-                                            hotSearchCache.clear()
-                                            charts = emptyList(); chartPreviews = emptyMap()
-                                            cacheSize = 0L
-                                            clearingCache = false
-                                            status = "缓存已清理"
-                                            chartSource?.let { loadCharts(it) }
-                                        }
-                                    }, edgeToRail.rememberFocus(bodyFocusMemory))
-                                    Text("清理临时文件与发现缓存，保留收藏、歌单和音源配置", color = c.muted, fontSize = 12.sp)
-                                    /* 备份与恢复只在手机遥控上做：电视没有文件选择器，
-                                       这里再放一个入口只会把人带到另一台设备上。 */
+                                    SettingsCard("运行环境", "用于排查播放与解码问题", tight = true) {
+                                        SettingsRow("设备", labelDim = true) { Text(deviceInfo, color = c.foreground, fontSize = 11.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                                        SettingsDivider()
+                                        SettingsRow("WebView", labelDim = true) { Text(webViewInfo, color = c.foreground, fontSize = 11.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                                     }
-                                    if (settingsSection == "推荐") {
-                                    Text("发现与首页", fontSize = 18.sp, color = c.foreground)
-                                    Text("歌单推荐音源", color = c.foreground, fontSize = 15.sp)
-                                    SourcePicker(activePlugins.filter { it.capabilities.recommendations }, recommendationPluginId,
-                                        Modifier.focusAnchor(sectionEntryFocus.getValue("推荐")).then(entryEdge).rememberFocus(bodyFocusMemory)) { plugin ->
-                                        recommendationPluginId = plugin.id
-                                        getSharedPreferences("home", MODE_PRIVATE).edit().putString("recommendation_plugin", plugin.id).apply()
-                                    }
-                                    Text("榜单音源", color = c.foreground, fontSize = 15.sp)
-                                    SourcePicker(activePlugins.filter { it.capabilities.charts }, chartPluginId, edgeToRail.rememberFocus(bodyFocusMemory)) { plugin ->
-                                        chartPluginId = plugin.id
-                                        getSharedPreferences("home", MODE_PRIVATE).edit().putString("chart_plugin", plugin.id).apply()
-                                    }
-                                    Text("只列出能完成相应浏览流程的音源；推荐与榜单分别选择", color = c.muted, fontSize = 12.sp)
-                                    Text("取消勾选即从首页隐藏", color = c.muted, fontSize = 12.sp)
-                                    Box {
-                                        PrismAction("首页栏目 · ${homeShelves.size} ▾", { shelvesMenuOpen = true }, Modifier.rememberFocus(bodyFocusMemory))
-                                        if (shelvesMenuOpen) {
-                                            val menuOffset = with(LocalDensity.current) { 52.dp.roundToPx() }
-                                            Popup(alignment = Alignment.TopStart, offset = IntOffset(0, menuOffset), onDismissRequest = { shelvesMenuOpen = false }, properties = PopupProperties(focusable = true)) {
-                                                val menuFocus = remember { FocusRequester() }
-                                                LaunchedEffect(Unit) { menuFocus.requestFocus() }
-                                                Column(Modifier.focusRequester(menuFocus).width(240.dp).heightIn(max = 280.dp).background(c.panel, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)).border(1.dp, c.line, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)).verticalScroll(rememberScrollState()).padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                    /* Every shelf is offered, hidden ones included, so a
-                                                       playlist imported after the last choice can be brought
-                                                       back onto 首页 instead of staying invisible. */
-                                                    (listOf("favorites" to "我的收藏", "recent" to "最近播放") +
-                                                        libraryState.playlists.map { it.id to it.name }).forEach { (id, label) ->
-                                                        PrismAction("${if (id !in homeShelfHidden) "✓ " else ""}$label", { toggleHomeShelf(id) })
+                                    SettingsCard(tight = true) {
+                                        SettingsRow("缓存", "不影响收藏、歌单与登录配置") {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                Text(if (cacheSize < 0) "…" else formatBytes(cacheSize), color = c.foreground, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1)
+                                                SettingsButton(if (clearingCache) "清理中…" else "清理", {
+                                                    if (!clearingCache) lifecycleScope.launch {
+                                                        clearingCache = true
+                                                        cacheSize = withContext(Dispatchers.IO) { directorySize(cacheDir) }
+                                                        withContext(Dispatchers.IO) { clearDirectory(cacheDir) }
+                                                        getSharedPreferences("discovery", MODE_PRIVATE).edit().clear().apply()
+                                                        hotSearchCache.clear()
+                                                        charts = emptyList(); chartPreviews = emptyMap()
+                                                        cacheSize = 0L
+                                                        clearingCache = false
+                                                        status = "缓存已清理"
+                                                        chartSource?.let { loadCharts(it) }
                                                     }
-                                                }
+                                                }, edgeToRail.rememberFocus(bodyFocusMemory), icon = "trash")
                                             }
                                         }
                                     }
-                                    Text("首页栏目取自本机的收藏、最近播放与导入的歌单", color = c.muted, fontSize = 12.sp)
-                                    PrismAction("打开「我的」", { page = "library" }, Modifier.rememberFocus(bodyFocusMemory))
+                                    SettingsCard(tight = true) {
+                                        SettingsRow("备份与恢复", "通过手机保存或恢复曲库、音源和设置") {
+                                            SettingsButton("用手机管理", { openPhoneHub() }, edgeToRail.rememberFocus(bodyFocusMemory), icon = "qr")
+                                        }
+                                    }
+                                    }
+                                    if (settingsSection == "推荐") {
+                                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                        Text("推荐", fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, color = c.foreground)
+                                        Text("决定首页出现哪些内容，以及这些内容从哪个音源来。", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
+                                    }
+                                    SettingsCard("音源", "推荐与榜单可分别选择") {
+                                        SettingsRow("歌单推荐音源", "首页推荐歌单的浏览来源") {
+                                            SourcePicker(activePlugins.filter { it.capabilities.recommendations }, recommendationPluginId,
+                                                Modifier.focusAnchor(sectionEntryFocus.getValue("推荐")).then(entryEdge).rememberFocus(bodyFocusMemory)) { plugin ->
+                                                recommendationPluginId = plugin.id
+                                                getSharedPreferences("home", MODE_PRIVATE).edit().putString("recommendation_plugin", plugin.id).apply()
+                                            }
+                                        }
+                                        SettingsDivider()
+                                        SettingsRow("榜单音源", "排行榜、飙升榜的浏览来源") {
+                                            SourcePicker(activePlugins.filter { it.capabilities.charts }, chartPluginId, edgeToRail.rememberFocus(bodyFocusMemory)) { plugin ->
+                                                chartPluginId = plugin.id
+                                                getSharedPreferences("home", MODE_PRIVATE).edit().putString("chart_plugin", plugin.id).apply()
+                                            }
+                                        }
+                                        Text("只列出能完成相应浏览流程的音源；推荐与榜单分别选择", color = c.muted, fontSize = 11.sp, lineHeight = 16.sp,
+                                            modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
+                                    }
+                                    /* Every shelf is offered, hidden ones included, so a playlist
+                                       imported after the last choice can be brought back onto 首页
+                                       instead of staying invisible. */
+                                    val shelfOptions = listOf("favorites" to "我的收藏", "recent" to "最近播放") +
+                                        libraryState.playlists.map { it.id to it.name }
+                                    SettingsCard("首页栏目", "${shelfOptions.size} 项中已启用 ${shelfOptions.count { it.first !in homeShelfHidden }} 项") {
+                                        SettingsRow("显示在首页的栏目", "取消勾选即从首页隐藏") {
+                                            FlowRow(Modifier.weight(1f, fill = false), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                shelfOptions.forEachIndexed { index, (id, label) ->
+                                                    SettingsChip(label, id !in homeShelfHidden, { toggleHomeShelf(id) },
+                                                        (if (index == 0) edgeToRail else Modifier).rememberFocus(bodyFocusMemory))
+                                                }
+                                            }
+                                        }
+                                        Text("首页栏目取自本机的收藏、最近播放与导入的歌单", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
+                                        SettingsDivider()
+                                        SettingsRow("栏目内容", "在「我的」导入与管理歌单") {
+                                            SettingsButton("打开「我的」", { page = "library" }, Modifier.rememberFocus(bodyFocusMemory))
+                                        }
+                                    }
                                     }
                                     if (settingsSection == "音源") {
                                     var addingSource by remember { mutableStateOf(false) }
@@ -4412,14 +4431,10 @@ class MainActivity : ComponentActivity() {
                                     val addressFocus = remember { FocusRequester() }
                                     val addFocus = remember { FocusRequester() }
                                     val updateSourcesFocus = remember { FocusRequester() }
-                                    val firstSourceFocus = remember { FocusAnchor() }
                                     val subscriptionGroups = state.subscriptions.map { url ->
                                         url to state.plugins.filter { it.origin == url || (it.origin.isBlank() && it.url == url) }
                                     }
                                     val standalone = state.plugins.filter { it.origin.isBlank() && it.url !in state.subscriptions }
-                                    val firstSourceId = subscriptionGroups.firstOrNull { it.second.isNotEmpty() }?.second?.firstOrNull()?.id
-                                        ?: standalone.firstOrNull()?.id
-                                    val toolbarDown = Modifier.focusProperties { if (firstSourceFocus.attached) down = firstSourceFocus.requester }
                                     fun closeAddSource() {
                                         addingSource = false
                                         pageScope.launch { withFrameNanos { }; sourceActionFocus.requestIfAttached() }
@@ -4438,18 +4453,30 @@ class MainActivity : ComponentActivity() {
                                             finally { busy = false }
                                         }
                                     }
-                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                        Text("音源", fontSize = 19.sp, color = c.foreground, fontWeight = FontWeight.SemiBold)
-                                        Spacer(Modifier.width(10.dp))
-                                        Text("${state.plugins.count { it.enabled }} / ${state.plugins.size} 已启用", color = c.muted, fontSize = 12.sp)
-                                        Spacer(Modifier.weight(1f))
-                                        PrismAction("添加音源", { addSourceError = ""; addingSource = true }, Modifier.focusAnchor(sourceActionFocus).then(entryEdge).then(toolbarDown)
-                                            .focusProperties { right = updateSourcesFocus }.rememberFocus(bodyFocusMemory), primary = true)
-                                        Spacer(Modifier.width(8.dp))
-                                        PrismAction(if (busy) "更新中…" else "全部更新", { if (!busy) lifecycleScope.launch { busy = true; try { showPluginImport(plugins.syncAll()) } catch (e: Exception) { status = "同步失败：${e.message}" } finally { busy = false } } },
-                                            Modifier.focusRequester(updateSourcesFocus).focusProperties { up = pluginsFocus; leftTo(sourceActionFocus) }.then(toolbarDown).rememberFocus(bodyFocusMemory))
+                                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                        Text("音源", fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, color = c.foreground)
+                                        Text("${state.plugins.count { it.enabled }} / ${state.plugins.size} 个音源已启用", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
                                     }
-                                    if (state.plugins.isEmpty() && state.subscriptions.isEmpty()) Text("添加信任的 MusicFree 插件或订阅，开始听歌", color = c.muted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 18.dp))
+                                    SettingsCard("管理音源") {
+                                        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                                            Box(Modifier.size(27.dp).clip(RoundedCornerShape(7.5.dp)).background(c.foreground.copy(alpha = .035f))
+                                                .border(1.dp, c.foreground.copy(alpha = .10f), RoundedCornerShape(7.5.dp)), contentAlignment = Alignment.Center) {
+                                                Glyph("plus", Modifier.size(12.dp), c.accent)
+                                            }
+                                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.5.dp)) {
+                                                Text("添加音源", color = c.foreground, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium)
+                                                Text("订阅链接 · 插件文件（通过手机导入）", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
+                                            }
+                                            SettingsButton("添加插件", { addSourceError = ""; addingSource = true }, Modifier.focusAnchor(sourceActionFocus).then(entryEdge)
+                                                .focusProperties { right = updateSourcesFocus }.rememberFocus(bodyFocusMemory), icon = "link")
+                                            SettingsButton(if (busy) "更新中…" else "全部更新", { if (!busy) lifecycleScope.launch { busy = true; try { showPluginImport(plugins.syncAll()) } catch (e: Exception) { status = "同步失败：${e.message}" } finally { busy = false } } },
+                                                Modifier.focusRequester(updateSourcesFocus).focusProperties { up = pluginsFocus; leftTo(sourceActionFocus) }.rememberFocus(bodyFocusMemory), icon = "refresh")
+                                        }
+                                        SettingsDivider()
+                                        Text("插件内容由第三方提供，请只导入可信来源", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp, modifier = Modifier.padding(top = 6.dp, bottom = 2.dp))
+                                    }
+                                    SettingsCard("音源列表", "插件由第三方提供") {
+                                    if (state.plugins.isEmpty() && state.subscriptions.isEmpty()) Text("添加信任的 MusicFree 插件或订阅，开始听歌", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp, modifier = Modifier.padding(vertical = 9.dp))
 
                                     if (addingSource) Dialog(onDismissRequest = { closeAddSource() }) {
                                         LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; addressFocus.requestFocus() }
@@ -4458,7 +4485,7 @@ class MainActivity : ComponentActivity() {
                                             Input(subscription, { subscription = it; addSourceError = "" }, "插件 .js 或订阅 .json 地址",
                                                 Modifier.fillMaxWidth().focusRequester(addressFocus).focusProperties { down = addFocus },
                                                 keyboardType = KeyboardType.Uri, manualKeyboard = true, onSubmit = { addFocus.requestFocus() })
-                                            if (addSourceError.isNotBlank()) Text(addSourceError, color = c.accent, fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                                            if (addSourceError.isNotBlank()) Text(addSourceError, color = c.accent, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
                                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                                 PrismAction(if (busy) "添加中…" else "添加", { addSource() }, Modifier.focusRequester(addFocus).focusProperties { up = addressFocus }, primary = true)
                                                 PrismAction("用手机添加", { closeAddSource(); openPhoneHub() }, Modifier.focusProperties { up = addressFocus })
@@ -4480,32 +4507,46 @@ class MainActivity : ComponentActivity() {
                                     /* A subscription is the thing that can be updated, so it is the row
                                        that owns removal. Its plugins are only switched on or off:
                                        deleting one would just bring it back on the next sync. */
+                                    val firstRowEdge = edgeToRail.rememberFocus(bodyFocusMemory)
+                                    var firstRow = true
                                     subscriptionGroups.forEach { (url, owned) ->
-                                        Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        if (!firstRow) SettingsDivider()
+                                        Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                                             Column(Modifier.weight(1f)) {
-                                                Text("订阅 · ${owned.firstOrNull()?.displayName ?: url.substringAfterLast('/').take(30)}", color = c.foreground, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                                Text("${owned.size} 个音源", color = c.muted, fontSize = 12.sp)
+                                                Text("订阅 · ${owned.firstOrNull()?.displayName ?: url.substringAfterLast('/').take(30)}", color = c.foreground, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                Text("${owned.size} 个音源", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
                                             }
-                                            PrismAction("更新", { if (!busy) lifecycleScope.launch {
+                                            SettingsButton("更新", { if (!busy) lifecycleScope.launch {
                                                 busy = true
                                                 status = "正在更新订阅…"
                                                 try { showPluginImport(plugins.importUrl(url)) }
                                                 catch (e: Exception) { status = "更新失败：${e.message}" }
                                                 finally { busy = false }
                                             } }, edgeToRail.rememberFocus(bodyFocusMemory))
-                                            PrismAction("移除订阅", { removingSubscription = url }, Modifier.rememberFocus(bodyFocusMemory))
+                                            SettingsButton("移除订阅", { removingSubscription = url }, Modifier.rememberFocus(bodyFocusMemory))
                                         }
-                                        owned.forEach { plugin -> key(plugin.id) { PluginSourceRow(plugin, owned = true, onConfigure = { configured = plugin.id }, onRemoved = ::sourceRemoved,
-                                            configureFocus = sourceConfigFocus.getOrPut(plugin.id) { FocusAnchor() },
-                                            edge = edgeToRail.rememberFocus(bodyFocusMemory).then(if (plugin.id == firstSourceId) Modifier.focusAnchor(firstSourceFocus) else Modifier),
-                                            top = sourceActionFocus.requester.takeIf { plugin.id == firstSourceId }) } }
+                                        owned.forEach { plugin -> key(plugin.id) {
+                                            SettingsDivider()
+                                            Box(Modifier.padding(vertical = 3.dp)) { PluginSourceRow(plugin, owned = true, onConfigure = { configured = plugin.id }, onRemoved = ::sourceRemoved,
+                                                configureFocus = sourceConfigFocus.getOrPut(plugin.id) { FocusAnchor() },
+                                                edge = if (firstRow) firstRowEdge else edgeToRail.rememberFocus(bodyFocusMemory)) }
+                                            firstRow = false
+                                        } }
                                     }
 
-                                    if (standalone.isNotEmpty() && state.subscriptions.isNotEmpty()) Text("单独添加", color = c.muted, fontSize = 12.sp)
-                                    standalone.forEach { plugin -> key(plugin.id) { PluginSourceRow(plugin, owned = false, onConfigure = { configured = plugin.id }, onRemoved = ::sourceRemoved,
-                                        configureFocus = sourceConfigFocus.getOrPut(plugin.id) { FocusAnchor() },
-                                        edge = edgeToRail.rememberFocus(bodyFocusMemory).then(if (plugin.id == firstSourceId) Modifier.focusAnchor(firstSourceFocus) else Modifier),
-                                        top = sourceActionFocus.requester.takeIf { plugin.id == firstSourceId }) } }
+                                    if (standalone.isNotEmpty() && state.subscriptions.isNotEmpty()) {
+                                        SettingsDivider()
+                                        Text("单独添加", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp, modifier = Modifier.padding(top = 6.dp))
+                                    }
+                                    standalone.forEach { plugin -> key(plugin.id) {
+                                        if (!firstRow) SettingsDivider()
+                                        Box(Modifier.padding(vertical = 3.dp)) { PluginSourceRow(plugin, owned = false, onConfigure = { configured = plugin.id }, onRemoved = ::sourceRemoved,
+                                            configureFocus = sourceConfigFocus.getOrPut(plugin.id) { FocusAnchor() },
+                                            edge = if (firstRow) firstRowEdge else edgeToRail.rememberFocus(bodyFocusMemory)) }
+                                        firstRow = false
+                                    } }
+                                    }
+
                                     }
                                     }
                                     }
@@ -5064,20 +5105,28 @@ class MainActivity : ComponentActivity() {
                 /* Same reason as the queue panel: a dialog opens with no focus owner, so its
                    only button would be dead on a remote until Back. */
                 val phoneCloseFocus = remember { FocusRequester() }
-                Dialog(onDismissRequest = { phoneDialog = false }) {
+                Dialog(onDismissRequest = { phoneDialog = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
                     LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; phoneCloseFocus.requestFocus() }
-                    Column(Modifier.background(c.panel, androidx.compose.foundation.shape.RoundedCornerShape(16.dp)).padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(if (phoneRemoteMode) "手机遥控" else "扫码输入配置", color = c.foreground, fontSize = 22.sp)
-                        Image(input.qr.asImageBitmap(), contentDescription = if (phoneRemoteMode) "手机遥控二维码" else "手机输入二维码", modifier = Modifier.size(190.dp))
-                        /* 一句话就够：这个弹窗下面两颗按钮已经写着「隐藏二维码」「结束遥控」，
-                           再用文字复述一遍关窗口会发生什么，只是把提示挤成一段说明。 */
-                        Text(
-                            "手机需要与电视在同一个局域网",
-                            color = c.muted, fontSize = 11.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            PrismAction("隐藏二维码", { phoneDialog = false }, Modifier.focusRequester(phoneCloseFocus), primary = true)
-                            PrismAction(if (phoneRemoteMode) "结束遥控" else "结束输入", { closePhoneInput() })
+                    val shape = RoundedCornerShape(18.dp)
+                    val qrPixels = with(LocalDensity.current) { 216.dp.roundToPx() }
+                    val qr = remember(input, qrPixels) { qrCodeBitmap(input.url, qrPixels) }
+                    Row(Modifier.width(560.dp).clip(shape).background(c.panel)
+                        .border(1.dp, c.accent.copy(alpha = .3f), shape).padding(24.dp),
+                        horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.clip(RoundedCornerShape(12.dp)).background(Color.White).padding(8.dp)) {
+                            Image(qr.asImageBitmap(),
+                                contentDescription = if (phoneRemoteMode) "手机遥控二维码" else "手机输入二维码",
+                                modifier = Modifier.size(216.dp))
+                        }
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Text(if (phoneRemoteMode) "手机遥控" else "扫码输入配置", color = c.foreground,
+                                fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                            Text("手机与电视连接同一网络后扫码", color = c.muted, fontSize = 13.sp)
+                            if (phoneRemoteMode) Text("播放控制、搜索、音源管理与备份恢复", color = c.foreground, fontSize = 14.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                SettingsButton("隐藏二维码", { phoneDialog = false }, Modifier.focusRequester(phoneCloseFocus), primary = true)
+                                SettingsButton(if (phoneRemoteMode) "结束遥控" else "结束输入", { closePhoneInput() })
+                            }
                         }
                     }
                 }
@@ -5085,14 +5134,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @Composable private fun PluginSourceRow(plugin: Plugin, owned: Boolean, onConfigure: () -> Unit, onRemoved: () -> Unit, configureFocus: FocusAnchor, edge: Modifier = Modifier, top: FocusRequester? = null) {
+    @Composable private fun PluginSourceRow(plugin: Plugin, owned: Boolean, onConfigure: () -> Unit, onRemoved: () -> Unit, configureFocus: FocusAnchor, edge: Modifier = Modifier) {
         val c = LocalPrismColors.current
         var menuOpen by remember(plugin.id) { mutableStateOf(false) }
+        var infoOpen by remember(plugin.id) { mutableStateOf(false) }
         var confirmRemoval by remember(plugin.id) { mutableStateOf(false) }
         val moreFocus = remember(plugin.id) { FocusRequester() }
         val menuFocus = remember(plugin.id) { FocusRequester() }
         val toggleFocus = remember(plugin.id) { FocusAnchor() }
-        val topEdge = Modifier.focusProperties { top?.let { up = it } }
         val scope = rememberCoroutineScope()
         fun closeMenu() {
             menuOpen = false; confirmRemoval = false
@@ -5101,37 +5150,38 @@ class MainActivity : ComponentActivity() {
         val labels = plugin.capabilities.labels
         val highlights = (listOf("MV", "扫码登录", "歌单导入", "单曲导入", "推荐歌单", "榜单", "搜索", "歌词")
             .filter { it in labels } + labels).distinct().take(4)
-        Column(Modifier.fillMaxWidth().clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
-            .background(c.panel.copy(alpha = .35f))
-            .padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                PlatformIcon(plugin.platform, Modifier.size(32.dp))
+                PlatformIcon(plugin.platform, Modifier.size(27.dp))
                 Spacer(Modifier.width(4.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(plugin.displayName, color = if (plugin.enabled) c.foreground else c.muted, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.5.dp)) {
+                    Text(plugin.displayName, color = if (plugin.enabled) c.foreground else c.muted, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(
-                        listOfNotNull(plugin.metadata.optString("version").takeIf { it.isNotBlank() }?.let { "v$it" }, plugin.metadata.optString("author").takeIf { it.isNotBlank() }, if (plugin.enabled) "已启用" else "已停用").joinToString(" · "),
-                        color = if (plugin.enabled) c.accent else c.muted, fontSize = 11.sp,
+                        listOfNotNull(plugin.metadata.optString("version").takeIf { it.isNotBlank() }?.let { "v$it" }, plugin.metadata.optString("author").takeIf { it.isNotBlank() }).joinToString(" · "),
+                        color = c.muted, fontSize = 10.sp, lineHeight = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
-                PrismAction("配置", onConfigure, edge.then(topEdge).focusAnchor(configureFocus).focusProperties { right = toggleFocus.requester })
-                PrismAction(if (plugin.enabled) "停用" else "启用", {
-                    /* 焦点要等重组后的节点，所以必须挂在这一帧的帧时钟上：lifecycleScope 的
-                       上下文里没有 MonotonicFrameClock，withFrameNanos 会直接抛异常。 */
-                    scope.launch {
-                        try { plugins.setEnabled(plugin.id, !plugin.enabled); withFrameNanos { }; toggleFocus.requestIfAttached() }
-                        catch (e: kotlinx.coroutines.CancellationException) { throw e }
-                        catch (e: Exception) { status = e.message ?: "操作失败" }
-                    }
-                }, Modifier.focusAnchor(toggleFocus).then(topEdge).focusProperties {
+                SettingsButton("配置", onConfigure, edge.focusAnchor(configureFocus).focusProperties { right = toggleFocus.requester })
+                Text(if (plugin.enabled) "已启用" else "已停用", color = if (plugin.enabled) c.accent.copy(alpha = .8f) else c.muted, fontSize = 10.sp, lineHeight = 14.sp, maxLines = 1)
+                Box(Modifier.focusAnchor(toggleFocus).focusProperties {
                     left = configureFocus.requester
-                    if (!owned || plugin.updateUrl.isNotBlank() || plugin.enabled && plugin.capabilities.has("search")) right = moreFocus
-                })
-                if (!owned || plugin.updateUrl.isNotBlank() || plugin.enabled && plugin.capabilities.has("search"))
-                    PrismAction("更多", { confirmRemoval = false; menuOpen = true }, Modifier.focusRequester(moreFocus).then(topEdge).focusProperties { left = toggleFocus.requester })
+                    right = moreFocus
+                }.auraFocus(RoundedCornerShape(16.dp), 1f, ring = c.foreground)
+                    .toggleable(plugin.enabled, role = Role.Switch, onValueChange = { enable ->
+                        /* 焦点要等重组后的节点，所以必须挂在这一帧的帧时钟上：lifecycleScope 的
+                           上下文里没有 MonotonicFrameClock，withFrameNanos 会直接抛异常。 */
+                        scope.launch {
+                            try { plugins.setEnabled(plugin.id, enable); withFrameNanos { }; toggleFocus.requestIfAttached() }
+                            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                            catch (e: Exception) { status = e.message ?: "操作失败" }
+                        }
+                    }).padding(4.dp)) {
+                    PrismCapsule(plugin.enabled)
+                }
+                SettingsButton("更多", { confirmRemoval = false; menuOpen = true }, Modifier.focusRequester(moreFocus).focusProperties { left = toggleFocus.requester })
             }
             Text(highlights.joinToString(" · ").ifBlank { "暂无可用能力" } + if (labels.size > highlights.size) " · 另 ${labels.size - highlights.size} 项" else "",
-                color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                color = c.muted, fontSize = 10.sp, lineHeight = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 31.dp))
         }
         if (menuOpen) key(confirmRemoval) {
             PrismContextMenu(if (confirmRemoval) "移除 ${plugin.displayName}？" else plugin.displayName,
@@ -5145,6 +5195,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     var first = true
                     fun nextFocus(): Modifier = if (first) Modifier.focusRequester(menuFocus).also { first = false } else Modifier
+                    PrismAction("音源信息", { menuOpen = false; infoOpen = true }, nextFocus())
                     if (plugin.enabled && plugin.capabilities.has("search")) PrismAction("搜索此音源", {
                         menuOpen = false; selectedPlugin = plugin.id; searchSources = setOf(plugin.id); page = "search"
                     }, nextFocus())
@@ -5155,6 +5206,54 @@ class MainActivity : ComponentActivity() {
                     if (!owned) PrismAction("移除音源", { confirmRemoval = true }, nextFocus())
                 }
             }
+        }
+        if (infoOpen) PluginInfoDialog(plugin) { infoOpen = false; menuOpen = true }
+    }
+
+    @Composable private fun PluginInfoDialog(plugin: Plugin, onDismiss: () -> Unit) {
+        val c = LocalPrismColors.current
+        val readFocus = remember { FocusRequester() }
+        val closeFocus = remember { FocusRequester() }
+        val scroll = rememberScrollState()
+        val scope = rememberCoroutineScope()
+        val scrollStep = with(LocalDensity.current) { 96.dp.toPx() }
+        val details = buildList {
+            listOf("version" to "版本", "author" to "作者", "description" to "说明").forEach { (key, label) ->
+                plugin.metadata.optString(key).trim().takeIf { it.isNotBlank() }?.let { add(label to it) }
+            }
+            add("支持能力" to plugin.capabilities.labels.joinToString(" · ").ifBlank { "未识别到支持的能力" })
+            val updateUrl = plugin.updateUrl
+            if (plugin.url.isNotBlank() && plugin.url == updateUrl) add("插件／更新地址" to plugin.url)
+            else {
+                if (plugin.url.isNotBlank()) add("插件地址" to plugin.url)
+                if (updateUrl.isNotBlank()) add("更新地址" to updateUrl)
+            }
+            if (plugin.subscriptionManaged) add("所属订阅" to plugin.origin)
+        }
+        PrismContextMenu(plugin.displayName, "音源信息", onDismiss, readFocus) {
+            Column(Modifier.fillMaxWidth().heightIn(max = 260.dp).focusRequester(readFocus)
+                .auraFocus(RoundedCornerShape(8.dp), scale = 1f)
+                .onPreviewKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown) false
+                    else when (event.key) {
+                        Key.DirectionDown -> {
+                            if (scroll.value < scroll.maxValue) scope.launch { scroll.scrollBy(scrollStep) }
+                            else closeFocus.requestFocus()
+                            true
+                        }
+                        Key.DirectionUp -> { scope.launch { scroll.scrollBy(-scrollStep) }; true }
+                        else -> false
+                    }
+                }.focusable().verticalScroll(scroll).padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                details.forEach { (label, value) ->
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(label, color = c.muted, fontSize = 12.sp, lineHeight = 16.sp)
+                        Text(value, color = c.foreground, fontSize = 14.sp, lineHeight = 20.sp)
+                    }
+                }
+            }
+            SettingsButton("关闭", onDismiss, Modifier.focusRequester(closeFocus).focusProperties { up = readFocus }, primary = true)
         }
     }
 
@@ -5174,9 +5273,6 @@ class MainActivity : ComponentActivity() {
         } }
         val canLoginQr = plugin.metadata.optBoolean("loginQr")
         val hasFields = entries.isNotEmpty()
-        val capabilityLabels = plugin.capabilities.labels
-        val description = plugin.metadata.optString("description").trim()
-        val hasInfo = capabilityLabels.isNotEmpty() || description.isNotBlank()
         val loginOpen = remember(plugin.id) { mutableStateOf(false) }
         var manualOpen by remember(plugin.id) { mutableStateOf(false) }
         var infoOpen by remember(plugin.id) { mutableStateOf(false) }
@@ -5197,8 +5293,7 @@ class MainActivity : ComponentActivity() {
         val manualSaveFocus = remember(plugin.id) { FocusRequester() }
         val bottomFocus = remember(plugin.id) { FocusRequester() }
         val scope = rememberCoroutineScope()
-        val firstSetting = if (hasInfo) infoFocus else platformFocus
-        val firstFocus = when { canLoginQr -> loginFocus; hasFields -> manualFocus; else -> firstSetting }
+        val firstFocus = when { canLoginQr -> loginFocus; hasFields -> manualFocus; else -> infoFocus }
         val beforeSettings = firstFocus.takeIf { canLoginQr || hasFields } ?: backFocus
         val dirty = entries.any { (_, key) -> values[key].orEmpty() != plugin.variables.optString(key) }
         fun closeManual() {
@@ -5247,26 +5342,26 @@ class MainActivity : ComponentActivity() {
                     if (canLoginQr) {
                         PrismConfigChoice("扫码登录", "使用对应平台 App 扫码", "qr", { manualOpen = false; loginOpen.value = true },
                             Modifier.weight(1f).focusRequester(loginFocus).focusAnchor(entry).focusProperties {
-                                up = backFocus; down = firstSetting; if (hasFields) right = manualFocus
+                                up = backFocus; down = infoFocus; if (hasFields) right = manualFocus
                             }.rememberFocus(memory))
                     }
                     if (hasFields) PrismConfigChoice("手动填写", "使用遥控器或手机输入", "keyboard", {
                         values.keys.toList().forEach { key -> values[key] = plugin.variables.optString(key) }
                         error = ""; manualOpen = true
                     }, Modifier.weight(1f).focusRequester(manualFocus).then(if (!canLoginQr) Modifier.focusAnchor(entry) else Modifier).focusProperties {
-                        up = backFocus; down = firstSetting; if (canLoginQr) left = loginFocus
+                        up = backFocus; down = infoFocus; if (canLoginQr) left = loginFocus
                     }.rememberFocus(memory))
                 }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (hasInfo) PrismAction("能力说明", { infoOpen = true; platformOpen = false },
+                    PrismAction("音源信息", { infoOpen = true; platformOpen = false },
                         Modifier.focusRequester(infoFocus).then(if (!canLoginQr && !hasFields) Modifier.focusAnchor(entry) else Modifier)
                             .focusProperties { up = beforeSettings; down = bottomFocus; right = platformFocus }.rememberFocus(memory))
                     PrismAction("平台 · ${SourcePlatforms.get(plugin.id)?.label ?: "自动识别"} ▾", { platformOpen = !platformOpen; infoOpen = false },
-                        Modifier.focusRequester(platformFocus).then(if (!canLoginQr && !hasFields && !hasInfo) Modifier.focusAnchor(entry) else Modifier)
+                        Modifier.focusRequester(platformFocus)
                             .focusProperties {
                                 up = beforeSettings; down = if (platformOpen) platformOptionFocus else bottomFocus
-                                if (hasInfo) left = infoFocus
+                                left = infoFocus
                                 right = clearFocus
                             }.rememberFocus(memory))
                     PrismAction("清除自动 Cookie", { clearCookiesOpen = true }, Modifier.focusRequester(clearFocus)
@@ -5344,34 +5439,9 @@ class MainActivity : ComponentActivity() {
                 catch (e: Exception) { error = "登录成功，但写入配置失败：${e.message}" }
             }
         })
-        if (infoOpen) {
-            val readFocus = remember { FocusRequester() }
-            val closeInfoFocus = remember { FocusRequester() }
-            val infoScroll = rememberScrollState()
-            val scrollStep = with(LocalDensity.current) { 96.dp.toPx() }
-            PrismContextMenu("音源能力说明", "上下键滚动 · 返回键关闭", { infoOpen = false }, readFocus) {
-                Column(Modifier.fillMaxWidth().heightIn(max = 240.dp).focusRequester(readFocus)
-                    .auraFocus(androidx.compose.foundation.shape.RoundedCornerShape(8.dp), scale = 1f)
-                    .onPreviewKeyEvent { event ->
-                        if (event.type != KeyEventType.KeyDown) false
-                        else when (event.key) {
-                            Key.DirectionDown -> {
-                                if (infoScroll.value < infoScroll.maxValue) scope.launch { infoScroll.scrollBy(scrollStep) }
-                                else closeInfoFocus.requestFocus()
-                                true
-                            }
-                            Key.DirectionUp -> {
-                                scope.launch { infoScroll.scrollBy(-scrollStep) }; true
-                            }
-                            else -> false
-                        }
-                    }.focusable().verticalScroll(infoScroll).padding(12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    if (capabilityLabels.isNotEmpty()) Text(capabilityLabels.joinToString(" · "), color = c.accent, fontSize = 14.sp)
-                    if (description.isNotBlank()) Text(description, color = c.foreground, fontSize = 14.sp)
-                    plugin.metadata.optString("author").takeIf { it.isNotBlank() }?.let { Text("作者 · $it", color = c.muted, fontSize = 12.sp) }
-                }
-                PrismAction("关闭", { infoOpen = false }, Modifier.focusRequester(closeInfoFocus).focusProperties { up = readFocus }, primary = true)
-            }
+        if (infoOpen) PluginInfoDialog(plugin) {
+            infoOpen = false
+            scope.launch { withFrameNanos { }; infoFocus.requestFocus() }
         }
             if (clearCookiesOpen) PrismConfirmDialog("清除自动 Cookie？", "手动填写的配置会保留", "清除",
                 onDismiss = { clearCookiesOpen = false }, onConfirm = {
