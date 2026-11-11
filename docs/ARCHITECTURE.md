@@ -10,7 +10,7 @@ flowchart LR
     Content["用户选择的内容服务"]
     subgraph App["应用主进程 · tv.prism"]
         Phone["PhoneInput\n局域网 HTTP / 会话令牌"]
-        UI["MainActivity + PrismUi\n导航 / 焦点 / 搜索 / 队列"]
+        UI["MainActivity + Compose UI\n导航 / 焦点 / 搜索 / 队列"]
         Repo["Plugins + MusicLibrary\n插件 / 订阅 / 本地曲库"]
         Cache["MediaSourceCache\n播放地址缓存"]
         Client["PluginClient\nBinder / 超时 / 并发槽"]
@@ -76,7 +76,7 @@ sequenceDiagram
 
 | 状态／规则 | 所有者 | 修改入口 |
 | --- | --- | --- |
-| 页面、详情返回栈、焦点 | MainActivity / PrismUi | 遥控器与页面动作 |
+| 页面、详情返回栈、焦点 | MainActivity / PrismFocus | 遥控器与页面动作 |
 | 搜索条件、结果与分页 | MainActivity | 电视和 H5 共用的搜索入口 |
 | 队列、下一首、播放模式 | MainActivity | 播放控制、媒体状态回调 |
 | 音频执行与 MediaSession | PlaybackService | MediaController |
@@ -105,7 +105,12 @@ sequenceDiagram
 | 路径 | 首先看什么 |
 | --- | --- |
 | [MainActivity.kt](../app/src/main/java/tv/prism/MainActivity.kt) | search、playAt、importPlaylist、loadBrowse、手机 snapshot/command、Screen |
-| [PrismUi.kt](../app/src/main/java/tv/prism/PrismUi.kt) | 主题、焦点装饰、唱片与歌词、列表和卡片 |
+| [PrismUi.kt](../app/src/main/java/tv/prism/PrismUi.kt) | 主题、品牌、通用按钮、封面与弹窗 |
+| [PrismPlayerUi.kt](../app/src/main/java/tv/prism/PrismPlayerUi.kt) | 完整／迷你播放器、全屏歌词、熄屏与播放动效 |
+| [PrismSettingsUi.kt](../app/src/main/java/tv/prism/PrismSettingsUi.kt) | 设置行、开关、选项、主题与配置卡片 |
+| [PrismFocus.kt](../app/src/main/java/tv/prism/PrismFocus.kt) | 遥控器焦点、方向导航、长按与滚动回焦 |
+| [PrismIcons.kt](../app/src/main/java/tv/prism/PrismIcons.kt) | 图标绘制、平台图标与图标按钮 |
+| [PrismCards.kt](../app/src/main/java/tv/prism/PrismCards.kt) | 内容卡片、歌曲列表、详情头部与搜索建议 |
 | [AppUpdates.kt](../app/src/main/java/tv/prism/AppUpdates.kt) / [UpdateUi.kt](../app/src/main/java/tv/prism/UpdateUi.kt) | 客户端更新、网络回退、安装验证与遥控器更新弹窗 |
 | [Discovery.kt](../app/src/main/java/tv/prism/Discovery.kt) | 能力模型、按能力选源、常听歌手、场景与电台编排规则 |
 | [Plugins.kt](../app/src/main/java/tv/prism/Plugins.kt) | 插件导入、srcUrl 更新、版本保护、订阅归属、mediaSource |

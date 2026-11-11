@@ -66,6 +66,9 @@
 .demo__caption a { color: var(--color-accent); }
 
 /* ---------- 真实截图与切换 ---------- */
+.control-tip { scroll-margin-block-start: 24px; margin-block-end: var(--space-lg); padding: var(--space-lg); border-inline-start: 3px solid var(--color-accent); background: var(--color-paper-2); border-radius: var(--radius-card); }
+.control-tip h3 { font-size: var(--text-title); }
+.control-tip p { margin-block-start: var(--space-xs); color: var(--color-muted); font-size: var(--text-sm); line-height: 1.7; }
 .shot { position: relative; margin: 0; aspect-ratio: 16 / 9; border-radius: var(--radius-card); outline: 1px solid var(--ring-inset); outline-offset: -1px; }
 .shot--phone { aspect-ratio: 780 / 1688; width: min(100%, 300px); margin-inline: auto; }
 figcaption { font-size: var(--text-sm); line-height: 1.6; color: var(--color-muted); }

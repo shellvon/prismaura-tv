@@ -33,6 +33,7 @@
     </a>
     <nav class="nav__links" aria-label="主要导航" data-page-node-id="GS7uVcOIT0popGUXmZKuJf">
       <a href="#screens" data-page-node-id="evOEwNB4Jhy3tmK2jOh0QI">界面</a>
+      <a href="#remote">手机遥控</a>
       <a href="https://github.com/shellvon/prismaura-tv" data-page-node-id="1KQ5cMkEeXOsOxU4QTTak4">GitHub</a>
       <a class="btn btn--ghost btn--sm" href="#start" data-page-node-id="y50CZ99lBPmNMkjrQCvA3A">下载与安装</a>
     </nav>
@@ -73,6 +74,11 @@
         <h2 id="screens-title" data-page-node-id="6JAATf3iOClwtLPeir9mP5">好音乐，慢慢发现</h2>
         <p class="sec-head__line" data-page-node-id="sCRL6PwFOS5xwqRgqhkFI3">浏览分类歌单、榜单与歌手。插件支持扫码登录时，用手机确认即可，省去电视上输入账号的麻烦。</p>
       </div>
+      <aside class="control-tip" id="controls" aria-labelledby="controls-title">
+        <h3 id="controls-title">长按确定，打开更多操作</h3>
+        <p>选中歌曲、歌手、专辑或歌单后，长按遥控器确定键，或按菜单键，即可打开对应菜单，播放、收藏或查看详情。</p>
+        <p>「我的」页左右切换分类，按确定进入右侧操作区，按下浏览内容。</p>
+      </aside>
       <div class="switcher" data-page-node-id="C0RljpNIE8TNcePBdUxPfK">
         <fieldset class="switcher__tabs" data-page-node-id="phG474EXlKEkKhQm4rZWdx">
           <legend class="visually-hidden" data-page-node-id="o2OOz8QFrCW9HSJ5bC6u8Q">选择界面预览</legend>
@@ -81,7 +87,7 @@
         </fieldset>
         <figure class="switcher__panel" id="screen-discover" data-panel="discover" data-page-node-id="mCwqrS5wLANiGOzlu10uaC">
           <div class="shot" data-slot="discover" data-page-node-id="AjckqtYscYj29HiUd8B1Pf"><img src="./images/tv-discover.webp" width="1600" height="900" alt="发现页：分类歌单、浏览标签与底部播放控制" loading="lazy" data-page-node-id="5d4uixXWtKpq5curkEjv3o"></div>
-          <figcaption class="fig-caption" data-page-node-id="9TZFrC3081W2nWyO0hvrZp">方向键浏览，确认键打开，让遥控器回到熟悉的操作方式。</figcaption>
+          <figcaption class="fig-caption" data-page-node-id="9TZFrC3081W2nWyO0hvrZp">方向键浏览，按确定打开，长按确定或按菜单键查看对应操作；菜单随内容类型和音源能力变化。</figcaption>
         </figure>
         <figure class="switcher__panel" id="screen-login" data-panel="login" data-page-node-id="HGOHYGNpQu5SrhCiUlsUgT">
           <div class="shot" data-slot="login" data-page-node-id="AsA23Platp2ALeg2RwrYJD"><img src="./images/tv-login.webp" width="1600" height="900" alt="插件扫码登录弹窗，二维码为无效演示码" loading="lazy" data-page-node-id="S4PDv9WNmHfRdPH1ufuGf1"></div>
@@ -123,8 +129,8 @@
           <figcaption data-page-node-id="lCRZ2mj44uRxUfiPYD29hf"><h3 data-page-node-id="fesTXLk2lCnuL6SWR4IbaH">晨光白瓷</h3><p data-page-node-id="K39LO7ywWpQsWkiicAECTZ">柔和浅色，让白天的客厅也清晰舒适。</p></figcaption>
         </figure>
         <figure class="theme" data-page-node-id="WfGQtbu2q5mzU4XMvGoQky">
-          <div class="shot" data-slot="theme-mono" data-page-node-id="oJ0CltiF79kNLzZdm72Tyb"><img src="./images/theme-mono.webp" width="476" height="268" alt="静谧黑白主题：黑白界面与灰阶唱片封面" loading="lazy" data-page-node-id="AIreUDmeFMga2BuLFqHcMB"></div>
-          <figcaption data-page-node-id="wTkvN0FBYSGEXZvikyF9dd"><h3 data-page-node-id="aWNaAIGdJYoEMqfiGwFHu7">静谧黑白</h3><p data-page-node-id="8Qm2toe2yTgL3UqjKluevR">收起色彩，让封面与歌词回归纯粹。</p></figcaption>
+          <div class="shot" data-slot="theme-mono" data-page-node-id="oJ0CltiF79kNLzZdm72Tyb"><img src="./images/theme-mono.webp" width="476" height="268" alt="静谧黑白主题：深色界面与高对比文字" loading="lazy" data-page-node-id="AIreUDmeFMga2BuLFqHcMB"></div>
+          <figcaption data-page-node-id="wTkvN0FBYSGEXZvikyF9dd"><h3 data-page-node-id="aWNaAIGdJYoEMqfiGwFHu7">静谧黑白</h3><p data-page-node-id="8Qm2toe2yTgL3UqjKluevR">黑白界面与清晰歌词，保留封面原有色彩。</p></figcaption>
         </figure>
       </div>
     </div>
@@ -138,8 +144,10 @@
       </div>
       <dl class="caps" data-page-node-id="bMVieXCksQZOEs1zWlP47h">
         <div class="caps__row" data-page-node-id="zPBEcB91gVuTh8ElHy61sX"><dt data-page-node-id="3sOpG8p0YAe16KiEORUs6C">找歌与听歌</dt><dd data-page-node-id="zloEpAyNNRNPYMVmPCAisB">搜索歌曲、浏览歌单与榜单，按需选择可用音质。</dd></div>
-        <div class="caps__row" data-page-node-id="JHtQcpxCqxmx3VJ9bbOHhh"><dt data-page-node-id="RwH8DBy72Vd8dIc3CiNZyE">歌词与 MV</dt><dd data-page-node-id="EnZtGYNc7zDc9BpdgFkI3F">显示同步歌词与翻译；插件支持时，也能播放 MV。</dd></div>
-        <div class="caps__row" data-page-node-id="B6Vd3yG0BdAxdvEdT3FkUg"><dt data-page-node-id="o0Wj4F7MgtGh9JT4YxkoiG">收藏与导入</dt><dd data-page-node-id="7I36PzutHQWzjS9LyYAZJ3">收藏、历史与歌单保存在本机，也可通过支持的插件导入已有歌单。</dd></div>
+        <div class="caps__row" data-page-node-id="JHtQcpxCqxmx3VJ9bbOHhh"><dt data-page-node-id="RwH8DBy72Vd8dIc3CiNZyE">歌词与 MV</dt><dd data-page-node-id="EnZtGYNc7zDc9BpdgFkI3F">显示同步歌词、翻译与注音，插件提供词级时间戳时逐字高亮。播放页的「歌词」按钮可调整字号、翻译／注音显示与当前歌曲的歌词时间；插件支持时，也能播放 MV。</dd></div>
+        <div class="caps__row" data-page-node-id="B6Vd3yG0BdAxdvEdT3FkUg"><dt data-page-node-id="o0Wj4F7MgtGh9JT4YxkoiG">收藏与导入</dt><dd data-page-node-id="7I36PzutHQWzjS9LyYAZJ3">收藏、历史与歌单保存在本机。插件支持时，可导入歌单或单曲链接；单曲会保存为只有一首歌的本机歌单。</dd></div>
+        <div class="caps__row"><dt>播放失败自动换源</dt><dd>可在「设置 → 播放」开启，默认关闭。本源所有音质均不可用后，尝试其他已启用音源的同版本歌曲；仍失败再跳过。</dd></div>
+        <div class="caps__row"><dt>熄屏播放</dt><dd>播放页可进入纯黑画面继续听歌，按确定或返回恢复；音量和媒体键照常使用。不保证关闭电视背光。</dd></div>
       </dl>
       <p class="caps__more" data-page-node-id="oNXzrxwxsMVNdjC92YOAmQ">想接入自己的插件？查看<a href="https://github.com/shellvon/prismaura-tv/blob/main/docs/PLUGIN_API.md" data-page-node-id="SGN9f4H8XD06Y8L36or7Rc">插件开发文档与兼容能力矩阵</a>。</p>
     </div>
@@ -174,6 +182,11 @@
         <details>
           <summary>为什么搜到了歌曲，却无法播放？</summary>
           <p>搜索结果不代表一定可播放，实际取决于插件、内容服务、账号权限和网络。先检查插件是否有更新，并按插件要求完成配置；需要登录的内容，应使用自己的账号。</p>
+          <p>「设置 → 播放」可开启“播放失败自动换源”（默认关闭）：本源所有音质均不可用时，尝试其他已启用音源的同版本歌曲；仍失败时沿用自动跳歌流程。该开关随备份导出和恢复。</p>
+        </details>
+        <details>
+          <summary>想重新登录，如何重置音源配置？</summary>
+          <p>在「设置 → 音源」找到对应音源，进入「配置 → 重置配置」，清除该音源填写的参数和本机保存的登录信息，再重新登录或填写。音源本身、收藏和歌单会保留。</p>
         </details>
         <details>
           <summary>更新需要卸载旧版本吗？</summary>
