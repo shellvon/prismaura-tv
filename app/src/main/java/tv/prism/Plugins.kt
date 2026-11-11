@@ -280,12 +280,13 @@ class Plugins(private val context: Context, val client: PluginClient) {
     }
 
     suspend fun mediaSource(plugin: Plugin, song: Song, quality: String, refresh: Boolean = false): JSONObject? {
+        val cacheRevision = mediaCache.revision(plugin.id)
         val policy = plugin.metadata.optString("cacheControl", "no-cache")
         val online = (context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)?.activeNetwork != null
         if (!refresh && (policy == "cache" || (policy == "no-cache" && !online))) mediaCache.read(plugin, song, quality)?.let { return it }
         val result = client.call(plugin.source, plugin.variables, "getMediaSource", JSONArray().put(song.data).put(quality), plugin.id) as? JSONObject
         if (policy != "no-store" && result != null) {
-            try { mediaCache.write(plugin, song, quality, result) }
+            try { mediaCache.write(plugin, song, quality, result, cacheRevision) }
             catch (e: CancellationException) { throw e }
             catch (_: Exception) { /* A cache failure must not prevent a resolved stream playing. */ }
         }
@@ -331,6 +332,30 @@ class Plugins(private val context: Context, val client: PluginClient) {
     suspend fun setEnabled(id: String, enabled: Boolean) = mutex.withLock {
         val state = mutable.value
         withContext(Dispatchers.IO) { write(state.copy(plugins = state.plugins.map { if (it.id == id) it.copy(enabled = enabled) else it })) }
+    }
+
+    /** Reset this plugin's saved parameters, cookies and resolved URLs, reporting each failed step. */
+    suspend fun resetConfiguration(id: String): List<String> {
+        val plugin = state.value.plugins.firstOrNull { it.id == id } ?: return listOf("音源不存在")
+        val failures = mutableListOf<String>()
+        /* Cookies live in the plugin process, a different store from plugins.json,
+           and fail differently. */
+        runCatching { client.call("", JSONObject(), "clearCookies", pluginId = plugin.id) }
+            .onFailure {
+                if (it is CancellationException) throw it
+                failures += "登录信息未清除：${it.message ?: "未知错误"}"
+            }
+        runCatching { setVariables(id, JSONObject()) }
+            .onFailure {
+                if (it is CancellationException) throw it
+                failures += "配置未清除：${it.message ?: "未知错误"}"
+            }
+        runCatching { mediaCache.clearFor(id) }
+            .onFailure {
+                if (it is CancellationException) throw it
+                failures += "播放地址缓存未清除：${it.message ?: "未知错误"}"
+            }
+        return failures
     }
     suspend fun remove(id: String) = mutex.withLock {
         val state = mutable.value

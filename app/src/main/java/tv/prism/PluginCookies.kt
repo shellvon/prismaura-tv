@@ -19,14 +19,16 @@ import javax.crypto.spec.GCMParameterSpec
 class PluginCookies(context: Context, private val pluginId: String) : CookieJar {
     private val prefs = context.getSharedPreferences("plugin_cookies", Context.MODE_PRIVATE)
     private var cookies: MutableList<Cookie>? = null
+    private var retired = false
 
     @Synchronized override fun loadForRequest(url: HttpUrl): List<Cookie> {
+        if (retired) return emptyList()
         val now = System.currentTimeMillis()
         return load().filter { it.expiresAt > now && it.matches(url) }
     }
 
     @Synchronized override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-        if (cookies.isEmpty()) return
+        if (retired || cookies.isEmpty()) return
         val all = load()
         for (cookie in cookies) {
             all.removeAll { it.name == cookie.name && it.domain == cookie.domain && it.path == cookie.path }
@@ -38,6 +40,12 @@ class PluginCookies(context: Context, private val pluginId: String) : CookieJar 
     @Synchronized fun clear() {
         check(prefs.edit().remove(pluginId).commit()) { "无法清除登录状态" }
         cookies = mutableListOf()
+    }
+
+    /** Responses from requests started before a reset must not restore the old cookies. */
+    @Synchronized fun retire() {
+        clear()
+        retired = true
     }
 
     private fun load(): MutableList<Cookie> {

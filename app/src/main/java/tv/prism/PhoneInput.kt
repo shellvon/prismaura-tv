@@ -61,12 +61,18 @@ class PhoneInput(
     } }
 
     private fun <T> onMain(block: () -> T): T {
-        if (Looper.myLooper() == Looper.getMainLooper()) return block()
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            check(!socket.isClosed) { "会话已结束" }
+            return block()
+        }
         val latch = CountDownLatch(1)
         @Suppress("UNCHECKED_CAST") val holder = arrayOfNulls<Any>(1) as Array<T?>
         var error: Throwable? = null
         main.post {
-            try { holder[0] = block() } catch (t: Throwable) { error = t } finally { latch.countDown() }
+            try {
+                check(!socket.isClosed) { "会话已结束" }
+                holder[0] = block()
+            } catch (t: Throwable) { error = t } finally { latch.countDown() }
         }
         check(latch.await(3, TimeUnit.SECONDS)) { "电视未响应" }
         error?.let { throw it }
@@ -75,6 +81,7 @@ class PhoneInput(
 
     private fun handle(socket: Socket) {
         socket.use { client ->
+        var authorized = false
         try {
             client.soTimeout = 5000
             val input = client.getInputStream().buffered()
@@ -102,6 +109,7 @@ class PhoneInput(
             require(hostHeader == "$address:${socket.localPort}" || forwarded) { "无效主机" }
             val origin = headers["origin"]
             require(origin == null || origin == "http://$hostHeader") { "无效来源" }
+            authorized = true
 
             val isState = path == "/$token/state"
             val isAction = path == "/$token/action"
@@ -123,7 +131,8 @@ class PhoneInput(
                             val secret = listOf("password", "cookie", "token", "secret").any { key.contains(it, ignoreCase = true) }
                             "<label>${escape(label)}<input type=\"${if (secret) "password" else "text"}\" name=\"${escape(key)}\" maxlength=\"4096\" autocomplete=\"off\"></label>"
                         }
-                        template.replace("{{fields}}", inputs).replace("{{action}}", "/$token")
+                        inputPage("发送到电视", "填写后发送，再回到电视确认并保存配置。",
+                            "<form method=\"post\" action=\"/$token\">$inputs<button type=\"submit\">发送到电视</button></form>")
                     }
                     reply(client, 200, "text/html; charset=utf-8", html)
                 }
@@ -146,16 +155,35 @@ class PhoneInput(
                     }.toMap().filterKeys { key -> fields.any { it.first == key } }
                     require(data.values.all { it.length <= 4096 })
                     require(used.compareAndSet(false, true)) { "输入已完成" }
-                    main.post { submit(data) }
-                    reply(client, 200, "text/html; charset=utf-8", "<!doctype html><meta charset=utf-8><title>已发送</title><p>已发送到电视，可以关闭页面。</p>")
+                    try {
+                        reply(client, 200, "text/html; charset=utf-8", inputPage("已发送到电视", "请回到电视确认并保存配置，可以关闭此页面。",
+                            "<div class=\"result-mark\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><path d=\"m5 12 4 4 10-10\"/></svg></div>"))
+                    } finally {
+                        // The submit callback shuts the input service down: send the result
+                        // page first; a dropped connection still submits what was received.
+                        main.post { submit(data) }
+                    }
                 }
                 else -> reply(client, 405, "text/plain; charset=utf-8", "Method Not Allowed")
             }
         } catch (e: Exception) {
-            runCatching { reply(client, 400, "text/plain; charset=utf-8", e.message ?: "Bad Request") }
+            runCatching {
+                if (!remote && authorized) {
+                    val content = if (used.get()) "<p>此输入已完成，请回到电视继续操作。</p>"
+                        else "<a class=\"button\" href=\"/$token\">返回填写</a>"
+                    reply(client, 400, "text/html; charset=utf-8", inputPage("未能发送", e.message ?: "请检查填写内容后重试。", content))
+                } else if (remote && authorized) {
+                    reply(client, 400, "application/json; charset=utf-8", JSONObject().put("ok", false).put("error", e.message ?: "请求失败").toString())
+                } else reply(client, 400, "text/plain; charset=utf-8", e.message ?: "Bad Request")
+            }
         }
         }
     }
+
+    private fun inputPage(title: String, message: String, content: String): String = template
+        .replace("{{title}}", escape(title))
+        .replace("{{message}}", escape(message))
+        .replace("{{content}}", content)
 
     private fun reply(client: Socket, code: Int, type: String, body: String) {
         val bytes = body.toByteArray(Charsets.UTF_8)

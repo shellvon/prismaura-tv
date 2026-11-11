@@ -67,6 +67,9 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
@@ -165,6 +168,12 @@ class MainActivity : ComponentActivity() {
     private var connection: ListenableFuture<MediaController>? = null
     private var controller by mutableStateOf<MediaController?>(null)
     private var status by mutableStateOf("正在连接播放器…")
+    private var playbackStatus by mutableStateOf("正在连接播放器…")
+
+    private fun reportPlayback(message: String) {
+        playbackStatus = message
+        status = message
+    }
     private var page by mutableStateOf("home")
     private var playerOpen by mutableStateOf(false)
     private var playerScreenOff by mutableStateOf(false)
@@ -251,7 +260,7 @@ class MainActivity : ComponentActivity() {
     private var queueIndex: Int
         get() = ActiveQueue.index
         set(value) { ActiveQueue.index = value }
-    private var playMode by mutableStateOf("顺序播放")
+    private var playMode by mutableStateOf(PlaybackMode.SEQUENTIAL)
     private var quality by mutableStateOf("standard")
     private var autoSourceFallback by mutableStateOf(false)
     private var recovery: PlaybackRecovery? = null
@@ -296,13 +305,20 @@ class MainActivity : ComponentActivity() {
     /* The import runs outside the composable that owns 我的's tab state, so the playlist it
        writes comes across as an id to open rather than a page nobody can find. */
     private var playlistToShow by mutableStateOf<String?>(null)
-    private var phoneInput by mutableStateOf<PhoneInput?>(null)
+    private var phoneRemote by mutableStateOf<PhoneInput?>(null)
+    private var phoneForm by mutableStateOf<PhoneInput?>(null)
+    private val phoneInput: PhoneInput? get() = if (phoneRemoteMode) phoneRemote else phoneForm
     /* The QR dialog is only the way in. Hiding it must not stop the server: the whole point
        of the remote is to use the phone while the TV stays unobstructed. */
     private var phoneDialog by mutableStateOf(false)
     private var phoneRemoteMode by mutableStateOf(false)
+    private var phoneRemoteEntry by mutableStateOf("play")
     private val phoneHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private var phoneTimeout: Runnable? = null
+    private var phoneRemoteTimeout: Runnable? = null
+    private var phoneFormTimeout: Runnable? = null
+    private var restoringBackup by mutableStateOf(false)
+    private var restoreMessage by mutableStateOf("")
+    private var restoreFailed by mutableStateOf(false)
     private val pluginReplacements = mutableStateListOf<PluginReplacement>()
     private val listener = object : Player.Listener {
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -327,8 +343,8 @@ class MainActivity : ComponentActivity() {
                 }
                 ensureRadioTail()
             }
-            if (status.startsWith("解析失败") || status.startsWith("播放失败")) {
-                status = queue.getOrNull(queueIndex)?.let { "正在播放：${it.title}" }.orEmpty()
+            if (playbackStatus.startsWith("解析失败") || playbackStatus.startsWith("播放失败")) {
+                reportPlayback(queue.getOrNull(queueIndex)?.let { "正在播放：${it.title}" }.orEmpty())
             }
         }
         override fun onPlayerError(error: PlaybackException) {
@@ -358,9 +374,9 @@ class MainActivity : ComponentActivity() {
                 error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "网络连接超时"
                 else -> error.message ?: "未知错误"
             }
-            status = "播放失败：$reason"
+            reportPlayback("播放失败：$reason")
             if (ActiveQueue.radio) queue.getOrNull(queueIndex)?.let {
-                advanceAfterFailure(it, "播放失败", status, controller?.playWhenReady == true) { }
+                advanceAfterFailure(it, "播放失败", playbackStatus, controller?.playWhenReady == true) { }
             }
         }
         override fun onTracksChanged(tracks: Tracks) {
@@ -389,8 +405,8 @@ class MainActivity : ComponentActivity() {
             if (playbackState == Player.STATE_ENDED && queue.isNotEmpty() && resolving?.isActive != true) {
                 when {
                     ActiveQueue.radio -> step(1)
-                    playMode == "单曲循环" -> playAt(queueIndex, openPlayer = false)
-                    playMode == "顺序播放" && queueIndex == queue.lastIndex -> status = "播放完毕"
+                    playMode == PlaybackMode.REPEAT_ONE -> playAt(queueIndex, openPlayer = false)
+                    playMode == PlaybackMode.SEQUENTIAL && queueIndex == queue.lastIndex -> reportPlayback("播放完毕")
                     else -> {
                         step(1)
                     }
@@ -423,7 +439,7 @@ class MainActivity : ComponentActivity() {
             val saved = JSONObject(getSharedPreferences("search", MODE_PRIVATE).getString("latency", "{}") ?: "{}")
             saved.keys().asSequence().associateWith { saved.optLong(it) }
         }.getOrDefault(emptyMap())
-        playMode = getSharedPreferences("playback", MODE_PRIVATE).getString("mode", "顺序播放") ?: "顺序播放"
+        playMode = readPlaybackMode()
         homeShelfHidden = getSharedPreferences("home", MODE_PRIVATE).getStringSet("hidden_shelves", null)?.toSet() ?: emptySet()
         recommendationPluginId = getSharedPreferences("home", MODE_PRIVATE).getString("recommendation_plugin", "") ?: ""
         chartPluginId = getSharedPreferences("home", MODE_PRIVATE).getString("chart_plugin", "") ?: ""
@@ -497,7 +513,7 @@ class MainActivity : ComponentActivity() {
             .setListener(object : MediaController.Listener {
                 override fun onDisconnected(controller: MediaController) {
                     this@MainActivity.controller = null
-                    status = "播放器已断开，请选择重新连接"
+                    reportPlayback("播放器已断开，请选择重新连接")
                 }
             }).buildAsync()
         connection = future
@@ -516,7 +532,7 @@ class MainActivity : ComponentActivity() {
                     playAt(queueIndex, openPlayer = false, autoplay = false, startAt = at)
                 }
             }
-            catch (e: Exception) { status = "播放器连接失败：${e.cause?.message ?: e.message}" }
+            catch (e: Exception) { reportPlayback("播放器连接失败：${e.cause?.message ?: e.message}") }
         }, ContextCompat.getMainExecutor(this))
     }
 
@@ -1115,60 +1131,79 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @Composable private fun SourcePicker(options: List<Plugin>, selected: String, modifier: Modifier = Modifier, onSelect: (Plugin) -> Unit) {
+    /* open is hoisted to the caller: focus lives on the whole row and OK opens the sheet
+       there. passive skips the focus ring and pointer events — it only shows the value. */
+    @Composable private fun SourcePicker(
+        options: List<Plugin>, selected: String, modifier: Modifier = Modifier,
+        open: Boolean = false, onOpenChange: (Boolean) -> Unit = {},
+        passive: Boolean = false, onSelect: (Plugin) -> Unit,
+    ) {
         val c = LocalPrismColors.current
-        var open by remember { mutableStateOf(false) }
         val current = options.firstOrNull { it.id == selected } ?: options.firstOrNull()
         Box {
             /* 选择音源只影响对应的推荐或榜单。 */
-            Row(modifier.height(34.dp).auraFocus(RoundedCornerShape(7.dp), 1f)
+            Row(modifier.height(34.dp).then(if (passive) Modifier else Modifier.auraFocus(RoundedCornerShape(7.dp), 1f))
                 .clip(RoundedCornerShape(7.dp))
                 .border(1.dp, c.accent.copy(alpha = .24f), RoundedCornerShape(7.dp))
                 .background(c.accent.copy(alpha = .055f))
-                .clickable { open = true }
+                .then(if (passive) Modifier.focusProperties { canFocus = false } else Modifier.clickable { onOpenChange(true) })
                 .padding(start = 11.dp, end = 9.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 Text(current?.displayName ?: "暂无支持此能力的音源", color = c.foreground.copy(alpha = .9f), fontSize = 12.sp, maxLines = 1)
                 Glyph("chev", Modifier.size(10.dp), lerp(c.accent, c.glow, .5f))
             }
-            if (open) Popup(alignment = Alignment.TopEnd, offset = IntOffset(0, with(LocalDensity.current) { 38.dp.roundToPx() }),
-                onDismissRequest = { open = false }, properties = PopupProperties(focusable = true)) {
-                val focus = remember { FocusRequester() }
-                val entryIndex = options.indexOfFirst { it.id == current?.id }.coerceAtLeast(0)
-                LaunchedEffect(Unit) { withFrameNanos { }; runCatching { focus.requestFocus() } }
-                val menuShape = RoundedCornerShape(12.dp)
-                Column(Modifier.width(268.dp).heightIn(max = 280.dp).clip(menuShape).background(c.panel)
-                    .border(1.dp, c.line, menuShape).padding(6.dp).verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (options.isEmpty()) SettingsButton("暂无支持的音源 · 返回", { open = false }, Modifier.fillMaxWidth().focusRequester(focus))
-                    options.forEachIndexed { index, plugin ->
-                        val chosen = plugin.id == current?.id
-                        val rowShape = RoundedCornerShape(8.dp)
-                        Row(Modifier.fillMaxWidth().heightIn(min = 42.dp)
-                            .then(if (index == entryIndex) Modifier.focusRequester(focus) else Modifier)
-                            .auraFocus(rowShape, 1f).clip(rowShape)
-                            .background(if (chosen) c.accent.copy(alpha = .12f) else Color.Transparent)
-                            .selectable(chosen, role = Role.RadioButton, onClick = { onSelect(plugin); open = false })
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            PlatformIcon(plugin.platform, Modifier.size(22.dp))
-                            Text(plugin.displayName, Modifier.weight(1f), color = c.foreground,
-                                fontSize = 14.sp, lineHeight = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            if (chosen) Glyph("check", Modifier.size(14.dp), c.accent)
-                        }
+            if (open) ChoicePopup(options, options.indexOfFirst { it.id == current?.id },
+                label = { it.displayName }, onDismiss = { onOpenChange(false) },
+                onSelect = { onSelect(it); onOpenChange(false) },
+                icon = { PlatformIcon(it.platform, Modifier.size(22.dp)) })
+        }
+    }
+
+    @Composable private fun <T> ChoicePopup(
+        options: List<T>, selectedIndex: Int, label: (T) -> String,
+        onDismiss: () -> Unit, onSelect: (T) -> Unit, icon: @Composable (T) -> Unit,
+    ) {
+        val c = LocalPrismColors.current
+        Popup(alignment = Alignment.TopEnd, offset = IntOffset(0, with(LocalDensity.current) { 38.dp.roundToPx() }),
+            onDismissRequest = onDismiss, properties = PopupProperties(focusable = true)) {
+            val focus = remember { FocusRequester() }
+            LaunchedEffect(Unit) { withFrameNanos { }; focus.requestFocus() }
+            val shape = RoundedCornerShape(12.dp)
+            Column(Modifier.width(268.dp).heightIn(max = 280.dp).clip(shape).background(c.panel)
+                .border(1.dp, c.line, shape).padding(6.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (options.isEmpty()) SettingsButton("暂无可选项 · 返回", onDismiss, Modifier.fillMaxWidth().focusRequester(focus))
+                options.forEachIndexed { index, option ->
+                    val chosen = index == selectedIndex
+                    val rowShape = RoundedCornerShape(8.dp)
+                    Row(Modifier.fillMaxWidth().heightIn(min = 42.dp)
+                        .then(if (index == selectedIndex.coerceAtLeast(0)) Modifier.focusRequester(focus) else Modifier)
+                        .auraFocus(rowShape, 1f).clip(rowShape)
+                        .background(if (chosen) c.accent.copy(alpha = .12f) else Color.Transparent)
+                        .selectable(chosen, role = Role.RadioButton, onClick = { onSelect(option) })
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        icon(option)
+                        Text(label(option), Modifier.weight(1f), color = c.foreground,
+                            fontSize = 14.sp, lineHeight = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (chosen) Glyph("check", Modifier.size(14.dp), c.accent)
                     }
                 }
             }
         }
     }
 
-    private fun toggleFavorite(song: Song?) {
+    private fun toggleFavorite(song: Song?, onFailure: (String) -> Unit = { status = it }) {
         if (song == null) return
-        if (song.pluginId == "local" && !song.data.optBoolean("persisted")) status = "本地文件未获得长期授权，不能保存"
-        else lifecycleScope.launch { try { library.toggleFavorite(song) } catch (e: Exception) { status = e.message ?: "保存失败" } }
+        if (song.pluginId == "local" && !song.data.optBoolean("persisted")) onFailure("本地文件未获得长期授权，不能保存")
+        else lifecycleScope.launch {
+            try { library.toggleFavorite(song) }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { onFailure(e.message ?: "保存失败") }
+        }
     }
 
-    private fun toggleSubject(pluginId: String, kind: String, item: JSONObject, sourceName: String) {
+    private fun toggleSubject(pluginId: String, kind: String, item: JSONObject, sourceName: String, onFailure: (String) -> Unit = { status = it }) {
         lifecycleScope.launch {
             try {
                 val keys = plugins.state.value.plugins.firstOrNull { it.id == pluginId }?.metadata?.let(::primaryKeys) ?: listOf("id")
@@ -1176,13 +1211,14 @@ class MainActivity : ComponentActivity() {
                 val wasSaved = library.state.value.subjects.any { it.key == key }
                 library.toggleSubject(SavedSubject(pluginId, kind, item, sourceName, keys))
                 status = if (wasSaved) "已取消收藏" else "已收藏"
-            } catch (e: Exception) { status = e.message ?: "保存失败" }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { onFailure(e.message ?: "保存失败") }
         }
     }
 
     private fun playAt(index: Int, openPlayer: Boolean = true, autoplay: Boolean = true, startAt: Long = 0L, autoSkip: Boolean = false, sourceSong: Song? = null) {
         val song = queue.getOrNull(index) ?: return
-        val player = controller ?: run { status = "播放器未连接"; return }
+        val player = controller ?: run { reportPlayback("播放器未连接"); return }
         /* The loaded track needs no second pass: the audio is mid-phrase and its title is on
            screen, so re-picking it only moves the needle within the queue. */
         if (sourceSong == null && !autoSkip && startAt <= 0L && song.key == loadedKey && playbackState != Player.STATE_ENDED && playbackState != Player.STATE_IDLE) {
@@ -1191,7 +1227,7 @@ class MainActivity : ComponentActivity() {
             queueIndex = index
             if (openPlayer) playerOpen = true
             if (autoplay && !player.playWhenReady) player.play()
-            status = if (player.playWhenReady) "正在播放：${song.title}" else "已暂停：${song.title}"
+            reportPlayback(if (player.playWhenReady) "正在播放：${song.title}" else "已暂停：${song.title}")
             if (autoplay) lifecycleScope.launch { runCatching { library.record(song) } }
             return
         }
@@ -1237,11 +1273,11 @@ class MainActivity : ComponentActivity() {
                 if (startAt > 0) { player.seekTo(startAt); pendingSeekMs = startAt; positionMs = startAt }
                 if (autoplay) player.play()
                 lyricStatus = "本地文件暂无歌词"
-                status = when {
+                reportPlayback(when {
                     !autoplay -> "上次听到 ${clock(startAt)}，按播放继续"
                     song.data.optBoolean("persisted") -> "正在播放：${song.title}"
                     else -> "正在播放；文件授权未能长期保存"
-                }
+                })
                 if (autoplay && song.data.optBoolean("persisted")) lifecycleScope.launch { runCatching { library.record(song) } }
             } catch (e: Exception) {
                 pendingSeekMs = null
@@ -1280,7 +1316,7 @@ class MainActivity : ComponentActivity() {
            new title made the player look like it was playing the song you just picked. */
         if (autoplay && player.playWhenReady) player.pause()
         resolving = lifecycleScope.launch {
-            status = "正在解析：${song.title}"
+            reportPlayback("正在解析：${song.title}")
             try {
                 val attempts = qualityAttempts(qualityOptions(plugin, streamSong), quality)
                 var resolved: JSONObject? = null
@@ -1318,9 +1354,9 @@ class MainActivity : ComponentActivity() {
                 loadedKey = song.key
                 if (startAt > 0) { player.seekTo(startAt); pendingSeekMs = startAt; positionMs = startAt }
                 if (autoplay) {
-                    player.play(); failedSongs.clear(); status = if (attempts.firstOrNull() != resolvedTier || actualTier != resolvedTier) "正在播放：${song.title} · 已回退至 ${qualityText(actualTier)}" else "正在播放：${song.title}"
+                    player.play(); failedSongs.clear(); reportPlayback(if (attempts.firstOrNull() != resolvedTier || actualTier != resolvedTier) "正在播放：${song.title} · 已回退至 ${qualityText(actualTier)}" else "正在播放：${song.title}")
                     lifecycleScope.launch { runCatching { library.record(song) } }
-                } else status = "上次听到 ${clock(startAt)}，按播放继续"
+                } else reportPlayback("上次听到 ${clock(startAt)}，按播放继续")
                 ActiveQueue.source = PlayingSource(song.key, streamSong)
                 loadLyrics(plugin, streamSong)
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -1360,7 +1396,7 @@ class MainActivity : ComponentActivity() {
         pass.ready?.cancel(); resolving?.cancel()
         controller?.pause(); controller?.stop()
         loadedKey = ""; pendingSeekMs = null; positionMs = pass.position
-        status = "已暂停：${pass.sources.original.title}"
+        reportPlayback("已暂停：${pass.sources.original.title}")
         return true
     }
 
@@ -1398,7 +1434,7 @@ class MainActivity : ComponentActivity() {
             fun current() = recovery === pass && autoSourceFallback && queue.getOrNull(queueIndex)?.key == original.key
             val succeeded = withTimeoutOrNull(SourceRecovery.BUDGET_MS) {
                 while (current()) {
-                    status = if (pass.sources.current == null) "正在解析：${original.title}" else "正在尝试其他音质或音源：${original.title}"
+                    reportPlayback(if (pass.sources.current == null) "正在解析：${original.title}" else "正在尝试其他音质或音源：${original.title}")
                     val stream = pass.sources.next() ?: return@withTimeoutOrNull false
                     if (!current()) return@withTimeoutOrNull false
                     val ready = CompletableDeferred<Unit>()
@@ -1428,7 +1464,7 @@ class MainActivity : ComponentActivity() {
                         lyricCalibrationMs = LyricCalibration.load(this@MainActivity, stream.song.key)
                         loadLyrics(stream.plugin, stream.song)
                         if (player.isPlaying) listener.onIsPlayingChanged(true)
-                        status = "正在播放：${original.title}" + if (stream.song.pluginId != original.pluginId) " · ${stream.song.sourceLabel}" else ""
+                        reportPlayback("正在播放：${original.title}" + if (stream.song.pluginId != original.pluginId) " · ${stream.song.sourceLabel}" else "")
                         lifecycleScope.launch { runCatching { library.record(original) } }
                         return@withTimeoutOrNull true
                     }
@@ -1454,7 +1490,7 @@ class MainActivity : ComponentActivity() {
        stuck there. Skip to the next track that has not failed yet in this pass; once every
        track has failed, stop instead of cycling through the same failures forever. */
     private fun advanceAfterFailure(song: Song, label: String, detail: String, autoplay: Boolean = true, restore: () -> Unit) {
-        if (!autoplay) { status = detail; restore(); return }
+        if (!autoplay) { reportPlayback(detail); restore(); return }
         failedSongs += song.key
         val next = (if (ActiveQueue.radio) (queueIndex + 1 until queue.size).toList() else
             (1 until queue.size).map { offset -> (queueIndex + offset) % queue.size })
@@ -1462,13 +1498,13 @@ class MainActivity : ComponentActivity() {
         if (next == null || ActiveQueue.radio && failedSongs.size >= 5) {
             if (ActiveQueue.radio) { controller?.pause(); radioJob?.cancel(); radioRetryAt = android.os.SystemClock.elapsedRealtime() + 30_000 }
             failedSongs.clear()
-            status = detail
+            reportPlayback(detail)
             restore()
             return
         }
         /* queueIndex stays on the failed song until the skip fires, so the pass continues
            from here instead of jumping back to an already-failed neighbour. */
-        status = "$label，正在尝试下一首：${song.title}"
+        reportPlayback("$label，正在尝试下一首：${song.title}")
         val token = ++autoSkipToken
         lifecycleScope.launch {
             delay(600)
@@ -1510,8 +1546,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /* 导入只用 MusicFree 的标准方法 importMusicSheet，宿主不为某个平台写特例：链接认得出平台
-       就先交给对应音源，认不出来就依次问每一个声明了导入能力的音源，直到有一个交出歌曲。 */
+    /* Import goes through importMusicSheet/importMusicItem with no platform special-casing:
+       a recognized link goes to its source; otherwise every source declaring import capability
+       is asked in turn until one returns a song. */
     private fun importCandidates(url: String): List<Plugin> {
         val capable = plugins.state.value.plugins.filter { it.enabled && (it.metadata.optBoolean("importSheet") || it.metadata.optBoolean("importItem")) }
         val target = MusicPlatform.identify(url)
@@ -1608,11 +1645,11 @@ class MainActivity : ComponentActivity() {
             if (radioAdvanceJob?.isActive == true) return
             val current = queue.getOrNull(queueIndex)?.key
             radioAdvanceJob = lifecycleScope.launch {
-                status = "极光电台 正在续曲…"
+                reportPlayback("极光电台 正在续曲…")
                 ensureRadioTail(force = true)?.join()
                 if (ActiveQueue.radio && queue.getOrNull(queueIndex)?.key == current) {
                     if (queueIndex < queue.lastIndex) playAt(queueIndex + 1, openPlayer = false)
-                    else status = "电台暂时没有更多曲目，请稍后重试或换一批"
+                    else reportPlayback("电台暂时没有更多曲目，请稍后重试或换一批")
                 }
             }
             return
@@ -1621,9 +1658,73 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun nextIndex(direction: Int): Int =
-        if (playMode == "随机播放" && queue.size > 1 && direction > 0) {
+        if (playMode == PlaybackMode.SHUFFLE && queue.size > 1 && direction > 0) {
             val n = kotlin.random.Random.nextInt(queue.size - 1); if (n >= queueIndex) n + 1 else n
         } else (queueIndex + direction + queue.size) % queue.size
+
+    private fun readPlaybackMode(): PlaybackMode {
+        val prefs = getSharedPreferences("playback", MODE_PRIVATE)
+        val stored = prefs.all["mode"] as? String
+        val mode = PlaybackMode.fromId(stored) ?: PlaybackMode.SEQUENTIAL
+        if (stored != mode.id) prefs.edit().putString("mode", mode.id).apply()
+        return mode
+    }
+
+    private fun updatePreference(key: String, value: String) {
+        when (key) {
+            "mode" -> {
+                val mode = PlaybackMode.fromId(value) ?: error("未知播放模式")
+                leaveRadio()
+                playMode = mode
+                getSharedPreferences("playback", MODE_PRIVATE).edit().putString("mode", mode.id).apply()
+            }
+            "quality" -> {
+                require(value in setOf("low", "standard", "high", "super", "flac", "flac24bit", "hires", "dolby", "atmos", "atmos_plus", "64k", "128k", "192k", "320k", "mgg")) { "未知音质" }
+                quality = value
+                getSharedPreferences("playback", MODE_PRIVATE).edit().putString("quality", value).apply()
+            }
+            "autoSourceFallback" -> setAutoSourceFallback(value.toBooleanStrictOrNull() ?: error("开关值无效"))
+            "theme" -> {
+                require(value in setOf("gold", "porcelain", "mono")) { "未知主题" }
+                theme = value
+                getSharedPreferences("appearance", MODE_PRIVATE).edit().putString("theme", value).apply()
+            }
+            "miniLyrics", "reduceMotion", "subLyrics" -> {
+                val enabled = value.toBooleanStrictOrNull() ?: error("开关值无效")
+                val preference = when (key) {
+                    "miniLyrics" -> { showMiniLyrics = enabled; "mini_lyrics" }
+                    "reduceMotion" -> { reduceMotion = enabled; "reduce_motion" }
+                    else -> { subLyrics = enabled; "sub_lyrics" }
+                }
+                getSharedPreferences("appearance", MODE_PRIVATE).edit().putBoolean(preference, enabled).apply()
+            }
+            "lyricFontLevel" -> {
+                require(value in setOf("小", "标准", "大")) { "未知歌词字号" }
+                lyricFontLevel = value
+                getSharedPreferences("appearance", MODE_PRIVATE).edit().putString("lyric_font_level", value).apply()
+            }
+            "pluginWorkerLimit" -> {
+                val limit = value.toIntOrNull() ?: error("并发数无效")
+                require(limit in 0..4) { "并发数应为 0～4" }
+                pluginWorkerLimit = limit
+                PluginWorkers.save(this, limit)
+            }
+            "recommendationSource", "chartSource" -> {
+                val plugin = plugins.state.value.plugins.firstOrNull { it.id == value && it.enabled } ?: error("音源不存在或已停用")
+                val preference = if (key == "recommendationSource") {
+                    require(plugin.capabilities.recommendations) { "该音源不支持推荐" }
+                    recommendationPluginId = value
+                    "recommendation_plugin"
+                } else {
+                    require(plugin.capabilities.charts) { "该音源不支持榜单" }
+                    chartPluginId = value
+                    "chart_plugin"
+                }
+                getSharedPreferences("home", MODE_PRIVATE).edit().putString(preference, value).apply()
+            }
+            else -> error("未知设置项")
+        }
+    }
 
     private fun toggleHomeShelf(id: String) {
         homeShelfHidden = if (id in homeShelfHidden) homeShelfHidden - id else homeShelfHidden + id
@@ -1636,7 +1737,7 @@ class MainActivity : ComponentActivity() {
     private fun reloadBackedState() {
         quality = getSharedPreferences("playback", MODE_PRIVATE).getString("quality", "standard") ?: "standard"
         setAutoSourceFallback(getSharedPreferences("playback", MODE_PRIVATE).getBoolean(SourceRecovery.PREFERENCE, false), persist = false)
-        playMode = getSharedPreferences("playback", MODE_PRIVATE).getString("mode", "顺序播放") ?: "顺序播放"
+        playMode = readPlaybackMode()
         theme = getSharedPreferences("appearance", MODE_PRIVATE).getString("theme", "gold") ?: "gold"
         showMiniLyrics = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("mini_lyrics", false)
         reduceMotion = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("reduce_motion", false)
@@ -1648,6 +1749,7 @@ class MainActivity : ComponentActivity() {
         recommendationPluginId = getSharedPreferences("home", MODE_PRIVATE).getString("recommendation_plugin", "") ?: ""
         chartPluginId = getSharedPreferences("home", MODE_PRIVATE).getString("chart_plugin", "") ?: ""
         searchHistory = loadSearchHistory()
+        SourcePlatforms.initialize(this)
     }
 
     /* History is kept per search type so 歌手 searches don't suggest 歌曲 terms.
@@ -1675,10 +1777,22 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun closePhoneInput() {
-        phoneTimeout?.let { phoneHandler.removeCallbacks(it) }
-        phoneTimeout = null
-        phoneDialog = false
-        phoneInput?.close(); phoneInput = null
+        closePhoneSession(phoneRemoteMode)
+    }
+
+    private fun closePhoneSession(remote: Boolean) {
+        val session = if (remote) phoneRemote else phoneForm
+        if (phoneInput === session) phoneDialog = false
+        val timeout = if (remote) phoneRemoteTimeout else phoneFormTimeout
+        timeout?.let { phoneHandler.removeCallbacks(it) }
+        session?.close()
+        if (remote) { phoneRemote = null; phoneRemoteTimeout = null }
+        else { phoneForm = null; phoneFormTimeout = null }
+    }
+
+    private fun closePhoneSessions() {
+        closePhoneSession(false)
+        closePhoneSession(true)
         pluginReplacements.clear()
     }
 
@@ -1712,27 +1826,31 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openPhoneInput(fields: List<Pair<String, String>>, onSubmit: (Map<String, String>) -> Unit) {
-        closePhoneInput()
+        closePhoneSession(false)
         try {
-            phoneInput = PhoneInput(this, fields) { values ->
-                closePhoneInput()
-                onSubmit(values)
+            lateinit var form: PhoneInput
+            form = PhoneInput(this, fields) { values ->
+                if (phoneForm === form) {
+                    closePhoneSession(false)
+                    onSubmit(values)
+                }
             }
+            phoneForm = form
             phoneRemoteMode = false
             phoneDialog = true
-            phoneTimeout = Runnable { closePhoneInput(); status = "扫码输入已过期，请重新打开" }.also { phoneHandler.postDelayed(it, 300_000) }
+            phoneFormTimeout = Runnable { closePhoneSession(false); status = "扫码输入已过期，请重新打开" }.also { phoneHandler.postDelayed(it, 300_000) }
         } catch (e: Exception) { status = "无法启动手机输入：${e.message}" }
     }
 
     /* The remote panel is meant to stay open while someone browses the TV. It lives half an
        hour; hiding the QR only hides the dialog. */
     private fun openPhoneRemote(snapshot: () -> String, command: (String) -> String) {
-        closePhoneInput()
+        closePhoneSession(true)
         try {
-            phoneInput = PhoneInput(this, snapshot = snapshot, command = command)
+            phoneRemote = PhoneInput(this, snapshot = snapshot, command = command)
             phoneRemoteMode = true
             phoneDialog = true
-            phoneTimeout = Runnable { closePhoneInput(); status = "手机遥控已过期，请重新打开" }.also { phoneHandler.postDelayed(it, 1_800_000) }
+            phoneRemoteTimeout = Runnable { closePhoneSession(true); status = "手机遥控已过期，请重新打开" }.also { phoneHandler.postDelayed(it, 1_800_000) }
         } catch (e: Exception) { status = "无法启动手机遥控：${e.message}" }
     }
 
@@ -1873,11 +1991,14 @@ class MainActivity : ComponentActivity() {
         var menuPlayer by remember { mutableStateOf(false) }
         var activeMv by remember { mutableStateOf<VideoSource?>(null) }
         var resumeAfterMv by remember { mutableStateOf(false) }
-        /* 管理模式 covers one list at a time: song keys, saved subject keys, or local playlist ids. */
+        /* Manage mode covers one list at a time: song keys, saved subject keys, or local playlist ids. */
         var libraryManage by remember { mutableStateOf(false) }
         var librarySelected by remember { mutableStateOf(setOf<String>()) }
-        /* 管理 owns selecting; the confirmation dialog owns the irreversible part. */
+        /* Manage owns selecting; the confirmation dialog owns the irreversible part. */
         var confirmBatchOpen by remember { mutableStateOf(false) }
+        /* Long-press on a tab opens the list-level menu (play all / import / manage):
+           toolbar actions stay reachable without crossing five tabs. */
+        var libraryListMenu by remember { mutableStateOf(false) }
         var settingsSection by remember { mutableStateOf("外观") }
         var cacheSize by remember { mutableLongStateOf(-1L) }
         var clearingCache by remember { mutableStateOf(false) }
@@ -1900,21 +2021,26 @@ class MainActivity : ComponentActivity() {
         fun openMv(song: Song?) {
             if (song == null) return
             lifecycleScope.launch {
-                status = "正在解析 MV…"
+                reportPlayback("正在解析 MV…")
                 try {
                     val source = plugins.resolveVideo(song) ?: error("该音源没有返回可播放的 MV 地址")
                     if (queue.getOrNull(queueIndex)?.key != song.key) return@launch
                     resumeAfterMv = controller?.playWhenReady == true
-                    controller?.pause(); activeMv = source; status = ""
+                    controller?.pause(); activeMv = source; reportPlayback("")
                 } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-                catch (e: Exception) { status = "MV 不可用：${e.message ?: "解析失败"}" }
+                catch (e: Exception) { reportPlayback("MV 不可用：${e.message ?: "解析失败"}") }
             }
         }
 
-        fun openPhoneHub() {
+        fun openPhoneHub(entry: String? = null) {
+            phoneRemoteEntry = entry ?: when {
+                page == "plugins" -> "settings"
+                page == "search" || queue.isEmpty() -> "search"
+                else -> "play"
+            }
             /* Reopening the QR after hiding it reuses the live session, so the phone page that
                is already open keeps the same address. A leftover config form is not a remote. */
-            if (phoneInput != null && phoneRemoteMode) { phoneDialog = true; return }
+            if (phoneRemote != null) { phoneRemoteMode = true; phoneDialog = true; return }
             openPhoneRemote(
                 snapshot = {
                     val song = queue.getOrNull(queueIndex)
@@ -1927,9 +2053,22 @@ class MainActivity : ComponentActivity() {
                         .put("duration", durationMs)
                         .put("quality", quality)
                         .put("qualityLabel", qualityText(playingQuality.ifBlank { quality }))
-                        .put("mode", if (ActiveQueue.radio) "极光电台" else playMode)
+                        .put("mode", playMode.id)
+                        .put("radioActive", ActiveQueue.radio)
                         .put("miniLyrics", showMiniLyrics)
                         .put("theme", theme)
+                        .put("reduceMotion", reduceMotion)
+                        .put("autoSourceFallback", autoSourceFallback)
+                        .put("lyricFontLevel", lyricFontLevel)
+                        .put("subLyrics", subLyrics)
+                        .put("pluginWorkerLimit", pluginWorkerLimit)
+                        .put("automaticWorkers", PluginWorkers.automatic(this@MainActivity))
+                        .put("recommendationSource", Discovery.select(plugins.state.value.plugins, recommendationPluginId) { it.recommendations }?.id.orEmpty())
+                        .put("chartSource", Discovery.select(plugins.state.value.plugins, chartPluginId) { it.charts }?.id.orEmpty())
+                        .put("homeShelves", JSONArray().also { array ->
+                            val shelves = listOf("favorites" to "我的收藏", "recent" to "最近播放") + library.state.value.playlists.map { it.id to it.name }
+                            shelves.forEach { (id, name) -> array.put(JSONObject().put("id", id).put("name", name).put("visible", id !in homeShelfHidden)) }
+                        })
                         .put("favorite", song != null && library.state.value.favorites.any { it.key == song.key })
                         .put("queueSize", queue.size)
                         .put("queueIndex", if (queue.isEmpty()) 0 else queueIndex + 1)
@@ -1954,6 +2093,9 @@ class MainActivity : ComponentActivity() {
                         .put("page", page)
                         .put("playerOpen", playerOpen)
                         .put("importBusy", busy)
+                        .put("restoreBusy", restoringBackup)
+                        .put("restoreMessage", restoreMessage)
+                        .put("restoreFailed", restoreFailed)
                         .put("pluginReplacement", pluginReplacements.firstOrNull()?.let { replacement ->
                             JSONObject().put("id", replacement.incoming.id).put("name", replacement.incoming.name)
                                 .put("author", replacement.incoming.metadata.optString("author"))
@@ -1966,6 +2108,11 @@ class MainActivity : ComponentActivity() {
                         })
                         .put("sources", JSONArray().also { array ->
                             plugins.state.value.plugins.forEach { plugin ->
+                                val subscription = plugins.state.value.subscriptions.firstOrNull { it == plugin.origin || it == plugin.url }
+                                val groupName = subscription?.let { url ->
+                                    val uri = Uri.parse(url)
+                                    listOfNotNull(uri.host, uri.lastPathSegment?.takeIf { it.isNotBlank() }).joinToString(" / ").ifBlank { "音源订阅" }
+                                } ?: "单独安装"
                                 val fields = JSONArray()
                                 val variables = plugin.metadata.optJSONArray("userVariables") ?: JSONArray()
                                 for (i in 0 until variables.length()) {
@@ -1982,6 +2129,10 @@ class MainActivity : ComponentActivity() {
                                 array.put(JSONObject()
                                     .put("id", plugin.id)
                                     .put("name", plugin.displayName)
+                                    .put("groupId", subscription.orEmpty())
+                                    .put("groupName", groupName)
+                                    .put("supportsRecommendations", plugin.capabilities.recommendations)
+                                    .put("supportsCharts", plugin.capabilities.charts)
                                     .put("author", plugin.metadata.optString("author"))
                                     .put("enabled", plugin.enabled)
                                     .put("version", plugin.metadata.optString("version"))
@@ -2007,6 +2158,7 @@ class MainActivity : ComponentActivity() {
                 command = { raw ->
                     try {
                         val request = JSONObject(raw)
+                        check(!restoringBackup) { "正在恢复备份，请稍候" }
                         val value = request.optString("value").trim()
                         var result: String? = null
                         when (val type = request.optString("type")) {
@@ -2038,17 +2190,14 @@ class MainActivity : ComponentActivity() {
                                 playAt(index, openPlayer = false)
                             }
                             "theme" -> {
-                                require(value in setOf("gold", "porcelain", "mono")) { "未知主题" }
-                                theme = value
-                                getSharedPreferences("appearance", MODE_PRIVATE).edit().putString("theme", value).apply()
+                                updatePreference("theme", value)
                             }
                             "quality" -> {
                                 /* Extended tiers are real for some plugins; rejecting them here
                                    would make the phone's own quality sheet offer dead options. */
                                 require(value in setOf("low", "standard", "high", "super", "flac", "flac24bit", "hires", "dolby", "atmos", "atmos_plus", "64k", "128k", "192k", "320k", "mgg")) { "未知音质" }
                                 if (quality != value) {
-                                    quality = value
-                                    getSharedPreferences("playback", MODE_PRIVATE).edit().putString("quality", value).apply()
+                                    updatePreference("quality", value)
                                     /* On the TV the pill re-resolves the current track when the
                                        tier changes; the phone has to do the same or the sheet
                                        would say 高品 while the speakers stayed on 标准. */
@@ -2058,14 +2207,20 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                             "mode" -> {
-                                require(value in setOf("顺序播放", "列表循环", "单曲循环", "随机播放")) { "未知播放模式" }
-                                leaveRadio()
-                                playMode = value
-                                getSharedPreferences("playback", MODE_PRIVATE).edit().putString("mode", value).apply()
+                                updatePreference("mode", value)
                             }
                             "miniLyrics" -> {
-                                showMiniLyrics = !showMiniLyrics
-                                getSharedPreferences("appearance", MODE_PRIVATE).edit().putBoolean("mini_lyrics", showMiniLyrics).apply()
+                                updatePreference("miniLyrics", (!showMiniLyrics).toString())
+                            }
+                            "preference" -> {
+                                val payload = JSONObject(value)
+                                updatePreference(payload.getString("key"), payload.getString("value"))
+                            }
+                            "homeShelf" -> {
+                                val payload = JSONObject(value)
+                                val id = payload.getString("id")
+                                require(id in setOf("favorites", "recent") || library.state.value.playlists.any { it.id == id }) { "栏目不存在" }
+                                if (payload.getBoolean("visible") == (id in homeShelfHidden)) toggleHomeShelf(id)
                             }
                             "search" -> {
                                 require(value.isNotEmpty()) { "请输入搜索内容" }
@@ -2196,11 +2351,25 @@ class MainActivity : ComponentActivity() {
                             }
                             "restore" -> {
                                 require(value.isNotEmpty()) { "备份内容为空" }
-                                /* Restore rewrites the library and reinstalls sources; the
-                                   phone waits for the outcome, so it cannot be fire-and-forget. */
-                                runBlocking { LibraryBackup.apply(this@MainActivity, library, plugins, JSONObject(value)) }
-                                reloadBackedState()
-                                status = "备份已恢复"
+                                check(!busy && pluginReplacements.isEmpty()) { "请先完成当前音源操作" }
+                                restoringBackup = true; busy = true; restoreFailed = false; restoreMessage = "正在恢复曲库、音源与设置…"
+                                closePhoneSession(false)
+                                lifecycleScope.launch {
+                                    try {
+                                        withContext(Dispatchers.IO) { LibraryBackup.apply(this@MainActivity, library, plugins, JSONObject(value)) }
+                                        reloadBackedState()
+                                        restoreMessage = "备份恢复完成，电视已应用曲库、音源与设置。"
+                                    } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                                    catch (e: Exception) {
+                                        runCatching { reloadBackedState() }
+                                        restoreFailed = true
+                                        restoreMessage = "恢复未完成：${e.message ?: "未知错误"}。部分数据可能已更新。"
+                                    } finally {
+                                        restoringBackup = false
+                                        busy = false
+                                        status = restoreMessage
+                                    }
+                                }
                             }
                             else -> error("未知操作")
                         }
@@ -2237,8 +2406,12 @@ class MainActivity : ComponentActivity() {
            through that pill rather than losing the anchor to an unknown key. */
         val libraryTabKey = if (selectedList.startsWith("playlist:")) "playlists" else selectedList
         val libraryContentFocus = remember { FocusAnchor() }
-        /* The 全部播放 action sits above the table; a row has no geometric neighbour there. */
+        /* The manage-mode actions sit above the table; a row has no geometric neighbour there. */
         val libraryHeaderFocus = remember { FocusAnchor() }
+        /* Each action slot owns an anchor: Right from the last tab lands on the first
+           available action instead of crossing five tabs to nothing. */
+        val libraryPlayAllFocus = remember { FocusAnchor() }
+        val libraryImportFocus = remember { FocusAnchor() }
         /* The detail keeps its own focus boundary until Back returns to the originating card. */
         val playlistBackFocus = remember { FocusAnchor() }
         /* 空收藏的出口（去发现 / 导入歌单）锚在提示语下面：tab 按下去落在
@@ -2336,7 +2509,7 @@ class MainActivity : ComponentActivity() {
             else -> null
         }
         val pageEntryFocus = entryFocus(page)
-        val contentMenuOpen = trackMenu != null || subjectMenu != null || collectionMenu != null
+        val contentMenuOpen = trackMenu != null || subjectMenu != null || collectionMenu != null || libraryListMenu
         LaunchedEffect(contentMenuOpen) {
             if (contentMenuOpen) {
                 menuWasOpen = true; menuPage = page; menuBrowse = browseItem; menuPlayer = playerOpen
@@ -2425,7 +2598,8 @@ class MainActivity : ComponentActivity() {
            entity object. Our plugins also emit artistId/albumId (a Prism-only extra), which
            opens the detail directly and avoids guessing among search hits. Sources that only
            give names fall back to searching the same source. */
-        fun openSubject(song: Song, kind: String, originFocus: String = "") {
+        fun openSubject(song: Song, kind: String, originFocus: String = "", menu: Boolean = false) {
+            subjectJob?.cancel()
             val label = if (kind == "artist") "歌手" else "专辑"
             val name = (if (kind == "artist") song.artist else song.album).trim()
             if (name.isBlank() || name == "未知歌手") { status = "这首歌没有${label}信息"; return }
@@ -2435,6 +2609,10 @@ class MainActivity : ComponentActivity() {
                 playerOpen = false
                 searchSubject(name, kind, song)
                 return
+            }
+            fun acceptSubject(item: JSONObject) {
+                if (menu) showSubjectMenu(plugin, kind, item, detailFocus(originFocus))
+                else openBrowse(plugin, item, kind, originFocus)
             }
             val directId = (if (kind == "artist") song.data.optString("artistId") else song.data.optString("albumId"))
                 .trim()
@@ -2446,7 +2624,7 @@ class MainActivity : ComponentActivity() {
                     .put("artist", song.artist)
                     .put("artwork", if (kind == "artist") song.data.optString("artistArtwork") else song.artwork)
                 status = ""
-                openBrowse(plugin, subject, kind, originFocus)
+                acceptSubject(subject)
                 return
             }
             /* Without a platform id the only route is a subject search; a source that
@@ -2457,7 +2635,6 @@ class MainActivity : ComponentActivity() {
                 return
             }
             status = "正在打开${label}：$name"
-            subjectJob?.cancel()
             subjectJob = lifecycleScope.launch {
                 try {
                     val response = plugins.client.call(plugin.source, plugin.variables, "search",
@@ -2465,17 +2642,20 @@ class MainActivity : ComponentActivity() {
                     val data = response.optJSONArray("data") ?: JSONArray()
                     val candidates = (0 until minOf(data.length(), 50)).mapNotNull { data.optJSONObject(it) }
                     val wanted = normalizedName(name)
-                    val best = candidates.firstOrNull {
-                        val candidate = normalizedName(subjectTitle(it))
-                        candidate == wanted || (candidate.isNotBlank() && (candidate.contains(wanted) || wanted.contains(candidate)))
-                    } ?: candidates.firstOrNull()
+                    val exact = candidates.firstOrNull { normalizedName(subjectTitle(it)) == wanted }
+                    val best = exact ?: if (kind == "album") {
+                        candidates.firstOrNull {
+                            val candidate = normalizedName(subjectTitle(it))
+                            candidate.isNotBlank() && (candidate.contains(wanted) || wanted.contains(candidate))
+                        } ?: candidates.firstOrNull()
+                    } else null
                     if (best == null) {
                         status = "没有找到「$name」的$label，已改为搜索"
                         playerOpen = false
                         searchSubject(name, kind, song)
                     } else {
                         status = ""
-                        openBrowse(plugin, best, kind, originFocus)
+                        acceptSubject(best)
                     }
                 } catch (e: kotlinx.coroutines.CancellationException) { throw e }
                 catch (e: Exception) {
@@ -2884,14 +3064,15 @@ class MainActivity : ComponentActivity() {
                         PrismNav("搜索", page == "search", { enterPage("search") }, navModifier(searchFocus))
                         PrismNav("我的", page == "library", { enterPage("library") }, navModifier(libraryFocus))
                         PrismNav("发现", page == "discover", { enterPage("discover") }, navModifier(discoverFocus))
-                        PrismNav("设置", page == "plugins", { enterPage("plugins") }, navModifier(pluginsFocus))
+                        Spacer(Modifier.width(9.dp))
+                        Box(Modifier.width(1.dp).height(13.dp).background(c.foreground.copy(alpha = .12f)))
+                        Spacer(Modifier.width(9.dp))
+                        PrismNav("设置", page == "plugins", { enterPage("plugins") }, navModifier(pluginsFocus), quiet = true)
                         Spacer(Modifier.weight(1f))
                         AuraRemotePill(Modifier.focusRequester(remotePillFocus)
                             .onFocusChanged { remotePillFocused = it.isFocused }
                             .focusProperties { pageEntryFocus?.takeIf { it.attached }?.let { down = it.requester } },
                             onClick = { openPhoneHub() })
-                        Spacer(Modifier.width(12.dp))
-                        AuraSourcePill(activePlugins.size)
                         Spacer(Modifier.width(12.dp))
                         Box(Modifier.width(0.5.dp).height(9.dp).background(c.foreground.copy(alpha = .12f)))
                         Spacer(Modifier.width(12.dp))
@@ -3058,6 +3239,18 @@ class MainActivity : ComponentActivity() {
                                 if (browseItem != null) {
                                     val item = browseItem
                                     if (item != null) {
+                                        val artistPlayAllFocus = remember(item, browsePluginId) { FocusAnchor() }
+                                        val firstSongFocus = remember(item, browsePluginId) { FocusAnchor() }
+                                        fun focusSongSection(index: Int, target: FocusAnchor) {
+                                            if (target.requestIfAttached()) return
+                                            pageScope.launch {
+                                                browseSongListState.scrollToItem(index)
+                                                repeat(4) {
+                                                    withFrameNanos { }
+                                                    if (target.requestIfAttached()) return@launch
+                                                }
+                                            }
+                                        }
                                         val sourceName = state.plugins.firstOrNull { it.id == browsePluginId }?.displayName.orEmpty()
                                         val eyebrow = when (browseKind) { "artist" -> "ARTIST / 歌手"; "album" -> "ALBUM / 专辑"; else -> "PLAYLIST / 歌单" }
                                         val artwork = browseInfo?.optString("artwork").orEmpty().ifBlank { item.optString("artwork") }
@@ -3105,9 +3298,10 @@ class MainActivity : ComponentActivity() {
                                                        two lists (albums and songs), so the button moves down
                                                        beside 热门歌曲 instead of silently choosing one. */
                                                     val playAllInHero = browseKind != "artist" && browseSongs.isNotEmpty()
-                                                    PrismAction(if (saved) "✓  已收藏" else "收藏", {
+                                                    PrismAction(if (saved) "已收藏" else "收藏", {
                                                         toggleSubject(browsePluginId, browseKind, item, sourceName)
-                                                    }, if (!playAllInHero) heroUp.focusAnchor(detailHeaderFocus) else heroUp)
+                                                    }, if (!playAllInHero) heroUp.focusAnchor(detailHeaderFocus) else heroUp,
+                                                        icon = if (saved) "heartFilled" else "heart")
                                                     if (playAllInHero)
                                                         PrismAction("播放全部", { playQueue(browseSongs.toList()) }, heroUp.focusAnchor(detailHeaderFocus), primary = true)
                                                     if (queue.isNotEmpty()) PrismAction("打开播放器", { playerOpen = true }, heroUp)
@@ -3159,6 +3353,16 @@ class MainActivity : ComponentActivity() {
                                                     browseSongs.size.takeIf { it > 0 },
                                                     if (browseKind == "artist" && browseSongs.isNotEmpty()) "播放全部" else "",
                                                     { if (browseSongs.isNotEmpty()) playQueue(browseSongs.toList()) },
+                                                    actionEdges = Modifier.focusAnchor(artistPlayAllFocus)
+                                                        .focusProperties {
+                                                            if (browseAlbums.isEmpty()) up = if (detailHeaderFocus.attached) detailHeaderFocus.requester else discoverFocus
+                                                        }
+                                                        .onPreviewKeyEvent { event ->
+                                                            if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
+                                                                focusSongSection(detailSongRowOffset(), firstSongFocus)
+                                                                true
+                                                            } else false
+                                                        },
                                                 )
                                             }
                                             if (browseSongs.isEmpty() && browseStatus.isNotBlank()) item {
@@ -3169,11 +3373,18 @@ class MainActivity : ComponentActivity() {
                                                 detailCardFocus["song:${song.key}"] = rowFocus
                                                 PrismTrackRow(song, index, { playQueue(browseSongs.toList(), index) },
                                                     modifier = Modifier.focusRequester(rowFocus).then(
-                                                        if (index == 0) Modifier.focusProperties {
-                                                            if (browseAlbums.isEmpty()) {
-                                                                up = if (detailHeaderFocus.attached) detailHeaderFocus.requester else discoverFocus
+                                                        if (index == 0) Modifier.focusAnchor(firstSongFocus)
+                                                            .onPreviewKeyEvent { event ->
+                                                                if (browseKind == "artist" && event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp) {
+                                                                    focusSongSection(detailSongRowOffset() - 1, artistPlayAllFocus)
+                                                                    true
+                                                                } else false
                                                             }
-                                                        } else Modifier
+                                                            .focusProperties {
+                                                                if (browseKind != "artist" && browseAlbums.isEmpty()) {
+                                                                    up = if (detailHeaderFocus.attached) detailHeaderFocus.requester else discoverFocus
+                                                                }
+                                                            } else Modifier
                                                     ),
                                                     current = queue.getOrNull(queueIndex)?.key == song.key,
                                                     qualityTag = qualityTags[song.key]?.takeIf { it.isNotBlank() },
@@ -3291,16 +3502,15 @@ class MainActivity : ComponentActivity() {
                                         item {
                                             LazyRow(state = seedRow, modifier = rowLayout, horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
                                                 itemsIndexed(artistSeeds) { index, seed ->
-                                                    PrismSheetCard(seed.artist, seed.data.optString("artistArtwork"), "来自你的收藏与曲库 · ${seed.sourceLabel}", portrait = true,
+                                                    PrismSheetCard(seed.artist, seed.data.optString("artistArtwork"), "歌手作品 · ${seed.sourceLabel}", portrait = true,
                                                         modifier = Modifier.focusRequester(seedCards[index]).then(trackCard(seedCards[index]))
                                                             .then(if (index == 0) Modifier.focusAnchor(discoverBelowFocus) else Modifier)
                                                             .then(stepRow(Key.DirectionUp, seedCards, index))
                                                             .then(stepRow(Key.DirectionDown, seedCards, index))
                                                             .then(belowUpReveals),
                                                         onLongPress = {
-                                                            menuReturnFocus = detailFocus("seed:${seed.key}")
-                                                            trackMenu = TrackMenuTarget(seed)
-                                                        }) { openSubject(seed, "artist") }
+                                                            openSubject(seed, "artist", "seed:${seed.key}", menu = true)
+                                                        }) { openSubject(seed, "artist", "seed:${seed.key}") }
                                                 }
                                             }
                                         }
@@ -3552,12 +3762,12 @@ class MainActivity : ComponentActivity() {
                                         /* Do not clearFocus here: this button already holds focus, and
                                            clearing it leaves the whole screen without a focus target.
                                            Hiding the IME is enough to get it out of the way. */
-                                        if (!busy) { ime?.hide(); if (keyword.isBlank()) openPhoneHub() else search(keyword) }
+                                        if (!busy) { ime?.hide(); if (keyword.isBlank()) openPhoneHub("search") else search(keyword) }
                                     }, Modifier.focusProperties {
                                         if (searchContentFocus.attached) down = searchContentFocus.requester
                                         up = searchFocus
                                     }.then(revealOnDown(searchContentFocus)), primary = true)
-                                    AuraIconButton("qr", "手机遥控", { openPhoneHub() })
+                                    AuraIconButton("qr", "手机遥控", { openPhoneHub("search") })
                                 }
                                 /* Filters are footnotes: a quiet link row under the field, not a strip
                                    of buttons competing with the thing you actually came to do. */
@@ -3651,9 +3861,21 @@ class MainActivity : ComponentActivity() {
                                         Spacer(Modifier.weight(1f))
                                         if (typeHistory.isNotEmpty()) {
                                             /* 联想区是独立焦点组，几何搜索进不去：上下都点名。 */
-                                            PrismLink("清空历史", { searchHistory = searchHistory - searchType; saveSearchHistory() },
+                                            PrismLink("清空历史", {
+                                                searchHistory = searchHistory - searchType
+                                                pinnedSuggestions = null
+                                                saveSearchHistory()
+                                                status = "已清空当前分类的搜索历史"
+                                                pageScope.launch {
+                                                    repeat(2) { withFrameNanos { } }
+                                                    if (!firstSuggestionFocus.requestIfAttached() && !chipAnchor(searchType).requestIfAttached()) {
+                                                        searchInputFocus.requestIfAttached()
+                                                    }
+                                                }
+                                            },
                                                 Modifier.focusAnchor(clearHistoryFocus).focusProperties {
-                                                    if (searchSourceFocus.attached) up = searchSourceFocus.requester
+                                                    upTo(searchSourceFocus, chipAnchor(searchType), searchInputFocus)
+                                                    leftTo(chipAnchor(searchType), searchInputFocus)
                                                     if (searchContentFocus.attached) down = searchContentFocus.requester
                                                 })
                                         }
@@ -3674,7 +3896,7 @@ class MainActivity : ComponentActivity() {
                                                     }, Modifier.weight(1f).focusRequester(focus)
                                                         .then(if (rowIndex == 0 && columnIndex == 0) Modifier.focusAnchor(firstSuggestionFocus) else Modifier)
                                                         .focusProperties {
-                                                            if (rowIndex == 0) upTo(chipAnchor(searchType), searchInputFocus)
+                                                            if (rowIndex == 0) upTo(clearHistoryFocus, chipAnchor(searchType), searchInputFocus)
                                                             if (rowIndex == suggestionRows.lastIndex / 4) down = miniFocus
                                                         }
                                                         .onFocusChanged { if (it.isFocused) bodyFocusMemory.value = focus })
@@ -3692,7 +3914,7 @@ class MainActivity : ComponentActivity() {
                                                 Modifier.focusRequester(focus)
                                                     .then(if (index == 0) Modifier.focusAnchor(firstSuggestionFocus) else Modifier)
                                                     .focusProperties {
-                                                        if (index == 0) upTo(chipAnchor(searchType), searchInputFocus)
+                                                        if (index == 0) upTo(clearHistoryFocus, chipAnchor(searchType), searchInputFocus)
                                                         if (index == suggestionRows.lastIndex) down = miniFocus
                                                     }
                                                     .onFocusChanged { if (it.isFocused) bodyFocusMemory.value = focus },
@@ -3879,7 +4101,7 @@ class MainActivity : ComponentActivity() {
                                 val allChosen = manageTargets.isNotEmpty() && manageTargets.all { it in librarySelected }
                                 val headerEdges = Modifier.focusProperties {
                                     if (selectedPlaylist != null) upTo(playlistBackFocus)
-                                    else upTo(libraryTabs.getValue(libraryTabKey))
+                                    else up = libraryFocus
                                     if (libraryContentFocus.attached) down = libraryContentFocus.requester
                                     else down = miniFocus
                                 }
@@ -3904,42 +4126,91 @@ class MainActivity : ComponentActivity() {
                                 val belowTabs = Modifier.focusProperties {
                                     up = libraryFocus
                                     when {
-                                        libraryHeaderFocus.attached -> down = libraryHeaderFocus.requester
                                         libraryContentFocus.attached -> down = libraryContentFocus.requester
                                         libraryEmptyFocus.attached -> down = libraryEmptyFocus.requester
+                                        libraryHeaderFocus.attached -> down = libraryHeaderFocus.requester
                                         else -> down = miniFocus
                                     }
                                 }
-                                /* 空收藏的出口：位置与内边距在五个 tab 里一致，上键回当前 tab。 */
+                                /* The empty-collection exit keeps the same spot and padding
+                                   across the five tabs; Up returns to the active tab. */
                                 val emptyActionEdges = Modifier.focusAnchor(libraryEmptyFocus).focusProperties {
                                     val tab = libraryTabs.getValue(libraryTabKey)
                                     if (tab.attached) up = tab.requester
                                     down = miniFocus
                                 }
                                 if (selectedPlaylist == null) {
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)) {
-                                    val tabs = listOf(
+                                // Each category shows only its applicable actions; OK on a tab
+                                // enters the first available action.
+                                val canPlayAll = !showingSubjects && !showingPlaylists && songs.isNotEmpty()
+                                val canImport = showingPlaylists
+                                val canManage = manageTargets.isNotEmpty()
+                                val firstAction = when {
+                                    libraryManage -> libraryHeaderFocus
+                                    canPlayAll -> libraryPlayAllFocus
+                                    canImport -> libraryImportFocus
+                                    canManage -> libraryHeaderFocus
+                                    else -> null
+                                }
+                                /* Tabs and actions share one row: browse left, act right.
+                                   ←/→ walk this row, ↓ enters the list, and the first row's
+                                   ↑ returns to the active tab. */
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    /* The four collection tabs are things you saved; 最近播放
+                                       is system history — the divider marks the two kinds. */
+                                    val collectionTabs = listOf(
                                         Triple("favorites", "歌曲", libraryState.favorites.size),
                                         Triple("albums", "专辑", libraryState.subjects.count { it.kind == "album" }),
                                         Triple("artists", "歌手", libraryState.subjects.count { it.kind == "artist" }),
                                         Triple("playlists", "歌单", libraryState.playlists.size + savedSheets.size),
-                                        Triple("recent", "最近", libraryState.recent.size),
                                     )
-                                    items(tabs, key = { it.first }) { (id, label, count) ->
-                                        PrismAction("$label $count", { selectedList = id }, primary = selectedList == id,
-                                            modifier = Modifier.focusAnchor(libraryTabs.getValue(id)).then(belowTabs)
-                                                .onFocusChanged { if (it.isFocused && selectedList != id) selectedList = id })
+                                    val recentTab = Triple("recent", "最近", libraryState.recent.size)
+                                    val tabs = collectionTabs + recentTab
+                                    val tabModifier: (String) -> Modifier = { id ->
+                                        Modifier.focusAnchor(libraryTabs.getValue(id)).then(belowTabs)
+                                            .semantics { selected = selectedList == id }
+                                            .focusProperties {
+                                                val index = tabs.indexOfFirst { it.first == id }
+                                                left = tabs.getOrNull(index - 1)?.let { libraryTabs.getValue(it.first).requester }
+                                                    ?: FocusRequester.Cancel
+                                                right = tabs.getOrNull(index + 1)?.let { libraryTabs.getValue(it.first).requester }
+                                                    ?: firstAction?.takeIf { it.attached }?.requester ?: FocusRequester.Cancel
+                                            }
+                                            .onFocusChanged { if (it.isFocused && selectedList != id) selectedList = id }
                                     }
-                                }
-                                // 工具栏固定高度，切换空分类或进入管理时，分类和列表都不跳动。
-                                Row(Modifier.fillMaxWidth().heightIn(min = 50.dp).padding(horizontal = 6.dp, vertical = 4.dp),
-                                    horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                                    val tabLongPress: (String) -> (() -> Unit)? = { id ->
+                                        if (libraryManage) null else {
+                                            {
+                                                /* No menu when all three actions are unavailable —
+                                                   an empty menu is worse than no response. */
+                                                val anyAction = songs.isNotEmpty() || showingPlaylists || manageTargets.isNotEmpty()
+                                                if (anyAction) {
+                                                    menuReturnFocus = libraryTabs.getValue(id).requester
+                                                    libraryListMenu = true
+                                                }
+                                            }
+                                        }
+                                    }
+                                    collectionTabs.forEach { (id, label, count) ->
+                                        PrismLibraryTab(label, count, selectedList == id, {
+                                            if (selectedList != id) selectedList = id
+                                            else if (!firstAction.requestIfAttached() && !libraryContentFocus.requestIfAttached()) {
+                                                libraryEmptyFocus.requestIfAttached()
+                                            }
+                                        },
+                                            modifier = tabModifier(id), onLongPress = tabLongPress(id))
+                                        Spacer(Modifier.width(4.dp))
+                                    }
+                                    Box(Modifier.padding(horizontal = 8.dp).width(1.dp).height(18.dp).background(c.foreground.copy(alpha = .14f)))
+                                    PrismLibraryTab(recentTab.second, recentTab.third, selectedList == recentTab.first, {
+                                        if (selectedList != recentTab.first) selectedList = recentTab.first
+                                        else if (!firstAction.requestIfAttached() && !libraryContentFocus.requestIfAttached()) {
+                                            libraryEmptyFocus.requestIfAttached()
+                                        }
+                                    },
+                                        modifier = tabModifier(recentTab.first), onLongPress = tabLongPress(recentTab.first))
+                                    Spacer(Modifier.weight(1f))
                                     if (libraryManage) {
-                                        Text(
-                                            if (librarySelected.isEmpty()) "选中条目后再处理"
-                                            else "已选 ${librarySelected.size} / ${manageTargets.size} $batchUnit",
-                                            color = c.muted, fontSize = 11.sp, modifier = Modifier.padding(end = 10.dp),
-                                        )
                                         PrismAction(if (allChosen) "取消全选" else "全选", {
                                             librarySelected = if (allChosen) emptySet() else manageTargets.toSet()
                                         }, headerEdges)
@@ -3956,21 +4227,33 @@ class MainActivity : ComponentActivity() {
                                         Spacer(Modifier.width(8.dp))
                                         PrismAction("退出管理", { exitLibraryManage() }, Modifier.focusAnchor(libraryHeaderFocus).then(headerEdges))
                                     } else {
-                                        if (manageTargets.isNotEmpty()) Text("长按确定键打开菜单", color = c.muted, fontSize = 11.sp, modifier = Modifier.padding(end = 10.dp))
-                                        if (showingPlaylists && manageTargets.isNotEmpty()) {
-                                            PrismAction("导入歌单", { importDialog = true }, headerEdges)
-                                            Spacer(Modifier.width(8.dp))
-                                        }
-                                        if (!showingSubjects && !showingPlaylists && songs.isNotEmpty()) {
-                                            PrismAction("全部播放", { playQueue(songs) }, headerEdges)
-                                            Spacer(Modifier.width(8.dp))
-                                        }
-                                        if (manageTargets.isNotEmpty()) {
-                                            PrismAction("管理", { enterLibraryManage() }, Modifier.focusAnchor(libraryHeaderFocus).then(headerEdges))
-                                        }
+                                        // Only the actions this category supports are shown;
+                                        // in empty lists they stay in place, disabled.
+                                        if (!showingSubjects && !showingPlaylists) PrismAction("全部播放", { playQueue(songs) },
+                                            headerEdges.focusAnchor(libraryPlayAllFocus)
+                                                .then(if (firstAction === libraryPlayAllFocus) Modifier.focusProperties {
+                                                    left = libraryTabs.getValue(libraryTabKey).requester
+                                                } else Modifier),
+                                            primary = canPlayAll, enabled = canPlayAll)
+                                        if (!showingSubjects && !showingPlaylists) Spacer(Modifier.width(8.dp))
+                                        if (showingPlaylists) PrismAction("导入歌单", { importDialog = true },
+                                            headerEdges.focusAnchor(libraryImportFocus)
+                                                .then(if (firstAction === libraryImportFocus) Modifier.focusProperties {
+                                                    left = libraryTabs.getValue(libraryTabKey).requester
+                                                } else Modifier),
+                                            enabled = canImport)
+                                        if (showingPlaylists) Spacer(Modifier.width(8.dp))
+                                        PrismAction("管理", { enterLibraryManage() },
+                                            Modifier.focusAnchor(libraryHeaderFocus).then(headerEdges)
+                                                .then(if (firstAction === libraryHeaderFocus) Modifier.focusProperties {
+                                                    left = libraryTabs.getValue(libraryTabKey).requester
+                                                } else Modifier),
+                                            enabled = canManage)
                                     }
                                 }
-                                Spacer(Modifier.height(10.dp))
+                                Text(if (libraryManage) "确定键选择条目 · 返回键退出管理" else "左右切换分类 · 确定键进入右侧操作 · 长按打开菜单",
+                                    color = c.muted, fontSize = 11.sp, lineHeight = 16.sp, maxLines = 1,
+                                    modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 6.dp))
                                 }
                                 /* 歌单详情没有 tab 行，列表名和条目数留在这条标题里；
                                    tab 页的列表名与条数已经写在 tab 上，这里不再重复。 */
@@ -4025,18 +4308,15 @@ class MainActivity : ComponentActivity() {
                                         Spacer(Modifier.width(8.dp))
                                         PrismAction("退出管理", { exitLibraryManage() }, Modifier.focusAnchor(libraryHeaderFocus).then(headerEdges))
                                     } else {
-                                        if (showingPlaylists) {
-                                            PrismAction("导入歌单", { importDialog = true }, Modifier.focusAnchor(libraryHeaderFocus).then(headerEdges))
+                                        val detailCanAct = manageTargets.isNotEmpty()
+                                        PrismAction("全部播放", { playQueue(songs) },
+                                            headerEdges.then(if (detailCanAct) Modifier.focusAnchor(libraryHeaderFocus)
+                                                .focusProperties { left = playlistBackFocus.requester } else Modifier),
+                                            enabled = detailCanAct)
+                                        Spacer(Modifier.width(8.dp))
+                                        PrismAction("管理", { enterLibraryManage() }, headerEdges, enabled = detailCanAct)
+                                        if (!detailCanAct) {
                                             Spacer(Modifier.width(8.dp))
-                                        }
-                                        if (!showingSubjects && !showingPlaylists && songs.isNotEmpty()) {
-                                            PrismAction("全部播放", { playQueue(songs) }, Modifier.focusAnchor(libraryHeaderFocus).then(headerEdges))
-                                            Spacer(Modifier.width(8.dp))
-                                        }
-                                        if (manageTargets.isNotEmpty()) {
-                                            PrismAction("管理", { enterLibraryManage() }, headerEdges.then(
-                                                if (showingSubjects) Modifier.focusAnchor(libraryHeaderFocus) else Modifier))
-                                        } else if (songs.isEmpty()) {
                                             PrismAction("返回歌单", { closePlaylistTable() }, Modifier.focusAnchor(libraryHeaderFocus).then(headerEdges))
                                         }
                                     }
@@ -4047,7 +4327,7 @@ class MainActivity : ComponentActivity() {
                                     if (subjectSections.isEmpty()) {
                                         PrismEmptyState(
                                             "在${if (subjectKind == "artist") "歌手" else "专辑"}详情页按「收藏」，就会收进这里",
-                                            "去发现", { page = "discover" }, emptyActionEdges,
+                                            "去发现", { page = "discover" }, emptyActionEdges, centered = true,
                                         )
                                     } else LazyColumn(state = librarySubjectListState, modifier = Modifier.weight(1f).padding(bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(12.dp),
                                         contentPadding = PaddingValues(start = 6.dp, end = 6.dp, top = 8.dp, bottom = 22.dp)) {
@@ -4062,7 +4342,7 @@ class MainActivity : ComponentActivity() {
                                                                 .then(if (subject === firstSubject) Modifier.focusAnchor(libraryContentFocus) else Modifier)
                                                                 .focusProperties {
                                                                     if (subject in visibleSubjects.take(6)) {
-                                                                        if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester
+                                                                        if (selectedPlaylist == null && !libraryManage) upTo(libraryTabs.getValue(libraryTabKey)) else if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester
                                                                         else upTo(libraryTabs.getValue(libraryTabKey))
                                                                     }
                                                                 }
@@ -4087,7 +4367,7 @@ class MainActivity : ComponentActivity() {
                                     if (libraryState.playlists.isEmpty() && savedSheets.isEmpty()) {
                                         PrismEmptyState(
                                             "导入平台歌单，或在歌单详情页收藏，就会出现在这里",
-                                            "导入歌单", { importDialog = true }, emptyActionEdges,
+                                            "导入歌单", { importDialog = true }, emptyActionEdges, centered = true,
                                         )
                                     } else LazyColumn(Modifier.weight(1f).padding(bottom = 10.dp), state = libraryPlaylistListState, verticalArrangement = Arrangement.spacedBy(10.dp),
                                         contentPadding = PaddingValues(start = 6.dp, end = 6.dp, top = 8.dp, bottom = 22.dp)) {
@@ -4106,7 +4386,7 @@ class MainActivity : ComponentActivity() {
                                                                     else Modifier,
                                                                 ).focusProperties {
                                                                     if (list in libraryState.playlists.take(6)) {
-                                                                        if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester
+                                                                        if (selectedPlaylist == null && !libraryManage) upTo(libraryTabs.getValue(libraryTabKey)) else if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester
                                                                         else upTo(libraryTabs.getValue(libraryTabKey))
                                                                     }
                                                                 }.onFocusChanged { if (it.isFocused) bodyFocusMemory.value = cardFocus },
@@ -4122,7 +4402,7 @@ class MainActivity : ComponentActivity() {
                                             }
                                         }
                                         if (!libraryManage && savedSheets.isNotEmpty()) {
-                                            item(key = "saved-sheets") { Text("收藏的歌单", color = c.foreground, fontSize = 17.sp, modifier = Modifier.padding(top = 6.dp)) }
+                                            item(key = "saved-sheets") { Text("收藏的歌单", color = c.muted, fontSize = 13.sp, letterSpacing = .4.sp, modifier = Modifier.padding(top = 14.dp, bottom = 2.dp)) }
                                             itemsIndexed(savedSheets.chunked(6), key = { _, row -> "saved:${row.first().key}" }) { rowIndex, row ->
                                                 Row(libraryRowLayout, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                                     row.forEachIndexed { column, subject ->
@@ -4134,7 +4414,7 @@ class MainActivity : ComponentActivity() {
                                                                 .then(if (libraryState.playlists.isEmpty() && subject == savedSheets.first()) Modifier.focusAnchor(libraryContentFocus) else Modifier)
                                                                 .focusProperties {
                                                                     if (libraryState.playlists.isEmpty() && subject in savedSheets.take(6)) {
-                                                                        if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester
+                                                                        if (selectedPlaylist == null && !libraryManage) upTo(libraryTabs.getValue(libraryTabKey)) else if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester
                                                                         else upTo(libraryTabs.getValue(libraryTabKey))
                                                                     }
                                                                 }.onFocusChanged { if (it.isFocused) bodyFocusMemory.value = cardFocus },
@@ -4158,7 +4438,7 @@ class MainActivity : ComponentActivity() {
                                             else -> "播过的歌会自动记在这里"
                                         },
                                         if (selectedPlaylist == null) "去发现" else null,
-                                        { page = "discover" }, emptyActionEdges,
+                                        { page = "discover" }, emptyActionEdges, centered = true,
                                     )
                                 } else LazyColumn(Modifier.weight(1f).padding(top = 4.dp, bottom = 10.dp)) {
                                     itemsIndexed(songs, key = { _, song -> song.key }) { index, song ->
@@ -4167,7 +4447,7 @@ class MainActivity : ComponentActivity() {
                                         val rowMenu: (() -> Unit)? = if (libraryManage) null else { -> trackMenu = TrackMenuTarget(song, selectedList, "song:${song.key}") }
                                         PrismTrackRow(song, index,
                                             { if (libraryManage) toggleLibrarySelection(song.key) else playQueue(songs, index) },
-                                            modifier = (if (index == 0) Modifier.focusAnchor(libraryContentFocus).focusProperties { if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester } else Modifier.focusRequester(rowFocus))
+                                            modifier = (if (index == 0) Modifier.focusAnchor(libraryContentFocus).focusProperties { if (selectedPlaylist == null && !libraryManage) upTo(libraryTabs.getValue(libraryTabKey)) else if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester } else Modifier.focusRequester(rowFocus))
                                                 /* 迷你条按上回到离开时的那一行，而不是页首 tab。 */
                                                 .onFocusChanged { if (it.isFocused) bodyFocusMemory.value = rowFocus },
                                             current = queue.getOrNull(queueIndex)?.key == song.key,
@@ -4211,10 +4491,8 @@ class MainActivity : ComponentActivity() {
                                         if (anchor.attached) left = anchor.requester
                                         up = pluginsFocus
                                     }.then(entryUpScrollsBack)
-                                    Row(Modifier.weight(1f).fillMaxWidth().padding(top = 5.dp), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
-                                    Column(Modifier.width(150.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                                        Text("设置", color = c.accent.copy(alpha = .5f), fontSize = 10.sp, lineHeight = 14.sp, letterSpacing = 2.4.sp,
-                                            modifier = Modifier.padding(start = 11.dp, bottom = 8.dp))
+                                    Row(Modifier.weight(1f).fillMaxWidth().padding(top = 5.dp), horizontalArrangement = Arrangement.spacedBy(36.dp)) {
+                                    Column(Modifier.width(164.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         val railIcons = listOf("palette", "compass", "layers", "play", "info")
                                         settingsSections.forEachIndexed { index, section ->
                                             SettingsRailItem(section, railIcons[index], settingsSection == section, {
@@ -4252,20 +4530,16 @@ class MainActivity : ComponentActivity() {
                                                     })
                                         }
                                     }
-                                    Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(settingsScroll), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Column(Modifier.weight(1f)) {
+                                    Column(Modifier.weight(1f).verticalScroll(settingsScroll).padding(end = 6.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(26.dp)) {
                                     if (settingsSection == "外观") {
                                     val themes = listOf(Triple("gold", "极夜暖金", "温暖、沉浸"), Triple("porcelain", "晨光白瓷", "明亮、柔和"), Triple("mono", "静谧黑白", "纯粹、克制"))
                                     fun pickTheme(value: String) {
-                                        theme = value
-                                        getSharedPreferences("appearance", MODE_PRIVATE).edit().putString("theme", value).apply()
+                                        updatePreference("theme", value)
                                     }
-                                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                        Text("外观", fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, color = c.foreground)
-                                        Text("左右选择主题，按确定应用", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
-                                    }
-                                    SettingsCard("主题", "当前使用 ${themes.first { it.first == theme }.second}", tight = true) {
+                                    SettingsCard("主题") {
                                         val themeTargets = remember { themes.map { FocusRequester() } }
-                                        Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                             themes.forEachIndexed { index, (value, label, detail) ->
                                                 AuraThemeCard(label, detail, prismColors(value), theme == value, { pickTheme(value) },
                                                     Modifier.weight(1f).focusRequester(themeTargets[index])
@@ -4279,49 +4553,84 @@ class MainActivity : ComponentActivity() {
                                             }
                                         }
                                     }
-                                    SettingsCard("播放界面", "影响全屏播放页与底部播放条", tight = true) {
-                                        PrismSwitchRow("播放条歌词", showMiniLyrics, {
-                                            showMiniLyrics = it
-                                            getSharedPreferences("appearance", MODE_PRIVATE).edit().putBoolean("mini_lyrics", it).apply()
-                                        }, edgeToRail.rememberFocus(bodyFocusMemory), description = "迷你播放条显示当前歌词", panel = false)
-                                        SettingsDivider()
+                                    SettingsCard("播放界面") {
                                         PrismSwitchRow("减少动态效果", reduceMotion, {
-                                            reduceMotion = it
-                                            getSharedPreferences("appearance", MODE_PRIVATE).edit().putBoolean("reduce_motion", it).apply()
-                                        }, edgeToRail.rememberFocus(bodyFocusMemory), description = "关闭环境光流动与过渡动画", panel = false)
+                                            updatePreference("reduceMotion", it.toString())
+                                        }, edgeToRail.rememberFocus(bodyFocusMemory), description = "关闭流光与过渡动画")
                                     }
                                     }
                                     if (settingsSection == "播放") {
-                                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                            Text("播放", fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, color = c.foreground)
-                                            Text("音质偏好与播放失败后的处理方式", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
+                                        val qualityTiers = listOf("low" to "流畅", "standard" to "标准", "high" to "高品", "super" to "无损优先")
+                                        fun pickQuality(value: String) {
+                                            updatePreference("quality", value)
                                         }
-                                        SettingsCard("音质与换源", "实际音质取决于音源") {
-                                            SettingsRow("首选音质", "拿不到更高档时自动降档") {
-                                                SettingsSeg(listOf("low" to "流畅", "standard" to "标准", "high" to "高品", "super" to "无损优先"), quality, {
-                                                    quality = it
-                                                    getSharedPreferences("playback", MODE_PRIVATE).edit().putString("quality", it).apply()
-                                                }, entry = Modifier.focusAnchor(sectionEntryFocus.getValue("播放")).then(entryEdge).rememberFocus(bodyFocusMemory))
+                                        fun cycleQuality() {
+                                            val i = qualityTiers.indexOfFirst { it.first == quality }
+                                            pickQuality(qualityTiers[(i + 1).mod(qualityTiers.size)].first)
+                                        }
+                                        SettingsCard("音质") {
+                                            SettingsRow("首选音质",
+                                                modifier = Modifier.focusAnchor(sectionEntryFocus.getValue("播放")).then(entryEdge).rememberFocus(bodyFocusMemory),
+                                                onActivate = { cycleQuality() }) {
+                                                SettingsSeg(qualityTiers, quality, ::pickQuality, cycling = true)
                                             }
                                             SettingsDivider()
                                             PrismSwitchRow("播放失败自动换源", autoSourceFallback, { setAutoSourceFallback(it) },
-                                                edgeToRail.rememberFocus(bodyFocusMemory), description = "本源所有音质均不可用时，尝试其他音源的同版本歌曲", panel = false)
+                                                edgeToRail.rememberFocus(bodyFocusMemory), description = "改用其他音源的同一首歌")
                                         }
-                                        SettingsCard("播放与搜索", "左右键切换选项") {
-                                            SettingsRow("播放模式", "启动应用时沿用上次的模式") {
-                                                SettingsSeg(listOf("顺序播放", "列表循环", "单曲循环", "随机播放").map { it to it }, playMode, {
-                                                    leaveRadio()
-                                                    playMode = it
-                                                    getSharedPreferences("playback", MODE_PRIVATE).edit().putString("mode", it).apply()
-                                                }, entry = edgeToRail.rememberFocus(bodyFocusMemory))
+                                        val playModes = PlaybackMode.entries.map { it to it.label }
+                                        fun pickMode(value: PlaybackMode) {
+                                            updatePreference("mode", value.id)
+                                        }
+                                        fun cycleMode() {
+                                            val i = playModes.indexOfFirst { it.first == playMode }
+                                            pickMode(playModes[(i + 1).mod(playModes.size)].first)
+                                        }
+                                        SettingsCard("播放与搜索") {
+                                            SettingsRow("播放模式",
+                                                modifier = edgeToRail.rememberFocus(bodyFocusMemory),
+                                                onActivate = { cycleMode() }) {
+                                                SettingsSeg(playModes, playMode, ::pickMode, cycling = true)
                                             }
                                             SettingsDivider()
-                                            SettingsRow("搜索并发", "自动按电视性能选择（当前 ${PluginWorkers.automatic(this@MainActivity)} 个），调大更快也更占内存") {
-                                                SettingsSeg(listOf(0 to "自动", 1 to "1 个", 2 to "2 个", 3 to "3 个", 4 to "4 个"), pluginWorkerLimit, {
-                                                    pluginWorkerLimit = it
-                                                    PluginWorkers.save(this@MainActivity, it)
-                                                }, entry = edgeToRail.rememberFocus(bodyFocusMemory))
+                                            val workerOptions = listOf(0 to "自动 · ${PluginWorkers.automatic(this@MainActivity)} 个", 1 to "1 个", 2 to "2 个", 3 to "3 个", 4 to "4 个")
+                                            fun pickWorkers(value: Int) {
+                                                updatePreference("pluginWorkerLimit", value.toString())
                                             }
+                                            fun cycleWorkers() {
+                                                val i = workerOptions.indexOfFirst { it.first == pluginWorkerLimit }
+                                                pickWorkers(workerOptions[(i + 1).mod(workerOptions.size)].first)
+                                            }
+                                            SettingsRow("搜索并发", "调大更快，也更占内存",
+                                                modifier = edgeToRail.rememberFocus(bodyFocusMemory),
+                                                onActivate = { cycleWorkers() }) {
+                                                SettingsSeg(workerOptions, pluginWorkerLimit, ::pickWorkers, cycling = true)
+                                            }
+                                        }
+                                        /* All lyric-display preferences live in this card. Time calibration
+                                           stays on the player page — it only makes sense while listening. */
+                                        SettingsCard("歌词") {
+                                            PrismSwitchRow("播放条歌词", showMiniLyrics, {
+                                                updatePreference("miniLyrics", it.toString())
+                                            }, edgeToRail.rememberFocus(bodyFocusMemory), description = "底部播放条显示当前一句")
+                                            SettingsDivider()
+                                            val levels = listOf("小" to "小", "标准" to "标准", "大" to "大")
+                                            fun pickFont(level: String) {
+                                                updatePreference("lyricFontLevel", level)
+                                            }
+                                            fun cycleFont() {
+                                                val i = levels.indexOfFirst { it.first == lyricFontLevel }
+                                                pickFont(levels[(i + 1).mod(levels.size)].first)
+                                            }
+                                            SettingsRow("字号",
+                                                modifier = edgeToRail.rememberFocus(bodyFocusMemory),
+                                                onActivate = { cycleFont() }) {
+                                                SettingsSeg(levels, lyricFontLevel, ::pickFont, cycling = true)
+                                            }
+                                            SettingsDivider()
+                                            PrismSwitchRow("翻译与注音", subLyrics, {
+                                                updatePreference("subLyrics", it.toString())
+                                            }, edgeToRail.rememberFocus(bodyFocusMemory))
                                         }
                                     }
                                     if (settingsSection == "关于") {
@@ -4334,82 +4643,93 @@ class MainActivity : ComponentActivity() {
                                             provider?.let { "${it.packageName} ${it.versionName.orEmpty()}" } ?: "未检测到 WebView"
                                         }.getOrDefault("未检测到 WebView")
                                     }
-                                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                        Text("关于", fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, color = c.foreground)
-                                        Text("PrismAura 极光音乐 · 为客厅而做的播放器。", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
-                                    }
-                                    SettingsCard(tight = true) {
-                                        SettingsRow("PrismAura $versionName", updateState.message) {
+                                    SettingsCard("版本") {
+                                        SettingsRow("PrismAura $versionName", updateState.message,
+                                            modifier = Modifier.focusAnchor(sectionEntryFocus.getValue("关于")).then(entryEdge).rememberFocus(bodyFocusMemory),
+                                            onActivate = { checkAppUpdates() }) {
                                             SettingsButton(if (updateState.checking) "正在检查…" else if (updateState.release != null) "查看更新" else "检查更新", {
                                                 checkAppUpdates()
-                                            }, Modifier.focusAnchor(sectionEntryFocus.getValue("关于")).then(entryEdge).rememberFocus(bodyFocusMemory), icon = "refresh")
+                                            }, icon = "refresh", passive = true)
                                         }
                                         SettingsDivider()
                                         PrismSwitchRow("新版本提醒", updateState.remind, appUpdates::setRemind,
-                                            edgeToRail.rememberFocus(bodyFocusMemory), description = "在首页提示新版本", panel = false)
+                                            edgeToRail.rememberFocus(bodyFocusMemory))
                                     }
-                                    SettingsCard("运行环境", "用于排查播放与解码问题", tight = true) {
-                                        SettingsRow("设备", labelDim = true) { Text(deviceInfo, color = c.foreground, fontSize = 11.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                                    SettingsCard("运行环境") {
+                                        SettingsRow("设备") { Text(deviceInfo, color = c.muted, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                                         SettingsDivider()
-                                        SettingsRow("WebView", labelDim = true) { Text(webViewInfo, color = c.foreground, fontSize = 11.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                                        SettingsRow("WebView") { Text(webViewInfo, color = c.muted, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                                     }
-                                    SettingsCard(tight = true) {
-                                        SettingsRow("缓存", "不影响收藏、歌单与登录配置") {
-                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                                Text(if (cacheSize < 0) "…" else formatBytes(cacheSize), color = c.foreground, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1)
-                                                SettingsButton(if (clearingCache) "清理中…" else "清理", {
-                                                    if (!clearingCache) lifecycleScope.launch {
-                                                        clearingCache = true
-                                                        cacheSize = withContext(Dispatchers.IO) { directorySize(cacheDir) }
-                                                        withContext(Dispatchers.IO) { clearDirectory(cacheDir) }
-                                                        getSharedPreferences("discovery", MODE_PRIVATE).edit().clear().apply()
-                                                        hotSearchCache.clear()
-                                                        charts = emptyList(); chartPreviews = emptyMap()
-                                                        cacheSize = 0L
-                                                        clearingCache = false
-                                                        status = "缓存已清理"
-                                                        chartSource?.let { loadCharts(it) }
-                                                    }
-                                                }, edgeToRail.rememberFocus(bodyFocusMemory), icon = "trash")
+                                    SettingsCard("数据") {
+                                        val clearCache: () -> Unit = {
+                                            if (!clearingCache) lifecycleScope.launch {
+                                                clearingCache = true
+                                                cacheSize = withContext(Dispatchers.IO) { directorySize(cacheDir) }
+                                                withContext(Dispatchers.IO) { clearDirectory(cacheDir) }
+                                                getSharedPreferences("discovery", MODE_PRIVATE).edit().clear().apply()
+                                                hotSearchCache.clear()
+                                                charts = emptyList(); chartPreviews = emptyMap()
+                                                cacheSize = 0L
+                                                clearingCache = false
+                                                status = "缓存已清理"
+                                                chartSource?.let { loadCharts(it) }
                                             }
                                         }
-                                    }
-                                    SettingsCard(tight = true) {
-                                        SettingsRow("备份与恢复", "通过手机保存或恢复曲库、音源和设置") {
-                                            SettingsButton("用手机管理", { openPhoneHub() }, edgeToRail.rememberFocus(bodyFocusMemory), icon = "qr")
+                                        SettingsRow("缓存", "清理不影响收藏、歌单与登录",
+                                            modifier = edgeToRail.rememberFocus(bodyFocusMemory),
+                                            onActivate = clearCache) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                Text(if (cacheSize < 0) "…" else formatBytes(cacheSize), color = c.muted, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 1)
+                                                SettingsButton(if (clearingCache) "清理中…" else "清理", { clearCache() }, icon = "trash", passive = true)
+                                            }
+                                        }
+                                        SettingsDivider()
+                                        SettingsRow("备份与恢复", "曲库、音源和设置",
+                                            modifier = edgeToRail.rememberFocus(bodyFocusMemory),
+                                            onActivate = { openPhoneHub("settings") }) {
+                                            SettingsButton("用手机管理", { openPhoneHub("settings") }, icon = "qr", passive = true)
                                         }
                                     }
                                     }
                                     if (settingsSection == "推荐") {
-                                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                        Text("推荐", fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, color = c.foreground)
-                                        Text("决定首页出现哪些内容，以及这些内容从哪个音源来。", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
-                                    }
-                                    SettingsCard("音源", "推荐与榜单可分别选择") {
-                                        SettingsRow("歌单推荐音源", "首页推荐歌单的浏览来源") {
-                                            SourcePicker(activePlugins.filter { it.capabilities.recommendations }, recommendationPluginId,
-                                                Modifier.focusAnchor(sectionEntryFocus.getValue("推荐")).then(entryEdge).rememberFocus(bodyFocusMemory)) { plugin ->
-                                                recommendationPluginId = plugin.id
-                                                getSharedPreferences("home", MODE_PRIVATE).edit().putString("recommendation_plugin", plugin.id).apply()
+                                    SettingsCard("内容来源") {
+                                        /* When the popup closes, focus must return to this row — a popup
+                                           is its own focus window and the top bar is otherwise a dead end. */
+                                        val restoreRowFocus: (Boolean) -> Unit = { open ->
+                                            if (!open) pageScope.launch {
+                                                withFrameNanos { }
+                                                bodyFocusMemory.value?.let { requester -> runCatching { requester.requestFocus() } }
+                                            }
+                                        }
+                                        var recOpen by remember { mutableStateOf(false) }
+                                        val recOptions = activePlugins.filter { it.capabilities.recommendations }
+                                        SettingsRow("推荐歌单",
+                                            modifier = Modifier.focusAnchor(sectionEntryFocus.getValue("推荐")).then(entryEdge).rememberFocus(bodyFocusMemory),
+                                            onActivate = { if (recOptions.isNotEmpty()) recOpen = true }) {
+                                            SourcePicker(recOptions, recommendationPluginId, open = recOpen,
+                                                onOpenChange = { recOpen = it; restoreRowFocus(it) }, passive = true) { plugin ->
+                                                updatePreference("recommendationSource", plugin.id)
                                             }
                                         }
                                         SettingsDivider()
-                                        SettingsRow("榜单音源", "排行榜、飙升榜的浏览来源") {
-                                            SourcePicker(activePlugins.filter { it.capabilities.charts }, chartPluginId, edgeToRail.rememberFocus(bodyFocusMemory)) { plugin ->
-                                                chartPluginId = plugin.id
-                                                getSharedPreferences("home", MODE_PRIVATE).edit().putString("chart_plugin", plugin.id).apply()
+                                        var chartOpen by remember { mutableStateOf(false) }
+                                        val chartOptions = activePlugins.filter { it.capabilities.charts }
+                                        SettingsRow("排行榜",
+                                            modifier = edgeToRail.rememberFocus(bodyFocusMemory),
+                                            onActivate = { if (chartOptions.isNotEmpty()) chartOpen = true }) {
+                                            SourcePicker(chartOptions, chartPluginId, open = chartOpen,
+                                                onOpenChange = { chartOpen = it; restoreRowFocus(it) }, passive = true) { plugin ->
+                                                updatePreference("chartSource", plugin.id)
                                             }
                                         }
-                                        Text("只列出能完成相应浏览流程的音源；推荐与榜单分别选择", color = c.muted, fontSize = 11.sp, lineHeight = 16.sp,
-                                            modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
                                     }
                                     /* Every shelf is offered, hidden ones included, so a playlist
                                        imported after the last choice can be brought back onto 首页
                                        instead of staying invisible. */
                                     val shelfOptions = listOf("favorites" to "我的收藏", "recent" to "最近播放") +
                                         libraryState.playlists.map { it.id to it.name }
-                                    SettingsCard("首页栏目", "${shelfOptions.size} 项中已启用 ${shelfOptions.count { it.first !in homeShelfHidden }} 项") {
-                                        SettingsRow("显示在首页的栏目", "取消勾选即从首页隐藏") {
+                                    SettingsCard("首页栏目", "已显示 ${shelfOptions.count { it.first !in homeShelfHidden }} / ${shelfOptions.size}") {
+                                        SettingsRow("显示在首页") {
                                             FlowRow(Modifier.weight(1f, fill = false), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                                 shelfOptions.forEachIndexed { index, (id, label) ->
                                                     SettingsChip(label, id !in homeShelfHidden, { toggleHomeShelf(id) },
@@ -4417,10 +4737,10 @@ class MainActivity : ComponentActivity() {
                                                 }
                                             }
                                         }
-                                        Text("首页栏目取自本机的收藏、最近播放与导入的歌单", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
                                         SettingsDivider()
-                                        SettingsRow("栏目内容", "在「我的」导入与管理歌单") {
-                                            SettingsButton("打开「我的」", { page = "library" }, Modifier.rememberFocus(bodyFocusMemory))
+                                        SettingsRow("管理歌单",
+                                            modifier = edgeToRail.rememberFocus(bodyFocusMemory), onActivate = { page = "library" }) {
+                                            SettingsButton("打开「我的」", { page = "library" }, passive = true)
                                         }
                                     }
                                     }
@@ -4453,30 +4773,21 @@ class MainActivity : ComponentActivity() {
                                             finally { busy = false }
                                         }
                                     }
-                                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                        Text("音源", fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, color = c.foreground)
-                                        Text("${state.plugins.count { it.enabled }} / ${state.plugins.size} 个音源已启用", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
-                                    }
-                                    SettingsCard("管理音源") {
-                                        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                                            Box(Modifier.size(27.dp).clip(RoundedCornerShape(7.5.dp)).background(c.foreground.copy(alpha = .035f))
-                                                .border(1.dp, c.foreground.copy(alpha = .10f), RoundedCornerShape(7.5.dp)), contentAlignment = Alignment.Center) {
-                                                Glyph("plus", Modifier.size(12.dp), c.accent)
+                                    SettingsCard("添加") {
+                                        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                                Text("添加音源", color = c.foreground, fontSize = 15.sp, lineHeight = 21.sp)
+                                                Text("请只导入可信来源的插件", color = c.muted, fontSize = 12.sp, lineHeight = 17.sp)
                                             }
-                                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.5.dp)) {
-                                                Text("添加音源", color = c.foreground, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium)
-                                                Text("订阅链接 · 插件文件（通过手机导入）", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
-                                            }
-                                            SettingsButton("添加插件", { addSourceError = ""; addingSource = true }, Modifier.focusAnchor(sourceActionFocus).then(entryEdge)
-                                                .focusProperties { right = updateSourcesFocus }.rememberFocus(bodyFocusMemory), icon = "link")
+                                            SettingsButton("添加", { addSourceError = ""; addingSource = true }, Modifier.focusAnchor(sourceActionFocus).then(entryEdge)
+                                                .focusProperties { right = updateSourcesFocus }.rememberFocus(bodyFocusMemory), primary = true, icon = "plus")
                                             SettingsButton(if (busy) "更新中…" else "全部更新", { if (!busy) lifecycleScope.launch { busy = true; try { showPluginImport(plugins.syncAll()) } catch (e: Exception) { status = "同步失败：${e.message}" } finally { busy = false } } },
                                                 Modifier.focusRequester(updateSourcesFocus).focusProperties { up = pluginsFocus; leftTo(sourceActionFocus) }.rememberFocus(bodyFocusMemory), icon = "refresh")
                                         }
-                                        SettingsDivider()
-                                        Text("插件内容由第三方提供，请只导入可信来源", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp, modifier = Modifier.padding(top = 6.dp, bottom = 2.dp))
                                     }
-                                    SettingsCard("音源列表", "插件由第三方提供") {
-                                    if (state.plugins.isEmpty() && state.subscriptions.isEmpty()) Text("添加信任的 MusicFree 插件或订阅，开始听歌", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp, modifier = Modifier.padding(vertical = 9.dp))
+                                    SettingsCard("已安装", "已启用 ${state.plugins.count { it.enabled }} / ${state.plugins.size}") {
+                                    if (state.plugins.isEmpty() && state.subscriptions.isEmpty()) Text("还没有音源。添加 MusicFree 插件或订阅后就能开始听歌", color = c.muted, fontSize = 13.sp, lineHeight = 19.sp,
+                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 16.dp))
 
                                     if (addingSource) Dialog(onDismissRequest = { closeAddSource() }) {
                                         LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; addressFocus.requestFocus() }
@@ -4488,7 +4799,7 @@ class MainActivity : ComponentActivity() {
                                             if (addSourceError.isNotBlank()) Text(addSourceError, color = c.accent, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
                                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                                 PrismAction(if (busy) "添加中…" else "添加", { addSource() }, Modifier.focusRequester(addFocus).focusProperties { up = addressFocus }, primary = true)
-                                                PrismAction("用手机添加", { closeAddSource(); openPhoneHub() }, Modifier.focusProperties { up = addressFocus })
+                                                PrismAction("用手机添加", { closeAddSource(); openPhoneHub("import-source") }, Modifier.focusProperties { up = addressFocus })
                                                 PrismAction("取消", { closeAddSource() }, Modifier.focusProperties { up = addressFocus })
                                             }
                                         }
@@ -4510,11 +4821,29 @@ class MainActivity : ComponentActivity() {
                                     val firstRowEdge = edgeToRail.rememberFocus(bodyFocusMemory)
                                     var firstRow = true
                                     subscriptionGroups.forEach { (url, owned) ->
+                                        var infoOpen by remember(url) { mutableStateOf(false) }
+                                        val titleFocus = remember(url) { FocusRequester() }
+                                        val updateFocus = remember(url) { FocusRequester() }
+                                        val infoFocus = remember(url) { FocusRequester() }
+                                        val subscriptionUri = remember(url) { Uri.parse(url) }
+                                        fun closeSubscriptionInfo() {
+                                            infoOpen = false
+                                            pageScope.launch { withFrameNanos { }; titleFocus.requestFocus() }
+                                        }
                                         if (!firstRow) SettingsDivider()
-                                        Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Column(Modifier.weight(1f)) {
-                                                Text("订阅 · ${owned.firstOrNull()?.displayName ?: url.substringAfterLast('/').take(30)}", color = c.foreground, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                                Text("${owned.size} 个音源", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp)
+                                        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Column(Modifier.weight(1f).focusRequester(titleFocus).then(edgeToRail).rememberFocus(bodyFocusMemory)
+                                                .focusProperties { right = updateFocus }
+                                                .auraFocus(RoundedCornerShape(8.dp), 1f).clip(RoundedCornerShape(8.dp))
+                                                .clickable { infoOpen = true }.padding(6.dp)
+                                                .semantics { contentDescription = "查看订阅信息" }) {
+                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                    Text(subscriptionUri.host?.let { "订阅 · $it" } ?: "音源订阅", modifier = Modifier.weight(1f, fill = false), color = c.foreground,
+                                                        fontSize = 15.sp, lineHeight = 21.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                    Glyph("info", Modifier.size(14.dp), c.muted)
+                                                }
+                                                Text(listOfNotNull("${owned.size} 个音源", subscriptionUri.lastPathSegment?.takeIf { it.isNotBlank() }).joinToString(" · "),
+                                                    color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                             }
                                             SettingsButton("更新", { if (!busy) lifecycleScope.launch {
                                                 busy = true
@@ -4522,12 +4851,15 @@ class MainActivity : ComponentActivity() {
                                                 try { showPluginImport(plugins.importUrl(url)) }
                                                 catch (e: Exception) { status = "更新失败：${e.message}" }
                                                 finally { busy = false }
-                                            } }, edgeToRail.rememberFocus(bodyFocusMemory))
+                                            } }, Modifier.focusRequester(updateFocus).focusProperties { left = titleFocus }.rememberFocus(bodyFocusMemory))
                                             SettingsButton("移除订阅", { removingSubscription = url }, Modifier.rememberFocus(bodyFocusMemory))
+                                        }
+                                        if (infoOpen) PrismContextMenu("音源订阅", "${owned.size} 个音源", { closeSubscriptionInfo() }, infoFocus) {
+                                            SourceInfoDetails(listOf("订阅地址" to url), infoFocus, ::closeSubscriptionInfo)
                                         }
                                         owned.forEach { plugin -> key(plugin.id) {
                                             SettingsDivider()
-                                            Box(Modifier.padding(vertical = 3.dp)) { PluginSourceRow(plugin, owned = true, onConfigure = { configured = plugin.id }, onRemoved = ::sourceRemoved,
+                                            Box(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) { PluginSourceRow(plugin, owned = true, onConfigure = { configured = plugin.id }, onRemoved = ::sourceRemoved,
                                                 configureFocus = sourceConfigFocus.getOrPut(plugin.id) { FocusAnchor() },
                                                 edge = if (firstRow) firstRowEdge else edgeToRail.rememberFocus(bodyFocusMemory)) }
                                             firstRow = false
@@ -4536,17 +4868,18 @@ class MainActivity : ComponentActivity() {
 
                                     if (standalone.isNotEmpty() && state.subscriptions.isNotEmpty()) {
                                         SettingsDivider()
-                                        Text("单独添加", color = c.muted, fontSize = 10.sp, lineHeight = 14.sp, modifier = Modifier.padding(top = 6.dp))
+                                        Text("单独添加", color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.padding(start = 14.dp, top = 10.dp, bottom = 2.dp))
                                     }
                                     standalone.forEach { plugin -> key(plugin.id) {
                                         if (!firstRow) SettingsDivider()
-                                        Box(Modifier.padding(vertical = 3.dp)) { PluginSourceRow(plugin, owned = false, onConfigure = { configured = plugin.id }, onRemoved = ::sourceRemoved,
+                                        Box(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) { PluginSourceRow(plugin, owned = false, onConfigure = { configured = plugin.id }, onRemoved = ::sourceRemoved,
                                             configureFocus = sourceConfigFocus.getOrPut(plugin.id) { FocusAnchor() },
                                             edge = if (firstRow) firstRowEdge else edgeToRail.rememberFocus(bodyFocusMemory)) }
                                         firstRow = false
                                     } }
                                     }
 
+                                    }
                                     }
                                     }
                                     }
@@ -4654,7 +4987,7 @@ class MainActivity : ComponentActivity() {
                     if (!playerScreenOff || !screenOffSettled) PrismBackground {
                         PrismPlayer(song, lyrics, lyricStatus, positionMs, durationMs, playing, playMode,
                             song != null && libraryState.favorites.any { it.key == song.key }, quality, playingQuality,
-                            queueIndex, queue.size, status,
+                            queueIndex, queue.size, playbackStatus,
                             streamFormat,
                             playbackSource = playbackSong(),
                             hasMv = song?.let { it.hasMv && state.plugins.firstOrNull { p -> p.id == it.pluginId }?.capabilities?.has("mvSource") == true } == true,
@@ -4665,13 +4998,11 @@ class MainActivity : ComponentActivity() {
                             },
                             lyricFontLevel = lyricFontLevel,
                             onLyricFontLevel = { level ->
-                                lyricFontLevel = level
-                                getSharedPreferences("appearance", MODE_PRIVATE).edit().putString("lyric_font_level", level).apply()
+                                updatePreference("lyricFontLevel", level)
                             },
                             subLyrics = subLyrics,
                             onSubLyrics = { show ->
-                                subLyrics = show
-                                getSharedPreferences("appearance", MODE_PRIVATE).edit().putBoolean("sub_lyrics", show).apply()
+                                updatePreference("subLyrics", show.toString())
                             },
                             lyricOffsetMs = lyricCalibrationMs,
                             onLyricCalibration = { value ->
@@ -4681,10 +5012,8 @@ class MainActivity : ComponentActivity() {
                             onScreenOff = { playerScreenOff = true; screenOffSettled = false },
                             onBack = { playerOpen = false }, onPlay = { togglePlayback() },
                             onPrevious = { step(-1) }, onNext = { step(1) }, onShuffle = {
-                                leaveRadio()
-                                val modes = listOf("顺序播放", "列表循环", "单曲循环", "随机播放")
-                                playMode = modes[(modes.indexOf(playMode) + 1).coerceAtLeast(0) % modes.size]
-                                getSharedPreferences("playback", MODE_PRIVATE).edit().putString("mode", playMode).apply()
+                                val modes = PlaybackMode.entries
+                                updatePreference("mode", modes[(modes.indexOf(playMode) + 1) % modes.size].id)
                                 saveResume()
                             },
                             radioActive = ActiveQueue.radio,
@@ -4747,7 +5076,7 @@ class MainActivity : ComponentActivity() {
                 val mvSong = queue.getOrNull(queueIndex)
                 MvPlayer(source, mvSong?.title.orEmpty(), mvSong?.artist.orEmpty(), progressKey = mvSong?.key.orEmpty()) {
                     activeMv = null
-                    status = ""
+                    reportPlayback("")
                     if (resumeAfterMv) controller?.play()
                     resumeAfterMv = false
                 }
@@ -4798,6 +5127,7 @@ class MainActivity : ComponentActivity() {
                     }
                 })
             if (queueOpen) {
+                val favoriteKeys = remember(libraryState.favorites) { libraryState.favorites.map { it.key }.toSet() }
                 val currentQueueFocus = remember { FocusRequester() }
                 val queueFocusIndex = queueIndex.coerceIn(0, (queue.size - 1).coerceAtLeast(0))
                 val queueListState = rememberLazyListState(initialFirstVisibleItemIndex = queueFocusIndex)
@@ -4837,7 +5167,8 @@ class MainActivity : ComponentActivity() {
                                             if (index == 0 && queueCloseFocus.attached) rowModifier.focusProperties { up = queueCloseFocus.requester } else rowModifier,
                                             /* Every song row in the app answers a long hold the same
                                                way; the queue is no exception. */
-                                            onLongPress = { menuReturnFocus = rowFocus; trackMenu = TrackMenuTarget(item, originFocus = "queue:${item.key}") }
+                                            onLongPress = { menuReturnFocus = rowFocus; trackMenu = TrackMenuTarget(item, originFocus = "queue:${item.key}") },
+                                            favorite = item.key in favoriteKeys,
                                         ) { closeQueue(); playAt(index, openPlayer = false) }
                                     }
                                 }
@@ -4849,6 +5180,7 @@ class MainActivity : ComponentActivity() {
             trackMenu?.let { target ->
                 val song = target.song
                 val firstFocus = remember { FocusRequester() }
+                var menuError by remember(song.key) { mutableStateOf("") }
                 val saved = libraryState.favorites.any { it.key == song.key }
                 val songPlugin = activePlugins.firstOrNull { it.id == song.pluginId }
                 val artistDetail = supportsSubjectSearch(songPlugin, "artist")
@@ -4892,51 +5224,85 @@ class MainActivity : ComponentActivity() {
                                detail or falls back to a search, so the glyph is never the whole
                                instruction. */
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
+                                /* Tapping a row plays from that row; the menu sits on the row so
+                                   whole-list actions are one step away instead of a scroll to the top. */
+                                val menuQueue: List<Song> = when {
+                                    target.list == "favorites" -> libraryState.favorites
+                                    target.list == "recent" -> libraryState.recent
+                                    target.list?.startsWith("playlist:") == true ->
+                                        libraryState.playlists.firstOrNull { "playlist:${it.id}" == target.list }?.songs.orEmpty()
+                                    else -> emptyList()
+                                }
+                                val current = queue.getOrNull(queueIndex)?.key == song.key && loadedKey == song.key &&
+                                    playbackState != Player.STATE_IDLE && playbackState != Player.STATE_ENDED
+                                PrismIconAction("play", "播放", {
+                                    trackMenu = null
+                                    if (current) playerOpen = true
+                                    else {
+                                        val index = menuQueue.indexOfFirst { it.key == song.key }
+                                        if (index >= 0) playQueue(menuQueue, index)
+                                        else {
+                                            val queued = queue.indexOfFirst { it.key == song.key }
+                                            if (queued >= 0) playAt(queued) else playQueue(listOf(song))
+                                        }
+                                    }
+                                }, Modifier.weight(1f, fill = false))
                                 PrismIconAction(if (saved) "heartFilled" else "heart", if (saved) "已收藏" else "收藏", {
-                                    toggleFavorite(song); trackMenu = null
-                                }, Modifier.focusRequester(firstFocus), active = saved)
+                                    menuError = ""
+                                    toggleFavorite(song) { menuError = it }
+                                }, Modifier.weight(1f, fill = false).focusRequester(firstFocus), active = saved)
                                 if (song.artist.isNotBlank() && song.artist != "未知歌手")
                                     PrismIconAction("mic", if (artistDetail) "歌手详情" else "搜歌手", {
                                         trackMenu = null
                                         if (artistDetail) openSubject(song, "artist", target.originFocus) else find(song.artist, "music")
-                                    })
+                                    }, Modifier.weight(1f, fill = false))
                                 if (song.album.isNotBlank())
                                     PrismIconAction("album", if (albumDetail) "专辑详情" else "搜专辑", {
                                         trackMenu = null
                                         if (albumDetail) openSubject(song, "album", target.originFocus) else find(song.album, if (albumSearch) "album" else "music")
-                                    })
+                                    }, Modifier.weight(1f, fill = false))
                                 if (target.list?.startsWith("playlist:") == true)
                                     PrismIconAction("trash", "移出歌单", {
                                         trackMenu = null
                                         lifecycleScope.launch { try { library.removeSong(target.list.removePrefix("playlist:"), song) } catch (e: Exception) { status = e.message ?: "操作失败" } }
-                                    })
+                                    }, Modifier.weight(1f, fill = false))
                                 if (target.list == "recent")
                                     PrismIconAction("trash", "删除记录", {
                                         trackMenu = null
                                         lifecycleScope.launch { try { library.removeRecent(song) } catch (e: Exception) { status = e.message ?: "删除失败" } }
-                                    })
+                                    }, Modifier.weight(1f, fill = false))
                             }
+                            if (menuError.isNotBlank()) Text(menuError, color = c.accent, fontSize = 12.sp)
                         }
                     }
                 }
             }
             subjectMenu?.let { subject ->
                 val firstFocus = remember { FocusRequester() }
+                var menuError by remember(subject.key) { mutableStateOf("") }
                 val saved = libraryState.subjects.any { it.key == subject.key }
                 val plugin = activePlugins.firstOrNull { it.id == subject.pluginId }
                 PrismContextMenu(subject.title, if (subject.kind == "chart") "榜单" else subject.kindLabel,
                     { subjectMenu = null }, initialFocus = firstFocus) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        if (plugin != null) PrismAction("打开详情", {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
+                        val detailLabel = when (subject.kind) {
+                            "artist" -> "歌手详情"
+                            "album" -> "专辑详情"
+                            "chart" -> "榜单详情"
+                            else -> "歌单详情"
+                        }
+                        val detailIcon = when (subject.kind) { "artist" -> "mic"; "album" -> "album"; else -> "list" }
+                        if (plugin != null) PrismIconAction(detailIcon, detailLabel, {
+                            val origin = detailCardFocus.entries.firstOrNull { it.value === menuReturnFocus }?.key
                             subjectMenu = null
                             if (subject.kind == "chart") openChart(plugin, subject.data)
-                            else openBrowse(plugin, subject.data, subject.kind)
-                        }, Modifier.focusRequester(firstFocus))
-                        if (subject.kind != "chart") PrismAction(if (saved) "取消收藏" else "收藏", {
-                            subjectMenu = null
-                            toggleSubject(subject.pluginId, subject.kind, subject.data, subject.sourceName)
-                        }, if (plugin == null) Modifier.focusRequester(firstFocus) else Modifier)
-                        if (subject.kind == "chart" && plugin != null) PrismAction("刷新曲目", {
+                            else openBrowse(plugin, subject.data, subject.kind, origin)
+                        }, Modifier.weight(1f, fill = false).focusRequester(firstFocus))
+                        if (subject.kind != "chart") PrismIconAction(if (saved) "heartFilled" else "heart", if (saved) "已收藏" else "收藏", {
+                            menuError = ""
+                            toggleSubject(subject.pluginId, subject.kind, subject.data, subject.sourceName) { menuError = it }
+                        }, Modifier.weight(1f, fill = false).then(if (plugin == null) Modifier.focusRequester(firstFocus) else Modifier), active = saved)
+                        if (subject.kind == "chart" && plugin != null) PrismIconAction("refresh", "刷新曲目", {
                             subjectMenu = null
                             lifecycleScope.launch {
                                 try {
@@ -4946,8 +5312,9 @@ class MainActivity : ComponentActivity() {
                                 } catch (e: kotlinx.coroutines.CancellationException) { throw e }
                                 catch (e: Exception) { status = "刷新失败：${e.message}" }
                             }
-                        })
+                        }, Modifier.weight(1f, fill = false))
                     }
+                    if (menuError.isNotBlank()) Text(menuError, color = c.accent, fontSize = 12.sp)
                 }
             }
             collectionMenu?.let { target ->
@@ -4960,16 +5327,16 @@ class MainActivity : ComponentActivity() {
                 PrismContextMenu(target.title, "本机 · ${target.songs.size} 首", { if (!removing) collectionMenu = null }, initialFocus = firstFocus) {
                     if (confirming) Text(if (target.playlistId != null) "删除本机歌单？此操作无法撤销。" else "取消这张专辑中 ${target.songs.size} 首歌曲的收藏？", color = c.foreground)
                     if (error.isNotBlank()) Text(error, color = c.muted)
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
                         if (!confirming) {
-                            PrismAction("播放", {
+                            PrismIconAction("play", "播放", {
                                 if (target.songs.isNotEmpty()) { collectionMenu = null; playQueue(target.songs) }
                                 else error = "这个歌单还没有歌曲"
-                            }, Modifier.focusRequester(firstFocus))
-                            PrismAction(verb, { confirming = true })
+                            }, Modifier.weight(1f, fill = false).focusRequester(firstFocus))
+                            PrismIconAction(if (target.playlistId != null) "trash" else "heartFilled", verb, { confirming = true }, Modifier.weight(1f, fill = false))
                         } else {
-                            PrismAction("取消", { if (!removing) confirming = false }, Modifier.focusRequester(firstFocus))
-                            PrismAction(if (removing) "处理中…" else "确认$verb", {
+                            PrismIconAction("close", "取消", { if (!removing) confirming = false }, Modifier.weight(1f, fill = false).focusRequester(firstFocus))
+                            PrismIconAction(if (target.playlistId != null) "trash" else "heartFilled", if (removing) "处理中…" else "确认$verb", {
                                 if (!removing) lifecycleScope.launch {
                                     removing = true
                                     try {
@@ -4980,7 +5347,47 @@ class MainActivity : ComponentActivity() {
                                     catch (e: Exception) { error = e.message ?: "操作失败" }
                                     finally { removing = false }
                                 }
-                            })
+                            }, Modifier.weight(1f, fill = false))
+                        }
+                    }
+                }
+            }
+            if (libraryListMenu) {
+                val menuSongs: List<Song> = when {
+                    selectedList == "recent" -> libraryState.recent
+                    selectedList == "favorites" -> libraryState.favorites
+                    selectedList.startsWith("playlist:") -> selectedPlaylist?.songs.orEmpty()
+                    else -> emptyList()
+                }
+                val menuManageable = when {
+                    selectedList in setOf("artists", "albums") -> libraryState.subjects.any { it.kind == if (selectedList == "artists") "artist" else "album" }
+                    showingPlaylists -> libraryState.playlists.isNotEmpty()
+                    else -> menuSongs.isNotEmpty()
+                }
+                val menuTitle = when {
+                    selectedList == "recent" -> "最近播放"
+                    selectedList == "artists" -> "收藏的歌手"
+                    selectedList == "albums" -> "收藏的专辑"
+                    selectedPlaylist != null -> selectedPlaylist?.name.orEmpty()
+                    showingPlaylists -> "我的歌单"
+                    else -> "收藏的歌曲"
+                }
+                val firstFocus = remember { FocusRequester() }
+                PrismContextMenu(menuTitle, "长按确定键打开菜单", { libraryListMenu = false }, initialFocus = firstFocus) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
+                        var needsFocus = true
+                        if (menuSongs.isNotEmpty()) {
+                            PrismIconAction("play", "播放", { libraryListMenu = false; playQueue(menuSongs) }, Modifier.weight(1f, fill = false).focusRequester(firstFocus))
+                            needsFocus = false
+                        }
+                        if (showingPlaylists) {
+                            PrismIconAction("link", "导入歌单", { libraryListMenu = false; importDialog = true },
+                                Modifier.weight(1f, fill = false).then(if (needsFocus) Modifier.focusRequester(firstFocus) else Modifier))
+                            needsFocus = false
+                        }
+                        if (menuManageable) {
+                            PrismIconAction("list", "管理", { libraryListMenu = false; enterLibraryManage() },
+                                Modifier.weight(1f, fill = false).then(if (needsFocus) Modifier.focusRequester(firstFocus) else Modifier))
                         }
                     }
                 }
@@ -5057,7 +5464,7 @@ class MainActivity : ComponentActivity() {
                             Input(importUrl, { importUrl = it }, "歌单、单曲链接或编号",
                                 Modifier.fillMaxWidth().focusRequester(firstFocus).focusProperties { down = nameFocus },
                                 keyboardType = KeyboardType.Uri, manualKeyboard = true, onSubmit = { nameFocus.requestFocus() })
-                            Input(importName, { importName = it }, "歌单名称 · 选填，留空按音源命名",
+                            Input(importName, { importName = it }, "歌单名称（选填）",
                                 Modifier.fillMaxWidth().focusRequester(nameFocus).focusProperties { up = firstFocus; down = primaryFocus },
                                 manualKeyboard = true, onSubmit = { primaryFocus.requestFocus() })
                             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -5068,13 +5475,10 @@ class MainActivity : ComponentActivity() {
                                         importPlaylist(importName, url)
                                     }
                                 }, Modifier.focusRequester(primaryFocus).focusProperties { up = nameFocus }, primary = true)
-                                PrismAction("用手机填写", { importDialog = false; openPhoneHub() }, Modifier.focusProperties { up = nameFocus })
+                                PrismAction("用手机填写", { importDialog = false; openPhoneHub("import-sheet") }, Modifier.focusProperties { up = nameFocus })
                                 PrismAction("取消", { importDialog = false }, Modifier.focusProperties { up = nameFocus })
                             }
-                            /* 链接由音源的标准导入能力解析，宿主不认平台：这样任何实现了它的订阅都能用。 */
-                            Text("认得出平台的链接先交给该平台的音源，认不出则依次尝试其他已启用且支持导入的音源",
-                                color = c.muted, fontSize = 11.sp)
-                            Text("导入的歌单存在「我的 → 歌单」，也可以在设置 · 推荐里显示到首页；私有歌单需先在设置里填好该音源的 Cookie",
+                            Text("导入后保存在「我的 → 歌单」。私有歌单请先登录对应音源。",
                                 color = c.muted, fontSize = 11.sp)
                         }
                     }
@@ -5109,7 +5513,8 @@ class MainActivity : ComponentActivity() {
                     LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; phoneCloseFocus.requestFocus() }
                     val shape = RoundedCornerShape(18.dp)
                     val qrPixels = with(LocalDensity.current) { 216.dp.roundToPx() }
-                    val qr = remember(input, qrPixels) { qrCodeBitmap(input.url, qrPixels) }
+                    val link = if (phoneRemoteMode) "${input.url}#$phoneRemoteEntry" else input.url
+                    val qr = remember(link, qrPixels) { qrCodeBitmap(link, qrPixels) }
                     Row(Modifier.width(560.dp).clip(shape).background(c.panel)
                         .border(1.dp, c.accent.copy(alpha = .3f), shape).padding(24.dp),
                         horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -5147,25 +5552,25 @@ class MainActivity : ComponentActivity() {
             menuOpen = false; confirmRemoval = false
             scope.launch { withFrameNanos { }; runCatching { moreFocus.requestFocus() } }
         }
-        val labels = plugin.capabilities.labels
-        val highlights = (listOf("MV", "扫码登录", "歌单导入", "单曲导入", "推荐歌单", "榜单", "搜索", "歌词")
-            .filter { it in labels } + labels).distinct().take(4)
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                PlatformIcon(plugin.platform, Modifier.size(27.dp))
+                PlatformIcon(plugin.platform, Modifier.size(30.dp))
                 Spacer(Modifier.width(4.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.5.dp)) {
-                    Text(plugin.displayName, color = if (plugin.enabled) c.foreground else c.muted, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(plugin.displayName, color = if (plugin.enabled) c.foreground else c.muted, fontSize = 15.sp, lineHeight = 21.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    /* Capability tags are gone; only the missing-search warning stays — the one
+                       that would make the user tap in vain. */
                     Text(
-                        listOfNotNull(plugin.metadata.optString("version").takeIf { it.isNotBlank() }?.let { "v$it" }, plugin.metadata.optString("author").takeIf { it.isNotBlank() }).joinToString(" · "),
-                        color = c.muted, fontSize = 10.sp, lineHeight = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        listOfNotNull(
+                            plugin.metadata.optString("version").takeIf { it.isNotBlank() }?.let { "v$it" },
+                            plugin.metadata.optString("author").takeIf { it.isNotBlank() },
+                            "不支持搜索".takeIf { !plugin.capabilities.has("search") },
+                        ).joinToString(" · "),
+                        color = c.muted, fontSize = 12.sp, lineHeight = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
-                SettingsButton("配置", onConfigure, edge.focusAnchor(configureFocus).focusProperties { right = toggleFocus.requester })
-                Text(if (plugin.enabled) "已启用" else "已停用", color = if (plugin.enabled) c.accent.copy(alpha = .8f) else c.muted, fontSize = 10.sp, lineHeight = 14.sp, maxLines = 1)
-                Box(Modifier.focusAnchor(toggleFocus).focusProperties {
-                    left = configureFocus.requester
-                    right = moreFocus
+                Box(edge.focusAnchor(toggleFocus).focusProperties {
+                    right = configureFocus.requester
                 }.auraFocus(RoundedCornerShape(16.dp), 1f, ring = c.foreground)
                     .toggleable(plugin.enabled, role = Role.Switch, onValueChange = { enable ->
                         /* 焦点要等重组后的节点，所以必须挂在这一帧的帧时钟上：lifecycleScope 的
@@ -5178,32 +5583,40 @@ class MainActivity : ComponentActivity() {
                     }).padding(4.dp)) {
                     PrismCapsule(plugin.enabled)
                 }
-                SettingsButton("更多", { confirmRemoval = false; menuOpen = true }, Modifier.focusRequester(moreFocus).focusProperties { left = toggleFocus.requester })
+                SettingsButton("配置", onConfigure, Modifier.focusAnchor(configureFocus).focusProperties { left = toggleFocus.requester; right = moreFocus })
+                SettingsButton("更多", { confirmRemoval = false; menuOpen = true }, Modifier.focusRequester(moreFocus).focusProperties { left = configureFocus.requester })
             }
-            Text(highlights.joinToString(" · ").ifBlank { "暂无可用能力" } + if (labels.size > highlights.size) " · 另 ${labels.size - highlights.size} 项" else "",
-                color = c.muted, fontSize = 10.sp, lineHeight = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 31.dp))
         }
         if (menuOpen) key(confirmRemoval) {
             PrismContextMenu(if (confirmRemoval) "移除 ${plugin.displayName}？" else plugin.displayName,
-                if (confirmRemoval) "本机歌单和收藏会保留" else "音源操作", { closeMenu() }, menuFocus) {
+                if (confirmRemoval) "本机歌单和收藏会保留" else listOfNotNull(
+                    plugin.metadata.optString("version").takeIf { it.isNotBlank() }?.let { "v$it" },
+                    plugin.metadata.optString("author").takeIf { it.isNotBlank() },
+                ).joinToString(" · ").ifBlank { "未提供版本与作者" }, { closeMenu() }, menuFocus) {
                 if (confirmRemoval) {
-                    PrismAction("取消", { closeMenu() }, Modifier.focusRequester(menuFocus), primary = true)
-                    PrismAction("移除音源", {
-                        menuOpen = false
-                        lifecycleScope.launch { try { plugins.remove(plugin.id); status = "已移除音源"; onRemoved() } catch (e: Exception) { status = e.message ?: "移除失败" } }
-                    })
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
+                        PrismIconAction("close", "取消", { closeMenu() }, Modifier.weight(1f, fill = false).focusRequester(menuFocus))
+                        PrismIconAction("trash", "移除音源", {
+                            menuOpen = false
+                            lifecycleScope.launch { try { plugins.remove(plugin.id); status = "已移除音源"; onRemoved() } catch (e: Exception) { status = e.message ?: "移除失败" } }
+                        }, Modifier.weight(1f, fill = false))
+                    }
                 } else {
-                    var first = true
-                    fun nextFocus(): Modifier = if (first) Modifier.focusRequester(menuFocus).also { first = false } else Modifier
-                    PrismAction("音源信息", { menuOpen = false; infoOpen = true }, nextFocus())
-                    if (plugin.enabled && plugin.capabilities.has("search")) PrismAction("搜索此音源", {
-                        menuOpen = false; selectedPlugin = plugin.id; searchSources = setOf(plugin.id); page = "search"
-                    }, nextFocus())
-                    if (plugin.updateUrl.isNotBlank()) PrismAction("更新插件", {
-                        closeMenu()
-                        lifecycleScope.launch { try { showPluginImport(plugins.refresh(plugin.id)) } catch (e: Exception) { status = "更新失败：${e.message}" } }
-                    }, nextFocus())
-                    if (!owned) PrismAction("移除音源", { confirmRemoval = true }, nextFocus())
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
+                        PrismIconAction("info", "音源信息", { menuOpen = false; infoOpen = true }, Modifier.weight(1f, fill = false).focusRequester(menuFocus))
+                        if (plugin.enabled && plugin.capabilities.has("search")) PrismIconAction("search", "搜索此音源", {
+                            menuOpen = false; selectedPlugin = plugin.id; searchSources = setOf(plugin.id); page = "search"
+                        }, Modifier.weight(1f, fill = false))
+                        if (plugin.updateUrl.isNotBlank()) PrismIconAction("refresh", "更新插件", {
+                            closeMenu()
+                            lifecycleScope.launch {
+                                try { showPluginImport(plugins.refresh(plugin.id)) }
+                                catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                                catch (e: Exception) { status = "更新失败：${e.message}" }
+                            }
+                        }, Modifier.weight(1f, fill = false))
+                        if (!owned) PrismIconAction("trash", "移除音源", { confirmRemoval = true }, Modifier.weight(1f, fill = false))
+                    }
                 }
             }
         }
@@ -5213,14 +5626,8 @@ class MainActivity : ComponentActivity() {
     @Composable private fun PluginInfoDialog(plugin: Plugin, onDismiss: () -> Unit) {
         val c = LocalPrismColors.current
         val readFocus = remember { FocusRequester() }
-        val closeFocus = remember { FocusRequester() }
-        val scroll = rememberScrollState()
-        val scope = rememberCoroutineScope()
-        val scrollStep = with(LocalDensity.current) { 96.dp.toPx() }
         val details = buildList {
-            listOf("version" to "版本", "author" to "作者", "description" to "说明").forEach { (key, label) ->
-                plugin.metadata.optString(key).trim().takeIf { it.isNotBlank() }?.let { add(label to it) }
-            }
+            plugin.metadata.optString("description").trim().takeIf { it.isNotBlank() }?.let { add("说明" to it) }
             add("支持能力" to plugin.capabilities.labels.joinToString(" · ").ifBlank { "未识别到支持的能力" })
             val updateUrl = plugin.updateUrl
             if (plugin.url.isNotBlank() && plugin.url == updateUrl) add("插件／更新地址" to plugin.url)
@@ -5231,28 +5638,50 @@ class MainActivity : ComponentActivity() {
             if (plugin.subscriptionManaged) add("所属订阅" to plugin.origin)
         }
         PrismContextMenu(plugin.displayName, "音源信息", onDismiss, readFocus) {
-            Column(Modifier.fillMaxWidth().heightIn(max = 260.dp).focusRequester(readFocus)
-                .auraFocus(RoundedCornerShape(8.dp), scale = 1f)
-                .onPreviewKeyEvent { event ->
-                    if (event.type != KeyEventType.KeyDown) false
-                    else when (event.key) {
-                        Key.DirectionDown -> {
-                            if (scroll.value < scroll.maxValue) scope.launch { scroll.scrollBy(scrollStep) }
-                            else closeFocus.requestFocus()
-                            true
-                        }
-                        Key.DirectionUp -> { scope.launch { scroll.scrollBy(-scrollStep) }; true }
-                        else -> false
+            Row(Modifier.fillMaxWidth().background(c.foreground.copy(alpha = .04f), RoundedCornerShape(12.dp)).padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                PlatformIcon(plugin.platform, Modifier.size(38.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("版本 ${plugin.metadata.optString("version").ifBlank { "未提供" }}", color = c.foreground, fontSize = 15.sp)
+                    Text("作者 ${plugin.metadata.optString("author").ifBlank { "未提供" }}", color = c.muted, fontSize = 12.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Text(if (plugin.enabled) "已启用" else "已停用", color = if (plugin.enabled) c.accent else c.muted, fontSize = 12.sp)
+            }
+            SourceInfoDetails(details, readFocus, onDismiss)
+        }
+    }
+
+    @Composable private fun SourceInfoDetails(details: List<Pair<String, String>>, readFocus: FocusRequester, onDismiss: () -> Unit) {
+        val c = LocalPrismColors.current
+        val closeFocus = remember { FocusRequester() }
+        val scroll = rememberScrollState()
+        val scope = rememberCoroutineScope()
+        val scrollStep = with(LocalDensity.current) { 96.dp.toPx() }
+        Column(Modifier.fillMaxWidth().heightIn(max = 220.dp).focusRequester(readFocus)
+            .auraFocus(RoundedCornerShape(8.dp), scale = 1f)
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) false
+                else when (event.key) {
+                    Key.DirectionDown -> {
+                        if (scroll.value < scroll.maxValue) scope.launch { scroll.scrollBy(scrollStep) }
+                        else closeFocus.requestFocus()
+                        true
                     }
-                }.focusable().verticalScroll(scroll).padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                details.forEach { (label, value) ->
-                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text(label, color = c.muted, fontSize = 12.sp, lineHeight = 16.sp)
-                        Text(value, color = c.foreground, fontSize = 14.sp, lineHeight = 20.sp)
-                    }
+                    Key.DirectionUp -> { scope.launch { scroll.scrollBy(-scrollStep) }; true }
+                    else -> false
+                }
+            }.focusable().verticalScroll(scroll).padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            details.forEachIndexed { index, (label, value) ->
+                if (index > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(c.line.copy(alpha = .4f)))
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(label, color = c.muted, fontSize = 12.sp, lineHeight = 16.sp)
+                    Text(value, color = c.foreground, fontSize = 14.sp, lineHeight = 20.sp)
                 }
             }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
             SettingsButton("关闭", onDismiss, Modifier.focusRequester(closeFocus).focusProperties { up = readFocus }, primary = true)
         }
     }
@@ -5277,15 +5706,15 @@ class MainActivity : ComponentActivity() {
         var manualOpen by remember(plugin.id) { mutableStateOf(false) }
         var infoOpen by remember(plugin.id) { mutableStateOf(false) }
         var platformOpen by remember(plugin.id) { mutableStateOf(false) }
-        var clearCookiesOpen by remember(plugin.id) { mutableStateOf(false) }
+        var resetOpen by remember(plugin.id) { mutableStateOf(false) }
+        var resetting by remember(plugin.id) { mutableStateOf(false) }
         var saving by remember(plugin.id) { mutableStateOf(false) }
         var error by remember(plugin.id) { mutableStateOf("") }
         val backFocus = remember(plugin.id) { FocusRequester() }
         val manualFocus = remember(plugin.id) { FocusRequester() }
         val infoFocus = remember(plugin.id) { FocusRequester() }
-        val clearFocus = remember(plugin.id) { FocusRequester() }
+        val resetFocus = remember(plugin.id) { FocusRequester() }
         val platformFocus = remember(plugin.id) { FocusRequester() }
-        val platformOptionFocus = remember(plugin.id) { FocusRequester() }
         val fieldFocuses = remember(plugin.id, entries.size) { List(entries.size) { FocusRequester() } }
         val loginFocus = remember(plugin.id) { FocusRequester() }
         val phoneFocus = remember(plugin.id) { FocusRequester() }
@@ -5319,6 +5748,30 @@ class MainActivity : ComponentActivity() {
             }
         }
         LaunchedEffect(plugin.id) { repeat(2) { withFrameNanos { } }; firstFocus.requestFocus() }
+        /* Reset restores a freshly-installed source: variables emptied, cookies cleared, cached
+           URLs invalidated. Partial success must report exactly which half failed. */
+        fun resetConfiguration() {
+            if (resetting) return
+            lifecycleScope.launch {
+                resetting = true; error = ""
+                try {
+                    val failures = plugins.resetConfiguration(plugin.id)
+                    val stored = plugins.state.value.plugins.firstOrNull { it.id == plugin.id }?.variables
+                    values.keys.toList().forEach { key -> values[key] = stored?.optString(key).orEmpty() }
+                    if (failures.isEmpty()) status = "配置已重置"
+                    else error = failures.joinToString("；")
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                catch (e: Exception) { error = e.message ?: "重置失败" }
+                finally {
+                    resetting = false
+                    scope.launch { withFrameNanos { }; runCatching { resetFocus.requestFocus() } }
+                }
+            }
+        }
+        fun closeReset() {
+            resetOpen = false
+            scope.launch { withFrameNanos { }; runCatching { resetFocus.requestFocus() } }
+        }
         fun closeQr() {
             loginOpen.value = false
             scope.launch { withFrameNanos { }; loginFocus.requestFocus() }
@@ -5334,50 +5787,57 @@ class MainActivity : ComponentActivity() {
                 }
                 PrismAction("返回音源", { if (!saving) onBack() }, Modifier.focusRequester(backFocus).focusProperties { down = firstFocus }.rememberFocus(memory))
             }
-            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (canLoginQr || hasFields) {
-                Text("账号配置", color = c.foreground, fontSize = 17.sp, fontWeight = FontWeight.Medium)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (canLoginQr) {
-                        PrismConfigChoice("扫码登录", "使用对应平台 App 扫码", "qr", { manualOpen = false; loginOpen.value = true },
-                            Modifier.weight(1f).focusRequester(loginFocus).focusAnchor(entry).focusProperties {
-                                up = backFocus; down = infoFocus; if (hasFields) right = manualFocus
-                            }.rememberFocus(memory))
+                /* The count only counts keys with a value: it neither validates required
+                   fields nor blocks saving. */
+                if (canLoginQr) PrismConfigChoice("扫码登录", "使用对应平台 App 扫码，成功后自动保存", "qr",
+                    { manualOpen = false; loginOpen.value = true },
+                    Modifier.fillMaxWidth().focusRequester(loginFocus).focusAnchor(entry)
+                        .focusProperties { up = backFocus; down = if (hasFields) manualFocus else infoFocus }
+                        .rememberFocus(memory))
+                if (hasFields) {
+                    val filled = entries.count { plugin.variables.optString(it.second).isNotBlank() }
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp)
+                        .focusRequester(manualFocus).then(if (!canLoginQr) Modifier.focusAnchor(entry) else Modifier)
+                        .focusProperties { up = if (canLoginQr) loginFocus else backFocus; down = infoFocus }.rememberFocus(memory)
+                        .rowFocus()
+                        .clickable {
+                            values.keys.toList().forEach { key -> values[key] = plugin.variables.optString(key) }
+                            error = ""; manualOpen = true
+                        }.padding(start = 12.dp, top = 8.dp, end = 10.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Glyph("keyboard", Modifier.size(18.dp), c.muted)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("手动填写", color = c.foreground, fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium)
+                            Text("${entries.size} 项 · 已填 $filled", color = c.muted, fontSize = 12.sp, lineHeight = 18.sp)
+                        }
+                        Text("›", color = c.accent, fontSize = 20.sp)
                     }
-                    if (hasFields) PrismConfigChoice("手动填写", "使用遥控器或手机输入", "keyboard", {
-                        values.keys.toList().forEach { key -> values[key] = plugin.variables.optString(key) }
-                        error = ""; manualOpen = true
-                    }, Modifier.weight(1f).focusRequester(manualFocus).then(if (!canLoginQr) Modifier.focusAnchor(entry) else Modifier).focusProperties {
-                        up = backFocus; down = infoFocus; if (canLoginQr) left = loginFocus
-                    }.rememberFocus(memory))
                 }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     PrismAction("音源信息", { infoOpen = true; platformOpen = false },
                         Modifier.focusRequester(infoFocus).then(if (!canLoginQr && !hasFields) Modifier.focusAnchor(entry) else Modifier)
-                            .focusProperties { up = beforeSettings; down = bottomFocus; right = platformFocus }.rememberFocus(memory))
-                    PrismAction("平台 · ${SourcePlatforms.get(plugin.id)?.label ?: "自动识别"} ▾", { platformOpen = !platformOpen; infoOpen = false },
-                        Modifier.focusRequester(platformFocus)
-                            .focusProperties {
-                                up = beforeSettings; down = if (platformOpen) platformOptionFocus else bottomFocus
-                                left = infoFocus
-                                right = clearFocus
-                            }.rememberFocus(memory))
-                    PrismAction("清除自动 Cookie", { clearCookiesOpen = true }, Modifier.focusRequester(clearFocus)
-                        .focusProperties { left = platformFocus; up = beforeSettings; down = bottomFocus }.rememberFocus(memory))
-                }
-                if (platformOpen) LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(4.dp)) {
-                    fun selectPlatform(platform: MusicPlatform?) {
-                        SourcePlatforms.set(plugin.id, platform); platformOpen = false
-                        scope.launch { withFrameNanos { }; platformFocus.requestFocus() }
+                            .focusProperties { up = beforeSettings; down = bottomFocus; right = platformFocus }.rememberFocus(memory), icon = "info")
+                    Box {
+                        val platforms = remember { listOf<MusicPlatform?>(null) + MusicPlatform.entries.filterNot { it in setOf(MusicPlatform.LOCAL, MusicPlatform.CUSTOM, MusicPlatform.OTHER) } }
+                        fun closePlatforms() {
+                            platformOpen = false
+                            scope.launch { withFrameNanos { }; platformFocus.requestFocus() }
+                        }
+                        PrismAction("平台 · ${SourcePlatforms.get(plugin.id)?.label ?: "自动识别"} ▾", { platformOpen = true; infoOpen = false },
+                            Modifier.focusRequester(platformFocus)
+                                .focusProperties { up = beforeSettings; down = bottomFocus; left = infoFocus; right = resetFocus }.rememberFocus(memory))
+                        if (platformOpen) ChoicePopup(platforms, platforms.indexOf(SourcePlatforms.get(plugin.id)),
+                            label = { it?.label ?: "自动识别" }, onDismiss = { closePlatforms() },
+                            onSelect = { SourcePlatforms.set(plugin.id, it); closePlatforms() },
+                            icon = { if (it == null) Glyph("refresh", Modifier.size(22.dp), c.muted) else PlatformIcon(it, Modifier.size(22.dp)) })
                     }
-                    item { PrismAction("${if (SourcePlatforms.get(plugin.id) == null) "✓ " else ""}自动识别", { selectPlatform(null) },
-                        Modifier.focusRequester(platformOptionFocus).focusProperties { up = platformFocus; down = bottomFocus }.rememberFocus(memory)) }
-                    items(MusicPlatform.entries.filterNot { it in setOf(MusicPlatform.LOCAL, MusicPlatform.CUSTOM, MusicPlatform.OTHER) }) { platform ->
-                        PlatformAction(platform, "${if (SourcePlatforms.get(plugin.id) == platform) "✓ " else ""}${platform.label}",
-                            Modifier.focusProperties { up = platformFocus; down = bottomFocus }.rememberFocus(memory)) { selectPlatform(platform) }
-                    }
+                    PrismAction(if (resetting) "重置中…" else "重置配置", { if (!resetting) resetOpen = true }, Modifier.focusRequester(resetFocus)
+                        .focusProperties { left = platformFocus; up = beforeSettings; down = bottomFocus }.rememberFocus(memory), icon = "trash")
                 }
             }
             if (error.isNotBlank()) Text(error, color = c.accent, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 24.dp))
@@ -5385,7 +5845,7 @@ class MainActivity : ComponentActivity() {
             Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("配置保存在本机", color = c.muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
                 PrismAction("完成", onBack,
-                    Modifier.focusRequester(bottomFocus).focusProperties { up = clearFocus }.rememberFocus(memory), primary = true)
+                    Modifier.focusRequester(bottomFocus).focusProperties { up = resetFocus }.rememberFocus(memory), primary = true)
             }
         }
         if (manualOpen) Dialog(onDismissRequest = { closeManual() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -5405,22 +5865,38 @@ class MainActivity : ComponentActivity() {
                         AuraIconButton("close", "取消手动配置", { closeManual() }, Modifier.focusRequester(manualCloseFocus)
                             .focusProperties { down = fieldFocuses.first(); left = phoneFocus })
                     }
-                    Spacer(Modifier.height(18.dp))
-                    Column(Modifier.weight(1f, fill = false).fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        val filledCount = entries.count { values[it.second].orEmpty().isNotBlank() }
+                        Text("${entries.size} 项 · 已填 $filledCount", color = c.muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                        Text("确定键开始输入，方向键离开", color = c.muted, fontSize = 11.sp)
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.foreground.copy(alpha = .10f)))
+                    Spacer(Modifier.height(4.dp))
+                    Column(Modifier.weight(1f, fill = false).fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         entries.forEachIndexed { position, (field, key) ->
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(field.optString("title").ifBlank { field.optString("name").ifBlank { key } }, color = c.foreground, fontSize = 14.sp)
+                            val title = field.optString("title").ifBlank { field.optString("name").ifBlank { key } }
+                            val secret = credentialKeys.any { key.contains(it, ignoreCase = true) }
+                            val filled = values[key].orEmpty().isNotBlank()
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 2.dp)) {
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(title, color = c.foreground, fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis)
+                                    Text(if (filled) "已填写" else "未填写", color = if (filled) c.accent else c.muted, fontSize = 11.sp)
+                                }
                                 Input(values[key].orEmpty(), { values[key] = it }, field.optString("hint").ifBlank { "未填写" },
                                     Modifier.fillMaxWidth().focusRequester(fieldFocuses[position]).focusProperties {
                                         up = fieldFocuses.getOrNull(position - 1) ?: phoneFocus
                                         down = fieldFocuses.getOrNull(position + 1) ?: manualSaveFocus
-                                    }, secret = credentialKeys.any { key.contains(it, ignoreCase = true) }, manualKeyboard = true,
+                                    }, secret = secret, manualKeyboard = true,
                                     onSubmit = { (fieldFocuses.getOrNull(position + 1) ?: manualSaveFocus).requestFocus() })
                             }
                         }
                     }
                     if (error.isNotBlank()) Text(error, color = c.accent, fontSize = 12.sp, maxLines = 2, modifier = Modifier.padding(top = 10.dp))
-                    Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.End) {
+                    Spacer(Modifier.height(14.dp))
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.foreground.copy(alpha = .10f)))
+                    Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.End) {
                         PrismAction("取消", { closeManual() }, Modifier.focusProperties { up = fieldFocuses.last(); right = manualSaveFocus })
                         Spacer(Modifier.width(10.dp))
                         PrismAction(if (saving) "保存中…" else "保存配置", { saveManual() }, Modifier.focusRequester(manualSaveFocus)
@@ -5432,10 +5908,16 @@ class MainActivity : ComponentActivity() {
         if (loginOpen.value) PluginLoginQr(plugin, onClose = { closeQr() }, onApplied = { returned ->
             val merged = JSONObject(plugin.variables.toString())
             returned.keys().forEach { key -> merged.put(key, returned.optString(key)) }
-            returned.keys().forEach { key -> if (key in values) values[key] = returned.optString(key) }
             closeQr()
             lifecycleScope.launch {
-                try { plugins.setVariables(plugin.id, merged); status = "扫码登录成功，配置已自动保存" }
+                /* The status only appears after a successful save; the count is the number of
+                   keys the plugin returned, not a completion verdict. */
+                val written = returned.length()
+                try {
+                    plugins.setVariables(plugin.id, merged)
+                    returned.keys().forEach { key -> if (key in values) values[key] = returned.optString(key) }
+                    status = if (written > 0) "扫码成功，已写入 $written 项配置" else "扫码成功，本次未返回配置项"
+                }
                 catch (e: Exception) { error = "登录成功，但写入配置失败：${e.message}" }
             }
         })
@@ -5443,14 +5925,14 @@ class MainActivity : ComponentActivity() {
             infoOpen = false
             scope.launch { withFrameNanos { }; infoFocus.requestFocus() }
         }
-            if (clearCookiesOpen) PrismConfirmDialog("清除自动 Cookie？", "手动填写的配置会保留", "清除",
-                onDismiss = { clearCookiesOpen = false }, onConfirm = {
-                    clearCookiesOpen = false
-                    lifecycleScope.launch {
-                        try { plugins.client.call("", JSONObject(), "clearCookies", pluginId = plugin.id); status = "已清除自动 Cookie" }
-                        catch (e: Exception) { error = e.message ?: "清除失败" }
-                    }
-                })
+        if (resetOpen) PrismConfirmDialog(
+            "重置音源配置？",
+            "将清除该音源填写的参数和本机保存的登录信息，之后可重新登录或填写配置。音源、收藏和歌单会保留。",
+            "重置配置",
+            onDismiss = { closeReset() },
+            onConfirm = { resetOpen = false; resetConfiguration() },
+            confirmIcon = "trash",
+        )
     }
 
     /* 弹窗只留四行给提示，而平台原话可能是一整个响应体；这里裁短，完整文本留在 logcat。 */
@@ -5620,14 +6102,14 @@ class MainActivity : ComponentActivity() {
         screenOffSettled = true
         wakeKeys.clear()
         saveResume()
-        closePhoneInput()
+        closePhoneSessions()
         super.onStop()
     }
 
     override fun onDestroy() {
         radioJob?.cancel(); radioAdvanceJob?.cancel()
         if (::appUpdates.isInitialized) { updateJob?.cancel(); appUpdates.cancelNetwork() }
-        closePhoneInput()
+        closePhoneSessions()
         recovery?.ready?.cancel(); recovery = null
         lyricJob?.cancel(); resolving?.cancel(); controller?.removeListener(listener); connection?.let(MediaController::releaseFuture); controller = null
         super.onDestroy()
@@ -5718,16 +6200,24 @@ internal fun matchesSearchHistory(value: String, query: String): Boolean {
             }
             else false
         }.onFocusChanged { focused = it.isFocused; if (!it.isFocused && manualKeyboard) editing = false }.border(1.dp, if (focused) c.accent else c.line, androidx.compose.foundation.shape.RoundedCornerShape(10.dp)).background(c.panel, androidx.compose.foundation.shape.RoundedCornerShape(10.dp)).padding(12.dp),
-        decorationBox = { inner -> Box(Modifier.fillMaxWidth()) {
-            if (value.isEmpty()) Text(hint, color = c.muted, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(end = if (manualKeyboard && focused && !editing) 80.dp else 0.dp))
-            inner()
-            /* Without this the field looks editable and the user waits for a keyboard that will
-               never come: say which key starts editing. */
-            if (manualKeyboard && focused && !editing) Text("确定键输入", color = c.accent, fontSize = 11.sp,
-                modifier = Modifier.align(Alignment.CenterEnd))
-        } })
-}
+        decorationBox = { inner ->
+            val longHint = hint.length > 22
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(if (longHint) 4.dp else 0.dp)) {
+                Box(Modifier.fillMaxWidth()) {
+                    /* Masked fields show a fixed-length placeholder and the character count when
+                       idle — a full dot grid of a long cookie reads as nothing; the real input
+                       appears only while editing. */
+                    val maskedIdle = secret && value.isNotEmpty() && !editing
+                    if (maskedIdle) Text("••••••••  ${value.length} 字符", color = c.muted, fontSize = 15.sp, maxLines = 1)
+                    else {
+                        if (value.isEmpty()) Text(if (longHint) "请输入" else hint, color = c.muted, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        inner()
+                    }
+                }
+                if (longHint) Text(hint, color = c.muted, fontSize = 12.sp, lineHeight = 17.sp)
+            }
+        })
+    }
 
 private fun directorySize(dir: java.io.File): Long =
     dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }

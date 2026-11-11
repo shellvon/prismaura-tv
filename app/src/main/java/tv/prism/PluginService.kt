@@ -35,7 +35,7 @@ class PluginService : Service() {
     private class Worker {
         lateinit var web: WebView
         var ready = false
-        var current: Message? = null
+        @Volatile var current: Message? = null
         @Volatile var pluginId = ""
     }
 
@@ -148,7 +148,16 @@ class PluginService : Service() {
         val pluginId = msg.data.getString("pluginId") ?: ""
         val result = runCatching {
             require(pluginId.isNotBlank()) { "未选择插件" }
-            cookieJars.getOrPut(pluginId) { PluginCookies(this, pluginId) }.clear()
+            cookieJars.getOrPut(pluginId) { PluginCookies(this, pluginId) }.retire()
+            val stale = queue.filter { it.data.getString("pluginId") == pluginId } +
+                workers.mapNotNull { it.current }.filter { it.data.getString("pluginId") == pluginId }
+            val error = JSONObject().put("ok", false).put("error", "音源配置已重置，请重试").toString()
+            stale.forEach {
+                cancel(it.data.getString("id") ?: "")
+                reply(it, error)
+            }
+            cookieJars[pluginId] = PluginCookies(this, pluginId)
+            dispatch()
         }.fold(
             onSuccess = { JSONObject().put("ok", true).put("value", true) },
             onFailure = { JSONObject().put("ok", false).put("error", it.message ?: "清除失败") },
@@ -178,7 +187,12 @@ class PluginService : Service() {
         }
 
         @JavascriptInterface fun request(id: String, data: String) {
+            val owner = worker.current ?: return
+            val ownerId = owner.data.getString("id") ?: return
             val pluginId = worker.pluginId
+            val jar: CookieJar = if (pluginId.isBlank()) CookieJar.NO_COOKIES else
+                cookieJars.getOrPut(pluginId) { PluginCookies(this@PluginService, pluginId) }
+            if (worker.current !== owner) return
             io.execute {
                 val result = try {
                     val o = JSONObject(data)
@@ -196,8 +210,6 @@ class PluginService : Service() {
                     val requestBody = if (method == "GET" || method == "HEAD") null else body.toRequestBody(headers.optString("Content-Type").toMediaTypeOrNull())
                     builder.method(method, requestBody)
                     val request = builder.build()
-                    val jar: CookieJar = if (pluginId.isBlank()) CookieJar.NO_COOKIES else
-                        cookieJars.getOrPut(pluginId) { PluginCookies(this@PluginService, pluginId) }
                     val explicitCookie = request.header("Cookie")
                     val requestOrigin = request.url
                     val client = http.newBuilder().cookieJar(jar).addNetworkInterceptor { chain ->
@@ -239,14 +251,20 @@ class PluginService : Service() {
                             .put("headers", responseHeaders).put("binary", binary).put("body", content)
                     }
                 } catch (e: Exception) { JSONObject().put("ok", false).put("error", e.message ?: "网络请求失败") }
-                main.post { worker.web.evaluateJavascript("PrismEngine.networkComplete(${JSONObject.quote(id)},$result)", null) }
+                main.post {
+                    if (worker.current?.data?.getString("id") == ownerId) {
+                        worker.web.evaluateJavascript("PrismEngine.networkComplete(${JSONObject.quote(id)},$result)", null)
+                    }
+                }
             }
         }
 
         @JavascriptInterface fun cookies(action: String, data: String): String = try {
+            val owner = worker.current ?: error("插件调用已结束")
             val pluginId = worker.pluginId
             require(pluginId.isNotBlank()) { "未选择插件" }
             val jar = cookieJars.getOrPut(pluginId) { PluginCookies(this@PluginService, pluginId) }
+            check(worker.current === owner) { "插件调用已结束" }
             val input = JSONObject(data)
             val value: Any = when (action) {
                 "clearAll" -> { jar.clear(); true }

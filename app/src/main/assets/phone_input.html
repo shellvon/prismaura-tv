@@ -1,3 +1,47 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>极光音乐 PrismAura · 手机输入</title><style>
-*{box-sizing:border-box}body{margin:0;background:#08090B;color:#f5f0e7;font:16px -apple-system,BlinkMacSystemFont,sans-serif;min-height:100vh;background-image:radial-gradient(circle at 50% 0%,#BD863C18 0%,transparent 52%)}main{max-width:520px;margin:auto;padding:32px 24px}header{display:flex;align-items:center;gap:12px;color:#F2D69A}.brand-mark{width:80px;height:80px;flex:none}header b{display:block;letter-spacing:.12em;font-size:18px;font-weight:500}header span{display:block;margin-top:7px;font-size:13px;letter-spacing:.08em;color:#c7af84}.eyebrow{margin:56px 0 12px;color:#F2D69A;font-size:11px;letter-spacing:.25em}h1{font-size:32px;font-weight:400;margin:0 0 12px}p{color:#b9b2a6;line-height:1.6;font-size:14px}form{margin-top:32px}label{display:block;color:#ded4c2;font-size:14px;margin:20px 0}input{display:block;width:100%;margin-top:10px;padding:16px;border:1px solid #4b3c27;border-radius:12px;background:#111215;color:#f5f0e7;font:16px sans-serif;outline:none}input:focus{border-color:#F2D69A;box-shadow:0 0 0 3px #F2D69A22}button{width:100%;margin-top:12px;padding:16px;border:0;border-radius:12px;background:linear-gradient(135deg,#F2D69A,#BD863C);color:#08090B;font-size:16px;font-weight:600}button:focus-visible{outline:2px solid #F2D69A;outline-offset:4px}footer{margin-top:28px;color:#a39b8e;font-size:12px;line-height:1.7}
-</style><main><header><svg class="brand-mark" viewBox="0 0 100 100" aria-hidden="true" focusable="false"><defs><radialGradient id="aura"><stop offset="0" stop-color="#F2D69A" stop-opacity=".025"/><stop offset=".48" stop-color="#F2D69A" stop-opacity=".035"/><stop offset=".64" stop-color="#BD863C" stop-opacity=".2"/><stop offset="1" stop-color="#BD863C" stop-opacity="0"/></radialGradient><linearGradient id="gold" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#F2D69A"/><stop offset="1" stop-color="#BD863C"/></linearGradient><filter id="soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3"/></filter></defs><circle cx="50" cy="50" r="40" fill="url(#aura)" filter="url(#soft)"/><path d="M65.2 58.6 50 29 31 66 69 66 67.5 63.1" fill="none" stroke="url(#gold)" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/><path d="M66.35 60.85 75 64.3 81 64.3" fill="none" stroke="url(#gold)" stroke-width=".7" stroke-linecap="round" opacity=".8"/></svg><div><b>极光音乐</b><span>PrismAura</span></div></header><div class="eyebrow">CONNECTED TO YOUR TV</div><h1>发送到电视</h1><p>在手机上输入，完成后发送到极光音乐。</p><form method="post" action="{{action}}">{{fields}}<button type="submit">发送到电视</button></form><footer>手机需要与电视在同一个局域网；填写的内容只发到这台电视。</footer></main></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>{{title}} · 极光音乐 PrismAura</title>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;background:#08090b radial-gradient(circle at 50% 0%,#bd863c18,transparent 52%);color:#f5f0e7;font:16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    main{max-width:520px;margin:auto;padding:28px 24px}
+    header{display:flex;align-items:center;gap:8px;color:#f2d69a}
+    .brand-mark{width:64px;height:64px;flex:none}
+    header b{display:block;font-size:18px;font-weight:500;letter-spacing:.08em}
+    header span{display:block;margin-top:5px;color:#c7af84;font-size:12px;letter-spacing:.08em}
+    .card{margin-top:24px;padding:24px;border:1px solid #35302a;border-radius:20px;background:#111215}
+    .eyebrow{margin:0 0 10px;color:#c7af84;font-size:12px}
+    h1{margin:0;font-size:28px;font-weight:500;line-height:1.3}
+    p{color:#b9b2a6;font-size:14px;line-height:1.7;overflow-wrap:anywhere}
+    form{margin-top:24px}
+    label{display:block;margin:20px 0;color:#ded4c2;font-size:14px;overflow-wrap:anywhere}
+    input{display:block;width:100%;min-height:48px;margin-top:8px;padding:14px;border:1px solid #4b3c27;border-radius:12px;background:#08090b;color:#f5f0e7;font-size:16px;font-family:inherit;outline:none}
+    input:focus{border-color:#f2d69a;box-shadow:0 0 0 3px #f2d69a22}
+    button,.button{display:block;width:100%;min-height:48px;margin-top:16px;padding:14px;border:0;border-radius:12px;background:#f2d69a;color:#08090b;font:600 16px -apple-system,BlinkMacSystemFont,sans-serif;text-align:center;text-decoration:none;cursor:pointer}
+    button:focus-visible,.button:focus-visible{outline:2px solid #f2d69a;outline-offset:4px}
+    .result-mark{display:grid;place-items:center;width:56px;height:56px;margin:24px 0 8px;border-radius:50%;background:#f2d69a18;color:#f2d69a}
+    .result-mark svg{width:28px;height:28px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+    footer{margin-top:24px;color:#a39b8e;font-size:12px;line-height:1.7}
+    @media(max-width:360px){main{padding:20px 16px}.card{padding:20px}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <svg class="brand-mark" viewBox="0 0 100 100" aria-hidden="true" focusable="false"><defs><radialGradient id="aura"><stop offset="0" stop-color="#F2D69A" stop-opacity=".025"/><stop offset=".48" stop-color="#F2D69A" stop-opacity=".035"/><stop offset=".64" stop-color="#BD863C" stop-opacity=".2"/><stop offset="1" stop-color="#BD863C" stop-opacity="0"/></radialGradient><linearGradient id="gold" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#F2D69A"/><stop offset="1" stop-color="#BD863C"/></linearGradient><filter id="soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3"/></filter></defs><circle cx="50" cy="50" r="40" fill="url(#aura)" filter="url(#soft)"/><path d="M65.2 58.6 50 29 31 66 69 66 67.5 63.1" fill="none" stroke="url(#gold)" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/><path d="M66.35 60.85 75 64.3 81 64.3" fill="none" stroke="url(#gold)" stroke-width=".7" stroke-linecap="round" opacity=".8"/></svg>
+    <div><b>极光音乐</b><span>PrismAura</span></div>
+  </header>
+  <section class="card">
+    <p class="eyebrow">局域网手机输入</p>
+    <h1>{{title}}</h1>
+    <p>{{message}}</p>
+    {{content}}
+  </section>
+  <footer>手机需与电视连接同一局域网。填写的内容只发送到这台电视。</footer>
+</main>
+</body>
+</html>
