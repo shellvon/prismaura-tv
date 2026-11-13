@@ -2026,6 +2026,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /* androidx 把 ComponentActivity.dispatchKeyEvent 标成库内可见，只是不想让外部改它的
+       按键分发；遥控器需要在视图之前拦媒体键与熄屏唤醒键，只能在这里接，按原意抑制。 */
+    @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // Consume the whole wake press; a fresh down also recovers from a missing key-up.
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) wakeKeys.remove(event.keyCode)
