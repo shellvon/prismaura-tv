@@ -1,231 +1,291 @@
 <!doctype html>
-<html lang="zh-CN" data-page-node-id="PBdouvcgoan8Yz3U6qAGxa">
-<head data-page-node-id="8n6ntMrK825tyvrl3DNfiw">
-  <meta charset="utf-8" data-page-node-id="qKFby9V6Y934vCXxslTHxl">
-  <meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="drxlO6cq8Mu4nI7oPJAX1w">
-  <title>极光音乐 PrismAura · Android TV 开源音乐播放器</title>
-  <meta name="description" content="PrismAura 极光音乐，为 Android TV 打造的开源音乐播放器。兼容 MusicFree 插件，支持大屏同步歌词、手机扫码遥控与三套主题，无内置广告。" data-page-node-id="XHSsJmfGoSbOvXONSuiC7k">
-  <meta name="theme-color" content="#090705" data-page-node-id="T3Oj3YLbeFAH06BfeJk2OE">
-  <link rel="canonical" href="https://tv-music.240524.xyz/" data-page-node-id="tEkkhzBDPi0E18dzFWacsi">
-  <meta property="og:type" content="website" data-page-node-id="attLADpta7AaQU0X83HDLP">
-  <meta property="og:locale" content="zh_CN" data-page-node-id="HdLlJiC85o8hOsj3AbkGTA">
-  <meta property="og:site_name" content="PrismAura 极光音乐" data-page-node-id="u0cvSw4vbh4ZLAUciOSkjy">
-  <meta property="og:title" content="极光音乐 PrismAura · 把音乐带回客厅" data-page-node-id="IA8UKNtOtnSuDKyHOwfS9o">
-  <meta property="og:description" content="为 Android TV 打造的开源音乐播放器。大屏看歌词，手机扫码遥控，音源由你选择的插件决定。" data-page-node-id="9L0s0hrZz47QzbDoiLATLe">
-  <meta property="og:url" content="https://tv-music.240524.xyz/" data-page-node-id="HuoTAD3ds7r7BmULRz6lr6">
-  <meta property="og:image" content="https://tv-music.240524.xyz/images/tv-player.webp" data-page-node-id="Rm0Hpkb50GkSTwc2rvjJby">
-  <meta property="og:image:width" content="1600" data-page-node-id="zwGNr3TGp05nWuDWDPY0my">
-  <meta property="og:image:height" content="900" data-page-node-id="EsGkgEsYG9C5jxMaBpWXvY">
-  <meta property="og:image:alt" content="PrismAura 电视播放界面：唱片封面与同步歌词" data-page-node-id="IuXZFAoZmkxoSXneIRUcUr">
-  <meta name="twitter:card" content="summary_large_image" data-page-node-id="On1oZYtUatdmWFgBtRstNx">
-  <meta name="twitter:image" content="https://tv-music.240524.xyz/images/tv-player.webp" data-page-node-id="iAU8WHLqSyDeiLOPaycGvQ">
-  <link rel="icon" href="./images/icon.png" type="image/png" data-page-node-id="cfqCArTLMGZgfIKRW7M4k9">
-  <link rel="stylesheet" href="./site.css" data-page-node-id="2UhxJV9LofMpt6gZDjvp4u">
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PrismAura 极光音乐 · 把音乐带回客厅</title>
+  <meta name="description" content="PrismAura 是为 Android TV 打造的开源音乐播放器：遥控器选歌、手机扫码遥控、沉浸歌词、关灯播放与三套主题。">
+  <meta name="theme-color" content="#090806">
+  <link rel="canonical" href="https://tv-music.240524.xyz/">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:site_name" content="PrismAura 极光音乐">
+  <meta property="og:title" content="PrismAura 极光音乐 · 把音乐带回客厅">
+  <meta property="og:description" content="为 Android TV 打造的开源音乐播放器。遥控器选歌，手机扫码输入，沉浸听歌或关灯继续播放。">
+  <meta property="og:url" content="https://tv-music.240524.xyz/">
+  <meta property="og:image" content="https://tv-music.240524.xyz/images/experience-player.webp">
+  <meta property="og:image:width" content="1600">
+  <meta property="og:image:height" content="900">
+  <meta property="og:image:alt" content="PrismAura 播放页：王菲《微风细雨（Live）》与同步歌词">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://tv-music.240524.xyz/images/experience-player.webp">
+  <link rel="icon" href="./images/icon.png" type="image/png">
+  <link rel="stylesheet" href="./site.css">
 </head>
-<body data-page-node-id="jcSQuFtvSAzi4g5zXyLFOO">
-<a class="skip-link" href="#main" data-page-node-id="epFrGFu6JuZkwWPY3LC6CI">跳到正文</a>
-<header class="nav" data-page-node-id="KhpAixB3fU8J2XBcEiMgko">
-  <div class="container nav__inner" data-page-node-id="SaUsWukp4xphvsMX5AXTuv">
-    <a class="brand" href="./" aria-label="极光音乐 PrismAura 首页" data-page-node-id="A7tIZ7apgS1s7rWXOQn27p">
-      <img src="./images/icon.png" alt="" width="26" height="26" data-page-node-id="K0xTUApKI4FrJYkNLTc7id">
-      <span class="brand__name" data-page-node-id="Kcs99ExZD362zAN57DK7OS">PrismAura</span>
-      <span class="brand__sub" data-page-node-id="zxfxnyZRZVRPn5lZT4JYTy">极光音乐</span>
+<body>
+<a class="skip-link" href="#main">跳到正文</a>
+
+<header class="topbar">
+  <div class="container topbar__inner">
+    <a class="brand" href="#top" aria-label="PrismAura 极光音乐">
+      <img src="./images/icon.png" alt="" width="34" height="34">
+      <span><b>PrismAura</b><small>极光音乐</small></span>
     </a>
-    <nav class="nav__links" aria-label="主要导航" data-page-node-id="GS7uVcOIT0popGUXmZKuJf">
-      <a href="#screens" data-page-node-id="evOEwNB4Jhy3tmK2jOh0QI">界面</a>
-      <a href="#remote">手机遥控</a>
-      <a href="https://github.com/shellvon/prismaura-tv" data-page-node-id="1KQ5cMkEeXOsOxU4QTTak4">GitHub</a>
-      <a class="btn btn--ghost btn--sm" href="#start" data-page-node-id="y50CZ99lBPmNMkjrQCvA3A">下载与安装</a>
+    <nav class="nav-links" aria-label="页面导航">
+      <a href="#player">播放体验</a>
+      <a href="#lyrics">逐字歌词</a>
+      <a href="#modes">听歌模式</a>
+      <a href="#screens">电视界面</a>
+      <a href="#mobile">手机遥控</a>
+      <a class="nav-github" href="https://github.com/shellvon/prismaura-tv" aria-label="PrismAura on GitHub">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.56.1.76-.24.76-.54v-2.08c-3.1.67-3.75-1.32-3.75-1.32-.51-1.29-1.24-1.63-1.24-1.63-1.02-.7.08-.69.08-.69 1.13.08 1.73 1.16 1.73 1.16 1 .1.76 2.14 3.14 1.53.1-.72.4-1.2.7-1.48-2.48-.28-5.09-1.24-5.09-5.52 0-1.22.44-2.22 1.16-3-.12-.28-.5-1.42.11-2.96 0 0 .95-.3 3.05 1.15a10.6 10.6 0 0 1 5.55 0c2.1-1.45 3.04-1.15 3.04-1.15.61 1.54.23 2.68.11 2.96.72.78 1.15 1.78 1.15 3 0 4.29-2.62 5.23-5.11 5.51.4.35.75 1.03.75 2.08v3.08c0 .3.2.65.77.54A11.1 11.1 0 0 0 12 .9Z"/></svg>
+        <span>GitHub</span>
+        <img src="https://shieldcn.dev/github/stars/shellvon/prismaura-tv.svg?mode=dark&amp;radius=10&amp;font=geist&amp;split=true&amp;height=22&amp;fontSize=11&amp;labelColor=151619&amp;labelTextColor=e8c78d&amp;color=333230&amp;valueColor=e8c78d&amp;label=Stars" width="78" height="22" alt="GitHub Stars">
+      </a>
+      <a class="nav-cta" href="https://github.com/shellvon/prismaura-tv/releases/latest">下载 APK <span aria-hidden="true">↗</span></a>
     </nav>
   </div>
 </header>
 
-<main id="main" data-page-node-id="mzOpITu60oJZD6Xa7rLebx">
-  <section class="hero" aria-labelledby="hero-title" data-page-node-id="LuPJBu4D7osA179qR8nG7Y">
-    <div class="container hero__text" data-page-node-id="BLHCBesOs4ZdbaZ2Sdi91e">
-      <p class="eyebrow" data-page-node-id="ffPrevocQHFAnewZ6Gp1Q5">为 Android TV 打造的开源音乐播放器</p>
-      <h1 id="hero-title" data-page-node-id="8FigSXpxTXCqrBdmMCn6Ku"><span class="clause" data-page-node-id="6gOYzE8kejgpNGDrw7LeIX">电视上，</span><span class="clause" data-page-node-id="zRQMRscD2yFIgDGzrxHOws">把一首歌听完整。</span></h1>
-      <p class="hero__lede" data-page-node-id="QfyBH3ICz3rKQLKlNSSHuz">大屏看歌词，遥控器轻松选歌，手机扫码接管输入。</p>
-      <p class="hero__meta"><span>Android 6.0+</span><span>MusicFree 插件兼容</span><span>无内置广告</span></p>
-      <div class="hero__actions" data-page-node-id="9rKKd9v1JauVcbceDP2i4H">
-        <a class="btn btn--primary" href="https://github.com/shellvon/prismaura-tv/releases/latest" data-page-node-id="BJc7mXgs0rn8Vjb4G0DCyW">前往下载 APK</a>
+<main id="main">
+  <section class="hero container" id="top" aria-labelledby="hero-title">
+    <div class="hero__glow hero__glow--one" aria-hidden="true"></div>
+    <div class="hero__glow hero__glow--two" aria-hidden="true"></div>
+    <div class="hero__copy" data-reveal>
+      <p class="eyebrow"><span class="eyebrow__dot"></span>ANDROID TV · OPEN SOURCE</p>
+      <h1 id="hero-title">让音乐回到<br><em>客厅的中心。</em></h1>
+      <p class="hero__lead">遥控器选歌，手机接手输入；沉浸看歌词，或关灯继续听。每个细节都围绕客厅的大屏和方向键安排。</p>
+      <div class="hero__actions">
+        <a class="button button--gold" href="https://github.com/shellvon/prismaura-tv/releases/latest">获取 PrismAura <span aria-hidden="true">↗</span></a>
+        <a class="button button--line" href="#screens">探索界面 <span aria-hidden="true">↓</span></a>
+      </div>
+      <div class="hero__facts" aria-label="产品信息">
+        <span>Android TV 6.0+</span><i></i><span>MusicFree 插件兼容</span><i></i><span>三套主题</span><i></i><span>MIT 开源</span>
       </div>
     </div>
-    <div class="container hero__screen" data-page-node-id="Fgne1PBRiUE2tADmPd0mCx">
-      <figure class="demo" id="demo" data-page-node-id="onvV8VxdC7Yftsd4V4c0Hp">
-        <div class="shot shot--demo">
-          <video controls playsinline muted preload="none" poster="./images/tv-demo-poster.webp" width="1280" height="720" aria-label="PrismAura 真实操作演示" aria-describedby="demo-caption demo-description">
-            <source src="./media/prismaura-demo.mp4" type="video/mp4">
-            <p>浏览器无法播放视频时，可<a href="./media/prismaura-demo.mp4">打开 MP4 演示</a>。</p>
-          </video>
+
+    <div class="hero__visual" data-reveal>
+      <div class="orbit orbit--outer" aria-hidden="true"></div>
+      <div class="orbit orbit--inner" aria-hidden="true"></div>
+      <figure class="device-frame">
+        <div class="device-frame__top"><span class="device-dots"><i></i><i></i><i></i></span><span>PLAYER / LIVING ROOM</span><span class="device-frame__live"><i></i> APP UI</span></div>
+        <div class="device-frame__screen">
+          <img src="./images/experience-player.webp" width="1920" height="1080" alt="王菲《微风细雨（Live）》在 PrismAura 电视播放页显示">
         </div>
-        <figcaption class="demo__caption" id="demo-caption">
-          <span>19 秒原速录屏 · 静音 · 已剪去部分加载等待</span>
-          <a href="./media/prismaura-demo.mp4" download>下载演示</a>
-        </figcaption>
-        <p class="visually-hidden" id="demo-description">录屏展示选择 GD 音乐台搜索歌曲，以及真实曲目的同步歌词、旋转唱片和播放队列。两个片段分别录制，音源由用户安装的插件提供。</p>
+      </figure>
+      <div class="hero__caption"><span>播放页截图</span><span>王菲 · 微风细雨 (Live)</span><span>网易云音乐</span></div>
+      <div class="hero__orbit-label" aria-hidden="true"><span>01</span> LISTEN IN LIGHT</div>
+    </div>
+  </section>
+
+  <section class="ticker" aria-label="产品特点">
+    <div class="ticker__track" aria-hidden="true">
+      <span>逐字歌词</span><b>✳</b><span>遥控器优先</span><b>✳</b><span>沉浸播放</span><b>✳</b><span>关灯继续听</span><b>✳</b><span>三套主题</span><b>✳</b><span>音源由你选择</span><b>✳</b>
+      <span>逐字歌词</span><b>✳</b><span>遥控器优先</span><b>✳</b><span>沉浸播放</span><b>✳</b><span>关灯继续听</span><b>✳</b><span>三套主题</span><b>✳</b><span>音源由你选择</span><b>✳</b>
+    </div>
+  </section>
+
+  <section class="section player-story" id="player" aria-labelledby="player-title">
+    <div class="container player-story__grid">
+      <div class="section-copy" data-reveal>
+        <p class="eyebrow"><span class="eyebrow__number">01</span> THE LISTENING ROOM</p>
+        <h2 id="player-title">把画面留给<br>正在播放的歌。</h2>
+        <p>封面与歌词并排，播放控制留在手边。遥控器的方向键负责时间与导航，确定键负责播放，不必先找一条控制栏。</p>
+        <div class="song-proof">
+          <span class="song-proof__disc" aria-hidden="true">♫</span>
+          <span><b>微风细雨 (Live)</b><small>王菲 · 网易云音乐</small></span>
+          <span class="song-proof__playing" aria-label="播放中"><i></i><i></i><i></i><i></i></span>
+        </div>
+        <a class="text-link" href="#lyrics">了解歌词显示 <span aria-hidden="true">↗</span></a>
+      </div>
+      <figure class="player-still" data-reveal>
+        <img src="./images/experience-player.webp" width="1600" height="900" alt="王菲《微风细雨（Live）》在 PrismAura 播放页显示，封面与同步歌词同屏">
+        <figcaption><span>01 / PLAYING NOW</span><span>主题 · 极夜暖金</span></figcaption>
       </figure>
     </div>
   </section>
 
-  <section class="section" id="screens" aria-labelledby="screens-title" data-page-node-id="tcT3D5L4cDAH29m1m7PUwV">
-    <div class="container" data-page-node-id="a9u1aziAppUPsBYFmPvEkJ">
-      <div class="sec-head" data-page-node-id="8VmODfYtrHH4fd2lwXRc3E">
-        <h2 id="screens-title" data-page-node-id="6JAATf3iOClwtLPeir9mP5">好音乐，慢慢发现</h2>
-        <p class="sec-head__line" data-page-node-id="sCRL6PwFOS5xwqRgqhkFI3">浏览分类歌单、榜单与歌手。插件支持扫码登录时，用手机确认即可，省去电视上输入账号的麻烦。</p>
+  <section class="section lyrics-section" id="lyrics" aria-labelledby="lyrics-title">
+    <div class="container lyrics-section__grid">
+      <div class="section-copy" data-reveal>
+        <p class="eyebrow"><span class="eyebrow__number">02</span> WORD-SYNC LYRICS</p>
+        <h2 id="lyrics-title">歌词跟着音乐走。</h2>
+        <p>原文、翻译与注音同步滚动；插件提供词级时间戳时逐字高亮。不同音源返回的歌词精度可能不同。</p>
+        <p class="lyrics-note">逐字高亮需要插件提供词级时间戳；没有词级数据时，仍可按句同步滚动。翻译与注音也取决于插件返回的歌词内容。</p>
       </div>
-      <aside class="control-tip" id="controls" aria-labelledby="controls-title">
-        <h3 id="controls-title">长按确定，打开更多操作</h3>
-        <p>选中歌曲、歌手、专辑或歌单后，长按遥控器确定键，或按菜单键，即可打开对应菜单，播放、收藏或查看详情。</p>
-        <p>「我的」页左右切换分类，按确定进入右侧操作区，按下浏览内容。</p>
-      </aside>
-      <div class="switcher" data-page-node-id="C0RljpNIE8TNcePBdUxPfK">
-        <fieldset class="switcher__tabs" data-page-node-id="phG474EXlKEkKhQm4rZWdx">
-          <legend class="visually-hidden" data-page-node-id="o2OOz8QFrCW9HSJ5bC6u8Q">选择界面预览</legend>
-          <label class="pill" data-page-node-id="qtB6S7UllfPOTRHdAWW5cz"><input type="radio" name="screen" value="discover" aria-controls="screen-discover" checked data-page-node-id="27c2SZFw1UUI54VsXUlT8S"><span data-page-node-id="LAhLxeYx5ESNEgL3sI1bbd">发现</span></label>
-          <label class="pill" data-page-node-id="q0V7Fjm24zZHUmoqxZXuPU"><input type="radio" name="screen" value="login" aria-controls="screen-login" data-page-node-id="yb9c8hYryVlK7H6m2HW1r4"><span data-page-node-id="EerdAYkjHnMCdjLf9kOOxx">扫码登录</span></label>
-        </fieldset>
-        <figure class="switcher__panel" id="screen-discover" data-panel="discover" data-page-node-id="mCwqrS5wLANiGOzlu10uaC">
-          <div class="shot" data-slot="discover" data-page-node-id="AjckqtYscYj29HiUd8B1Pf"><img src="./images/tv-discover.webp" width="1600" height="900" alt="发现页：分类歌单、浏览标签与底部播放控制" loading="lazy" data-page-node-id="5d4uixXWtKpq5curkEjv3o"></div>
-          <figcaption class="fig-caption" data-page-node-id="9TZFrC3081W2nWyO0hvrZp">方向键浏览，按确定打开，长按确定或按菜单键查看对应操作；菜单随内容类型和音源能力变化。</figcaption>
-        </figure>
-        <figure class="switcher__panel" id="screen-login" data-panel="login" data-page-node-id="HGOHYGNpQu5SrhCiUlsUgT">
-          <div class="shot" data-slot="login" data-page-node-id="AsA23Platp2ALeg2RwrYJD"><img src="./images/tv-login.webp" width="1600" height="900" alt="插件扫码登录弹窗，二维码为无效演示码" loading="lazy" data-page-node-id="S4PDv9WNmHfRdPH1ufuGf1"></div>
-          <figcaption class="fig-caption" data-page-node-id="Ui4QQTGsktNGsiMz4srhPE">扫码登录由插件提供；图中二维码为演示码，不能用于实际登录。</figcaption>
-        </figure>
-      </div>
-    </div>
-  </section>
-
-  <section class="section" id="remote" aria-labelledby="remote-title" data-page-node-id="O1NrV4zdgXpCbJwHLmbjuA">
-    <div class="container split" data-page-node-id="c2XvPPlXojsyYDPZ8aoURz">
-      <div class="split__text" data-page-node-id="p8SzksrHU5WcpArHXjQSux">
-        <p class="eyebrow" data-page-node-id="LAUvbn7ElFpY10VkDdOaN1">同一局域网 · 扫码即用</p>
-        <h2 id="remote-title" data-page-node-id="C96U6lwyE0PdxECdMmYz6z">手机是遥控器，<br data-page-node-id="89T3sxOTazIAgeBCWm9oeK">也是键盘</h2>
-        <p data-page-node-id="Fqhqjzc9UTTTRxW7fvMCQM">手机和电视连接同一局域网，扫码打开遥控页面，无需另装手机 App。</p>
-        <dl class="remote-features" data-page-node-id="NOwpyGKMfbQ3LH0lL8QVTj">
-          <div data-page-node-id="AyCgK1CEGo4whWAqys4Miq"><dt data-page-node-id="yDoKYfaOtkgyvyJxSYj1Ii">轻松搜索</dt><dd data-page-node-id="Lq0raCsf9JluHhCXU8mcd3">用手机键盘输入歌名和歌手，省去遥控器逐字选择。</dd></div>
-          <div data-page-node-id="mSzRGqrnuVOe80g6APMccJ"><dt data-page-node-id="gDEGzTtlvEVgdOKYnfKOjV">随手控制</dt><dd data-page-node-id="hlbEY47MHrpJVV3S0bWcuD">切歌、调整进度与音量，查看电视当前的播放状态。</dd></div>
-          <div data-page-node-id="3u5zX2PxlZWmeEPmycSI4Z"><dt data-page-node-id="dIE6q7KECuwAtxakb8Qwie">管理音源</dt><dd data-page-node-id="zgZGdnHZ1zR7WArI2iupWZ">粘贴插件或订阅地址，在手机上完成配置。</dd></div>
-        </dl>
-      </div>
-      <div class="split__media" data-page-node-id="VPErM7GOPA6X6KonfO9dXB">
-        <figure class="shot shot--phone" data-slot="phone" data-page-node-id="BTdCeS2oDFYzh0A85RSRmT"><img src="./images/phone-remote.webp" width="780" height="1688" alt="手机遥控页面：歌曲信息、播放进度、音量与音质控制，以及搜索、音源和设置入口" loading="lazy" data-page-node-id="yHTNBrCdjCxl3hJfQ5Ajy0"></figure>
-      </div>
-    </div>
-  </section>
-
-  <section class="section" id="themes" aria-labelledby="themes-title" data-page-node-id="opDVgv6QdGZFHSp2xVFHpX">
-    <div class="container" data-page-node-id="VDbjMy4NlRDLIDky7c3CP4">
-      <div class="sec-head sec-head--stack" data-page-node-id="xOSuEu8Fu8hkGWOQWQhvgV"><h2 id="themes-title" data-page-node-id="ctU5LtAlstMuxTAdzHiLe5">三种光线，同一种专注</h2></div>
-      <p class="themes__hint" id="themes-hint" data-page-node-id="u8sE88ilbSqCYFGQ1hdZkG">左右滑动，查看三套主题</p>
-      <div class="themes" role="region" aria-label="三套主题预览" aria-describedby="themes-hint" tabindex="0" data-page-node-id="7rCMUsiK0MLGbrXgHq2s2d">
-        <figure class="theme" data-page-node-id="cZ2BIoQ85IL45inDOMeYnX">
-          <div class="shot" data-slot="theme-gold" data-page-node-id="hUoDQMCfLqCOvFlXj14MSE"><img src="./images/theme-gold.webp" width="476" height="268" alt="极夜暖金主题：深色背景、暖金歌词与播放按钮" loading="lazy" data-page-node-id="xcpaqQV94UE93SYvZk4eWw"></div>
-          <figcaption data-page-node-id="fumWak15J1rDNG3eEGatKY"><h3 data-page-node-id="YG2l0eBSFEgHS54bYFJF08">极夜暖金</h3><p data-page-node-id="IpV9T22QujglTPjPyfKRSc">深色打底，暖金点亮歌词与播放控制。</p></figcaption>
-        </figure>
-        <figure class="theme" data-page-node-id="U0Y1Iy1HZ9OF9Fn5Pb0bVW">
-          <div class="shot" data-slot="theme-porcelain" data-page-node-id="gVWCu4nan5Hh44VcbtesWe"><img src="./images/theme-porcelain.webp" width="476" height="268" alt="晨光白瓷主题：柔和浅色背景与深色文字" loading="lazy" data-page-node-id="RAs3oAaR9hvufhKUJk8uYY"></div>
-          <figcaption data-page-node-id="lCRZ2mj44uRxUfiPYD29hf"><h3 data-page-node-id="fesTXLk2lCnuL6SWR4IbaH">晨光白瓷</h3><p data-page-node-id="K39LO7ywWpQsWkiicAECTZ">柔和浅色，让白天的客厅也清晰舒适。</p></figcaption>
-        </figure>
-        <figure class="theme" data-page-node-id="WfGQtbu2q5mzU4XMvGoQky">
-          <div class="shot" data-slot="theme-mono" data-page-node-id="oJ0CltiF79kNLzZdm72Tyb"><img src="./images/theme-mono.webp" width="476" height="268" alt="静谧黑白主题：深色界面与高对比文字" loading="lazy" data-page-node-id="AIreUDmeFMga2BuLFqHcMB"></div>
-          <figcaption data-page-node-id="wTkvN0FBYSGEXZvikyF9dd"><h3 data-page-node-id="aWNaAIGdJYoEMqfiGwFHu7">静谧黑白</h3><p data-page-node-id="8Qm2toe2yTgL3UqjKluevR">黑白界面与清晰歌词，保留封面原有色彩。</p></figcaption>
-        </figure>
-      </div>
-    </div>
-  </section>
-
-  <section class="section" id="plugins" aria-labelledby="plugins-title" data-page-node-id="6s9yxn7YZ2dYPaAmsMBCsf">
-    <div class="container" data-page-node-id="p3F1iC4TLjnIqBcFhP4wFn">
-      <div class="sec-head" data-page-node-id="t1M7RkezEeCu4nGapEIoXf">
-        <h2 id="plugins-title" data-page-node-id="aGhmzvkB0UqWHJ53CCqg94">音源，由你选择</h2>
-        <p class="sec-head__line" data-page-node-id="Tm44IRW1qVes63TvAil1Rz">兼容 MusicFree 常用插件接口，并提供扫码登录、热搜与 MV 扩展。具体内容、播放权限与可用功能取决于插件及对应服务。</p>
-      </div>
-      <dl class="caps" data-page-node-id="bMVieXCksQZOEs1zWlP47h">
-        <div class="caps__row" data-page-node-id="zPBEcB91gVuTh8ElHy61sX"><dt data-page-node-id="3sOpG8p0YAe16KiEORUs6C">找歌与听歌</dt><dd data-page-node-id="zloEpAyNNRNPYMVmPCAisB">搜索歌曲、浏览歌单与榜单，按需选择可用音质。</dd></div>
-        <div class="caps__row" data-page-node-id="JHtQcpxCqxmx3VJ9bbOHhh"><dt data-page-node-id="RwH8DBy72Vd8dIc3CiNZyE">歌词与 MV</dt><dd data-page-node-id="EnZtGYNc7zDc9BpdgFkI3F">显示同步歌词、翻译与注音，插件提供词级时间戳时逐字高亮。播放页的「歌词」按钮可调整字号、翻译／注音显示与当前歌曲的歌词时间；插件支持时，也能播放 MV。</dd></div>
-        <div class="caps__row" data-page-node-id="B6Vd3yG0BdAxdvEdT3FkUg"><dt data-page-node-id="o0Wj4F7MgtGh9JT4YxkoiG">收藏与导入</dt><dd data-page-node-id="7I36PzutHQWzjS9LyYAZJ3">收藏、历史与歌单保存在本机。插件支持时，可导入歌单或单曲链接；单曲会保存为只有一首歌的本机歌单。</dd></div>
-        <div class="caps__row"><dt>播放失败自动换源</dt><dd>可在「设置 → 播放」开启，默认关闭。本源所有音质均不可用后，尝试其他已启用音源的同版本歌曲；仍失败再跳过。</dd></div>
-        <div class="caps__row"><dt>熄屏播放</dt><dd>播放页可进入纯黑画面继续听歌，按确定或返回恢复；音量和媒体键照常使用。不保证关闭电视背光。</dd></div>
-      </dl>
-      <p class="caps__more" data-page-node-id="oNXzrxwxsMVNdjC92YOAmQ">想接入自己的插件？查看<a href="https://github.com/shellvon/prismaura-tv/blob/main/docs/PLUGIN_API.md" data-page-node-id="SGN9f4H8XD06Y8L36or7Rc">插件开发文档与兼容能力矩阵</a>。</p>
-    </div>
-  </section>
-
-  <section class="section" id="start" aria-labelledby="start-title" data-page-node-id="5FLSGZaZLkwpezxTvnEFme">
-    <div class="container" data-page-node-id="pCcQdgry6IyykHFrBzVCTj">
-      <div class="sec-head" data-page-node-id="zNCb42Dxn8mAhXqRYtCj0m">
-        <h2 id="start-title" data-page-node-id="DT8UrkLMW3kpsbwuakkgBf">从这里，开始听</h2>
-        <p class="sec-head__line" data-page-node-id="ENGoU83uz4HleoN75j9CNZ">准备一台 Android 6.0 及以上的电视或盒子，并确保系统 WebView 可用。</p>
-      </div>
-      <ol class="steps" data-page-node-id="EivwtD1UNJgQYnxyqVzIRd">
-        <li data-page-node-id="bxgz34oyVJbEspGxuLi2e5"><h3 data-page-node-id="7X1IlHKx8BKMIqdYA91BNZ">下载并安装</h3><p data-page-node-id="AA55NQ3RDmzFXXYmCG2lZU">在 <a href="https://github.com/shellvon/prismaura-tv/releases/latest" data-page-node-id="eHnpEEjyss6WS2VEpA1mCT">GitHub 发布页</a>下载 APK，通过电视支持的 U 盘或文件传输方式安装；按系统提示允许安装此来源的应用。</p></li>
-        <li data-page-node-id="ab7Yh2qFipzXlMG6EkaIdM"><h3 data-page-node-id="06dZq1dELGTEiFMeRhAR65">添加音源</h3><p data-page-node-id="D1KBmwlZ1zo9qpyIJdDmZz">打开「设置 → 音源」，添加你信任的 MusicFree 兼容插件或订阅。也可以扫码，用手机粘贴地址。</p></li>
-        <li data-page-node-id="JuzU3QcO7oHf4EPQUG844G"><h3 data-page-node-id="QnBxDKN4QC1OFUTPnMzfPq">选一首喜欢的歌</h3><p data-page-node-id="QHIbc9gPDCReWgBwkvIJbw">按插件需要完成账号配置，再搜索歌曲或浏览歌单；支持时可使用扫码登录。</p></li>
-      </ol>
-      <p class="start__note" data-page-node-id="fvYWnWgWj15osUATVeO0zg">客户端不附带插件、订阅地址或音乐内容。首次安装后，需要自行添加音源；网页用于介绍产品，音乐在电视 App 中播放。</p>
-    </div>
-  </section>
-
-  <section class="section" id="faq" aria-labelledby="faq-title">
-    <div class="container">
-      <div class="sec-head">
-        <h2 id="faq-title">开始前，你可能想知道</h2>
-        <p class="sec-head__line">关于音源、播放和更新的几个常见问题。</p>
-      </div>
-      <div class="faq">
-        <details>
-          <summary>为什么安装后没有歌曲？</summary>
-          <p>PrismAura 不附带音源。在「设置 → 音源」添加自己信任的插件或订阅后，再搜索歌曲或浏览歌单；也可以扫码，用手机粘贴地址。<a href="https://github.com/shellvon/prismaura-tv/blob/main/docs/PLUGIN_API.md">查看插件接入范围</a>。</p>
-        </details>
-        <details>
-          <summary>为什么搜到了歌曲，却无法播放？</summary>
-          <p>搜索结果不代表一定可播放，实际取决于插件、内容服务、账号权限和网络。先检查插件是否有更新，并按插件要求完成配置；需要登录的内容，应使用自己的账号。</p>
-          <p>「设置 → 播放」可开启“播放失败自动换源”（默认关闭）：本源所有音质均不可用时，尝试其他已启用音源的同版本歌曲；仍失败时沿用自动跳歌流程。该开关随备份导出和恢复。</p>
-        </details>
-        <details>
-          <summary>想重新登录，如何重置音源配置？</summary>
-          <p>在「设置 → 音源」找到对应音源，进入「配置 → 重置配置」，清除该音源填写的参数和本机保存的登录信息，再重新登录或填写。音源本身、收藏和歌单会保留。</p>
-        </details>
-        <details>
-          <summary>更新需要卸载旧版本吗？</summary>
-          <p>不需要。使用相同包名、相同签名且版本更高的安装包覆盖升级，可以保留现有应用数据；也可在「设置 → 关于」检查更新。自行构建时需要沿用原签名，<a href="https://github.com/shellvon/prismaura-tv/blob/main/docs/DEVELOPMENT.md#签名与覆盖更新">查看更新说明</a>。</p>
-        </details>
-      </div>
-    </div>
-  </section>
-
-  <section class="close grained" id="download" aria-labelledby="download-title" data-page-node-id="uo2xyVewV1IJVAxcQJnKTS">
-    <div class="container close__inner" data-page-node-id="DEGtHTC4aFfKQTenrBvHxc">
-      <h2 id="download-title" data-page-node-id="FE1d3KdZ7HbOuW5xNHKpsY">把音乐带回客厅</h2>
-      <div class="close__side" data-page-node-id="O4EEfmijObPFfdpbzD56qE">
-        <div class="close__actions" data-page-node-id="JPWi6L2ONMtAK8IzvzwHJF">
-          <a class="btn btn--primary" href="https://github.com/shellvon/prismaura-tv/releases/latest" data-page-node-id="JKfQBcGAD2ZiCN5F36QnTg">前往下载 APK</a>
-          <a class="btn btn--ghost" href="https://github.com/shellvon/prismaura-tv" data-page-node-id="PP8UtDUbqWGtynFVG4HKFp">查看源码</a>
+      <figure class="lyric-demo" data-reveal>
+        <div class="lyric-demo__top"><span>LIVE CAPTURE · NETEASE</span><span>YRC · WORD SYNC</span></div>
+        <div class="lyric-demo__screen">
+          <video id="lyrics-video" data-label="逐字歌词演示" poster="./images/lyrics-yrc-poster.webp" width="1280" height="720" muted loop playsinline preload="none" aria-label="模拟器实录：王菲《微风细雨（Live）》的单字歌词逐字高亮">
+            <source src="./media/lyrics-yrc-demo.webm" type="video/webm">
+          </video>
+          <button class="video-toggle" id="lyrics-toggle" type="button" aria-label="暂停逐字歌词演示" aria-pressed="false"><span></span></button>
         </div>
-        <p class="close__note" data-page-node-id="j2x9UMXLVjUHcoTVO5iTey">Android TV 6.0+ · MIT 开源许可<br data-page-node-id="sZICfJvxBeJexBRHprYPKO">下载按钮将打开 GitHub 最新正式版发布页。</p>
+        <figcaption><span>王菲 · 微风细雨 (Live)</span><span>模拟器实录 · 网易 YRC</span></figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="section modes-section" id="modes" aria-labelledby="modes-title">
+    <div class="container">
+      <div class="section-heading" data-reveal>
+        <p class="eyebrow"><span class="eyebrow__number">03</span> SET THE ROOM YOUR WAY</p>
+        <h2 id="modes-title">让屏幕亮起，<br>也让房间安静。</h2>
+        <p>想看歌词时进入沉浸播放；准备只听音乐时关灯，声音继续，按键即可回到画面。</p>
+      </div>
+      <div class="modes-grid">
+        <article class="mode-card mode-card--immersive" data-reveal>
+          <div class="mode-card__visual">
+            <img src="./images/preview-immersive.webp" width="2560" height="1440" loading="lazy" alt="沉浸播放界面：专辑氛围铺满背景，当前歌词突出显示">
+            <span>01 / IMMERSIVE</span>
+          </div>
+          <div class="mode-card__copy"><span>沉浸播放</span><h3>让歌词成为画面。</h3><p>封面氛围铺开，歌词随音乐滚动；播放控件淡出，方向键可快进或快退。</p></div>
+        </article>
+        <article class="mode-card mode-card--screen-off" data-reveal>
+          <div class="mode-card__visual">
+            <img src="./images/preview-screen-off.webp" width="2560" height="1440" loading="lazy" alt="关灯播放界面：纯黑屏幕中央留有柔和渐隐的暖光">
+            <span>02 / SCREEN OFF</span>
+          </div>
+          <div class="mode-card__copy"><span>关灯播放</span><h3>只留音乐，画面渐暗。</h3><p>屏幕渐隐至黑，播放持续；确定或返回键可以唤醒画面。电视背光是否关闭由设备决定。</p></div>
+        </article>
+      </div>
+      <div class="more-features" data-reveal>
+        <article class="feature-detail feature-detail--themes">
+          <span class="feature-detail__eyebrow">THREE THEMES</span>
+          <h3>三种气质，随时切换。</h3>
+          <div class="theme-swatches" aria-label="极夜暖金、晨光白瓷、静谧黑白三种主题">
+            <span class="theme-swatch theme-swatch--gold"><i></i><b>极夜暖金</b></span>
+            <span class="theme-swatch theme-swatch--porcelain"><i></i><b>晨光白瓷</b></span>
+            <span class="theme-swatch theme-swatch--mono"><i></i><b>静谧黑白</b></span>
+          </div>
+        </article>
+        <article class="feature-detail">
+          <span class="feature-detail__eyebrow">PLUG-IN POWERED</span>
+          <h3>更多内容，由音源带来。</h3>
+          <p>插件支持时，可导入单曲或歌单链接，也可使用平台扫码登录。歌词、登录和导入能力因插件而异；歌手导入目前不支持。</p>
+        </article>
+      </div>
+      <p class="modes-footnote">手机遥控二维码由 PrismAura 生成；音源登录二维码则需要对应插件提供支持。极光电台、播放失败自动换源等功能，也等你下载后继续探索。</p>
+    </div>
+  </section>
+
+  <section class="section screens-section" id="screens" aria-labelledby="screens-title">
+    <div class="container">
+      <div class="section-heading" data-reveal>
+        <p class="eyebrow"><span class="eyebrow__number">04</span> MADE FOR THE REMOTE</p>
+        <h2 id="screens-title">一套方向键，<br>逛完整个音乐库。</h2>
+        <p>从首页接着听，到发现、收藏和设置；扫码之后，手机也能输入和控制。选择一项，看看它在电视上的样子。</p>
+      </div>
+
+      <div class="screen-tabs" role="tablist" aria-label="PrismAura 产品界面">
+        <button class="screen-tab is-active" id="tab-home" type="button" role="tab" aria-selected="true" aria-controls="screen-panel" tabindex="0" data-screen="home"><span>01</span>首页</button>
+        <button class="screen-tab" id="tab-discover" type="button" role="tab" aria-selected="false" aria-controls="screen-panel" tabindex="-1" data-screen="discover"><span>02</span>推荐</button>
+        <button class="screen-tab" id="tab-library" type="button" role="tab" aria-selected="false" aria-controls="screen-panel" tabindex="-1" data-screen="library"><span>03</span>收藏</button>
+        <button class="screen-tab" id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="screen-panel" tabindex="-1" data-screen="settings"><span>04</span>设置</button>
+        <button class="screen-tab" id="tab-qr" type="button" role="tab" aria-selected="false" aria-controls="screen-panel" tabindex="-1" data-screen="qr"><span>05</span>二维码</button>
+        <button class="screen-tab" id="tab-phone" type="button" role="tab" aria-selected="false" aria-controls="screen-panel" tabindex="-1" data-screen="phone"><span>06</span>手机遥控</button>
+      </div>
+
+      <div class="screen-panel" id="screen-panel" role="tabpanel" aria-labelledby="tab-home" tabindex="0">
+        <div class="screen-panel__media">
+          <div class="screen-panel__frame">
+            <img id="screen-image" src="./images/experience-home.webp" width="1920" height="1080" alt="首页当前播放王菲《微风细雨（Live）》的界面">
+            <span class="screen-panel__tag" id="screen-tag">TV · HOME</span>
+          </div>
+        </div>
+        <div class="screen-panel__copy" aria-live="polite">
+          <span class="screen-panel__index" id="screen-index">01 / 06</span>
+          <h3 id="screen-heading">回到首页，接着听。</h3>
+          <p id="screen-description">继续播放、最近播放和平台内容都从这里开始。正在播放的经典曲目会留在视线中央。</p>
+          <p class="screen-panel__footnote" id="screen-note">首页内容会随你的本机播放记录变化。</p>
+          <div class="screen-panel__controls"><span><i></i> REAL APP SCREEN</span><span>方向键导航 · 确定进入</span></div>
+        </div>
+      </div>
+      <p class="screen-disclaimer">界面截自 Android TV 模拟器；推荐内容随所装音源变化。二维码画面已替换为不可连接的演示图。</p>
+    </div>
+  </section>
+
+  <section class="section remote-section" id="mobile" aria-labelledby="mobile-title">
+    <div class="container remote-section__grid">
+      <div class="remote-section__device" data-reveal>
+        <div class="phone-frame">
+          <div class="phone-frame__sensor" aria-hidden="true"></div>
+          <img src="./images/experience-phone.webp" width="780" height="1690" alt="手机遥控页面预览：正在播放王菲《微风细雨（Live）》，可控制播放、进度、歌词和顺序">
+          <span class="phone-frame__badge"><i></i> 已连接电视</span>
+        </div>
+        <div class="remote-section__orbit" aria-hidden="true"></div>
+      </div>
+      <div class="section-copy" data-reveal>
+        <p class="eyebrow"><span class="eyebrow__number">05</span> YOUR PHONE, YOUR REMOTE</p>
+        <h2 id="mobile-title">手机接过输入，<br>遥控留在手边。</h2>
+        <p>同一局域网扫码打开网页。用手机键盘搜索歌曲，也能控制播放、管理音源和备份恢复，不用再装一款 App。</p>
+        <div class="remote-points">
+          <div><span>01</span><b>搜索与输入</b><small>长文本和歌名，用手机键盘更方便。</small></div>
+          <div><span>02</span><b>实时控制</b><small>播放、进度、收藏与队列在手机上操作。</small></div>
+          <div><span>03</span><b>偏好与备份</b><small>主题、播放设置、音源和本机数据集中管理。</small></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section source-section" aria-labelledby="source-title">
+    <div class="container source-section__inner" data-reveal>
+      <div class="source-section__copy">
+        <p class="eyebrow"><span class="eyebrow__number">06</span> YOUR SOURCES, YOUR CHOICE</p>
+        <h2 id="source-title">音源由你选择。</h2>
+        <p>兼容 MusicFree 插件生态。搜索、榜单、歌词、导入和平台登录取决于所装插件；手机遥控二维码由 PrismAura 提供。</p>
+      </div>
+      <div class="source-orbit" aria-label="歌曲搜索、插件音源、自动换源、歌词同步">
+        <span class="source-orbit__core">♫</span>
+        <span class="source-orbit__node source-orbit__node--one">音源</span>
+        <span class="source-orbit__node source-orbit__node--two">搜索</span>
+        <span class="source-orbit__node source-orbit__node--three">歌词</span>
+        <span class="source-orbit__node source-orbit__node--four">播放</span>
+        <i class="source-orbit__ring source-orbit__ring--one"></i>
+        <i class="source-orbit__ring source-orbit__ring--two"></i>
+      </div>
+      <div class="source-section__detail">
+        <p><b>播放失败自动换源</b><span>设置中开启后，当前音源都无法播放时再尝试其他已启用音源；默认关闭。</span></p>
+        <a href="https://github.com/shellvon/prismaura-tv/blob/main/docs/PLUGIN_API.md">查看插件能力与接入说明 <span aria-hidden="true">↗</span></a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section install-section" id="download" aria-labelledby="download-title">
+    <div class="container install-section__inner" data-reveal>
+      <div>
+        <p class="eyebrow"><span class="eyebrow__number">07</span> READY WHEN YOU ARE</p>
+        <h2 id="download-title">选一首喜欢的歌，<br>让客厅安静下来。</h2>
+      </div>
+      <div class="install-section__actions">
+        <a class="button button--gold" href="https://github.com/shellvon/prismaura-tv/releases/latest">下载最新 APK <span aria-hidden="true">↗</span></a>
+        <a class="button button--line" href="https://github.com/shellvon/prismaura-tv">查看源代码</a>
+        <small>Android TV 6.0+ · MIT 开源许可<br>客户端不附带音乐内容或音源插件。</small>
       </div>
     </div>
   </section>
 </main>
 
-<footer class="footer" data-page-node-id="2BxUUhClM3ScqKKCR59iYy">
-  <div class="container" data-page-node-id="hK1w2BWsBFDtD8LoKGrMfG">
-    <div class="footer__mast" data-page-node-id="i898H8tryoHFHPedUlVTbJ">
-      <div class="footer__word" data-page-node-id="xz15Ujvjd13LPmNKm9JrNF">PrismAura<span data-page-node-id="bmggGKrCgzhZfjePk62wqB">极光音乐，为 TV 而生。</span></div>
-      <nav class="footer__links" aria-label="页脚导航" data-page-node-id="EekalpzrCkaiDb3PwjklND">
-        <a href="#faq">常见问题</a>
-        <a href="https://github.com/shellvon/prismaura-tv" data-page-node-id="cDfKcYG9i5zfqQaEFUYvN7">源码</a>
-        <a href="https://github.com/shellvon/prismaura-tv/issues" data-page-node-id="hKEji981xh7vHn4sd0kjEx">问题反馈</a>
-        <a href="https://github.com/shellvon/prismaura-tv/blob/main/CHANGELOG.md" data-page-node-id="zZlEbk3v3pxg6psc9p15hO">更新日志</a>
-        <a href="https://github.com/shellvon/prismaura-tv/blob/main/docs/PLUGIN_API.md" data-page-node-id="XRIegAKJTVct29uGIC5z2D">插件文档</a>
-        <a href="https://github.com/shellvon/prismaura-tv/blob/main/SECURITY.md" data-page-node-id="bi0vEq9VuF0xtXg2EQbSHt">安全说明</a>
-        <a href="https://github.com/shellvon/prismaura-tv/blob/main/LICENSE" data-page-node-id="2QCUBKGV9pNmCtmipfJrV2">MIT 许可</a>
-      </nav>
+<footer class="footer">
+  <div class="container footer__top">
+    <a class="brand" href="#top" aria-label="回到顶部">
+      <img src="./images/icon.png" alt="" width="30" height="30">
+      <span><b>PrismAura</b><small>极光音乐</small></span>
+    </a>
+    <div class="footer__links">
+      <a href="https://github.com/shellvon/prismaura-tv">GitHub</a>
+      <a href="https://github.com/shellvon/prismaura-tv/releases/latest">下载</a>
+      <a href="https://github.com/shellvon/prismaura-tv/blob/main/CHANGELOG.md">更新日志</a>
+      <a href="https://github.com/shellvon/prismaura-tv/blob/main/docs/PLUGIN_API.md">插件文档</a>
+      <a href="https://github.com/shellvon/prismaura-tv/issues">反馈问题</a>
     </div>
-    <p class="footer__legal" data-page-node-id="3g4EJuH4NqF3hi8qFgiNAd">客户端采用 MIT 许可。截图为界面演示，二维码为无效演示码。感谢 <a href="https://github.com/maotoumao/MusicFree" data-page-node-id="5aGASI6SA3EfhUyXcr4MNP">MusicFree</a> 的插件协议与生态。</p>
+  </div>
+  <div class="container footer__bottom">
+    <span>© PrismAura · MIT License</span>
+    <span class="footer__credit">Made with <span aria-hidden="true">♥</span> by <a href="https://github.com/shellvon">shellvon</a></span>
+    <span>电视页面来自模拟器录屏；手机遥控为界面预览；二维码为无效演示图。</span>
   </div>
 </footer>
+<script src="./site.js" defer></script>
 </body>
 </html>
