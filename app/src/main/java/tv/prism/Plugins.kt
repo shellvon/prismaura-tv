@@ -130,7 +130,7 @@ class Plugins(private val context: Context, val client: PluginClient) {
     private suspend fun storeSource(rawSource: String, url: String, origin: String, replacingId: String? = null): SyncResult {
         val source = rawSource.removePrefix("\uFEFF")
         require(source.isNotBlank()) { "插件文件为空" }
-        require(source.toByteArray(Charsets.UTF_8).size <= MAX_SCRIPT) { "插件文件过大" }
+        require(source.toByteArray(Charsets.UTF_8).size <= MAX_SCRIPT) { "插件文件过大（单个上限 ${MAX_SCRIPT / 1024} KiB）" }
         val installed = state.value.plugins
         val targets = if (replacingId != null) installed.filter { it.id == replacingId }
             else installed.filter { url.isNotBlank() && (it.url == url || it.updateUrl == url) }
@@ -386,10 +386,10 @@ class Plugins(private val context: Context, val client: PluginClient) {
         http.newCall(Request.Builder().url(url).header("User-Agent", "PrismTV/1.0").build()).execute().use { response ->
             check(response.isSuccessful) { "HTTP ${response.code}" }
             val body = response.body ?: error("空响应")
-            require(body.contentLength() <= limit) { "文件过大" }
+            require(body.contentLength() <= limit) { "文件过大（上限 ${limit / 1024} KiB）" }
             val bytes = body.byteStream().use { input ->
                 val output = java.io.ByteArrayOutputStream(); val buffer = ByteArray(8192)
-                while (true) { val n = input.read(buffer); if (n < 0) break; require(output.size() + n <= limit) { "文件过大" }; output.write(buffer, 0, n) }
+                while (true) { val n = input.read(buffer); if (n < 0) break; require(output.size() + n <= limit) { "文件过大（上限 ${limit / 1024} KiB）" }; output.write(buffer, 0, n) }
                 output.toByteArray()
             }
             bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF")
@@ -401,9 +401,11 @@ class Plugins(private val context: Context, val client: PluginClient) {
         return parsed.toString()
     }
     companion object {
-        const val MAX_SCRIPT = 384 * 1024
+        /* Third-party MusicFree-format sources run 390–620 KiB each (padao's six-pack
+           tops out at ~600 KiB), so the script cap is 1 MiB. */
+        const val MAX_SCRIPT = 1024 * 1024
         const val MAX_MANIFEST = 384 * 1024
-        const val MAX_PENDING_SCRIPTS = 4 * 1024 * 1024
+        const val MAX_PENDING_SCRIPTS = 8 * 1024 * 1024
     }
 }
 

@@ -9,6 +9,7 @@ import android.os.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -140,15 +141,18 @@ class PluginClient(private val context: Context) {
         timeoutMs: Long,
         limit: Int,
     ): Any? = withContext(Dispatchers.Main) {
-        val service = connect()
         val id = UUID.randomUUID().toString()
         val result = CompletableDeferred<String>()
-        pending[id] = result
+        var sourceHash: String? = null
         try {
+            // Finish acquiring the file reference even if this call is cancelled mid-write.
+            sourceHash = withContext(NonCancellable) { PluginSources.acquire(context, source) }
+            val service = connect()
+            pending[id] = result
             service.send(Message.obtain(null, 1).apply {
                 replyTo = replies
                 data = Bundle().apply {
-                    putString("id", id); putString("source", source); putString("variables", variables.toString())
+                    putString("id", id); putString("sourceHash", sourceHash); putString("variables", variables.toString())
                     putString("method", method); putString("args", args.toString()); putString("pluginId", pluginId)
                     /* The service process has its own SharedPreferences cache, so the
                        resolved count travels with the call instead of being read there. */
@@ -167,7 +171,10 @@ class PluginClient(private val context: Context) {
         } catch (e: CancellationException) {
             cancel(id)
             throw e
-        } finally { pending.remove(id) }
+        } finally {
+            pending.remove(id)
+            sourceHash?.let { PluginSources.release(it) }
+        }
     }
 
     private fun cancel(id: String) {

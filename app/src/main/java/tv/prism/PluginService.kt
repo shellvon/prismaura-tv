@@ -3,6 +3,7 @@ package tv.prism
 import android.app.Service
 import android.content.Intent
 import android.os.*
+import android.util.LruCache
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -36,6 +37,8 @@ class PluginService : Service() {
         lateinit var web: WebView
         var ready = false
         @Volatile var current: Message? = null
+        var preparing: Message? = null
+        val busy: Boolean get() = current != null || preparing != null
         @Volatile var pluginId = ""
     }
 
@@ -49,6 +52,9 @@ class PluginService : Service() {
        copy because its SharedPreferences cache would not see the host's write. */
     private var workerCap = 3
     private val cookieJars = ConcurrentHashMap<String, PluginCookies>()
+    private val sources = object : LruCache<String, String>(4 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: String) = value.length * 2
+    }
     private val messenger = Messenger(Handler(Looper.getMainLooper()) { msg ->
         when (msg.what) {
             0 -> runCatching { msg.replyTo.send(Message.obtain(null, 0).apply { data = Bundle().apply { putInt("pid", Process.myPid()) } }) }
@@ -68,13 +74,13 @@ class PluginService : Service() {
     private fun dispatch() {
         /* Lowering the setting releases idle sandboxes; busy ones finish their call first. */
         while (workers.size > workerCap) {
-            val idle = workers.firstOrNull { it.current == null } ?: break
+            val idle = workers.firstOrNull { !it.busy } ?: break
             workers.remove(idle)
             idle.ready = false
             idle.web.destroy()
         }
         while (queue.isNotEmpty()) {
-            val worker = workers.firstOrNull { it.ready && it.current == null }
+            val worker = workers.firstOrNull { it.ready && !it.busy }
             if (worker != null) { start(worker, queue.removeFirst()); continue }
             if (workers.size < workerCap) createWorker()
             return
@@ -124,17 +130,36 @@ class PluginService : Service() {
     }
 
     private fun start(worker: Worker, msg: Message) {
-        worker.current = msg
+        worker.preparing = msg
         val b = msg.data
         val method = b.getString("method") ?: "describe"
-        // Inspection is executable code too. Never give it an installed identity or variables.
-        worker.pluginId = if (method == "describe") "" else b.getString("pluginId") ?: ""
-        val source = JSONObject.quote(b.getString("source") ?: "")
-        val variables = if (method == "describe") "{}" else b.getString("variables") ?: "{}"
-        val args = b.getString("args") ?: "[]"
-        val id = JSONObject.quote(b.getString("id") ?: "")
-        val js = """(function(){try{var m=PrismEngine.load($source,$variables);if(${JSONObject.quote(method)}==='describe'){PrismBridge.result($id,JSON.stringify({ok:true,value:JSON.parse(m)}));}else{PrismEngine.invoke($id,${JSONObject.quote(method)},$args);}}catch(e){PrismBridge.result($id,JSON.stringify({ok:false,error:String(e&&e.message||e)}));}})();"""
-        worker.web.evaluateJavascript(js, null)
+        val hash = b.getString("sourceHash").orEmpty()
+        io.execute {
+            val source = runCatching {
+                synchronized(sources) {
+                    sources.get(hash) ?: JSONObject.quote(PluginSources.read(this, hash)).also {
+                        sources.put(hash, it)
+                    }
+                }
+            }
+            main.post {
+                if (worker.preparing !== msg) return@post
+                worker.preparing = null
+                if (source.isFailure) {
+                    reply(msg, JSONObject().put("ok", false).put("error", source.exceptionOrNull()?.message ?: "插件源码读取失败").toString())
+                    dispatch()
+                    return@post
+                }
+                // Inspection receives neither an installed identity nor its variables.
+                worker.pluginId = if (method == "describe") "" else b.getString("pluginId") ?: ""
+                val variables = if (method == "describe") "{}" else b.getString("variables") ?: "{}"
+                val args = b.getString("args") ?: "[]"
+                val id = JSONObject.quote(b.getString("id") ?: "")
+                val js = """(function(){try{var m=PrismEngine.load(${source.getOrThrow()},$variables);if(${JSONObject.quote(method)}==='describe'){PrismBridge.result($id,JSON.stringify({ok:true,value:JSON.parse(m)}));}else{PrismEngine.invoke($id,${JSONObject.quote(method)},$args);}}catch(e){PrismBridge.result($id,JSON.stringify({ok:false,error:String(e&&e.message||e)}));}})();"""
+                worker.current = msg
+                worker.web.evaluateJavascript(js, null)
+            }
+        }
     }
 
     private fun reply(msg: Message, value: String) {
@@ -150,7 +175,7 @@ class PluginService : Service() {
             require(pluginId.isNotBlank()) { "未选择插件" }
             cookieJars.getOrPut(pluginId) { PluginCookies(this, pluginId) }.retire()
             val stale = queue.filter { it.data.getString("pluginId") == pluginId } +
-                workers.mapNotNull { it.current }.filter { it.data.getString("pluginId") == pluginId }
+                workers.mapNotNull { it.current ?: it.preparing }.filter { it.data.getString("pluginId") == pluginId }
             val error = JSONObject().put("ok", false).put("error", "音源配置已重置，请重试").toString()
             stale.forEach {
                 cancel(it.data.getString("id") ?: "")
@@ -168,8 +193,9 @@ class PluginService : Service() {
     /** A stuck call is abandoned by throwing away its sandbox, not by killing every call. */
     private fun cancel(id: String) {
         queue.removeAll { it.data.getString("id") == id }
-        val worker = workers.firstOrNull { it.current?.data?.getString("id") == id } ?: return
+        val worker = workers.firstOrNull { (it.current ?: it.preparing)?.data?.getString("id") == id } ?: return
         worker.current = null
+        worker.preparing = null
         worker.ready = false
         worker.web.stopLoading()
         worker.web.loadUrl(HOST)
@@ -313,9 +339,10 @@ class PluginService : Service() {
     }
 
     override fun onDestroy() {
-        workers.forEach { it.web.destroy() }
+        workers.forEach { it.current = null; it.preparing = null; it.ready = false; it.web.destroy() }
         workers.clear()
         io.shutdownNow()
+        sources.evictAll()
         super.onDestroy()
     }
 

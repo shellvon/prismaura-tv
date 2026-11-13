@@ -2063,6 +2063,7 @@ class MainActivity : ComponentActivity() {
                         .put("subLyrics", subLyrics)
                         .put("pluginWorkerLimit", pluginWorkerLimit)
                         .put("automaticWorkers", PluginWorkers.automatic(this@MainActivity))
+                        .put("maxPluginBytes", Plugins.MAX_SCRIPT)
                         .put("recommendationSource", Discovery.select(plugins.state.value.plugins, recommendationPluginId) { it.recommendations }?.id.orEmpty())
                         .put("chartSource", Discovery.select(plugins.state.value.plugins, chartPluginId) { it.charts }?.id.orEmpty())
                         .put("homeShelves", JSONArray().also { array ->
@@ -2271,7 +2272,7 @@ class MainActivity : ComponentActivity() {
                                 check(!busy && pluginReplacements.isEmpty()) { "请先完成当前音源导入" }
                                 val payload = JSONObject(value)
                                 val source = payload.getString("source")
-                                require(source.toByteArray(Charsets.UTF_8).size <= Plugins.MAX_SCRIPT) { "插件文件超过 384 KiB" }
+                                require(source.toByteArray(Charsets.UTF_8).size <= Plugins.MAX_SCRIPT) { "插件文件超过 ${Plugins.MAX_SCRIPT / 1024} KiB" }
                                 lifecycleScope.launch {
                                     busy = true
                                     status = "正在导入插件文件…"

@@ -1174,7 +1174,9 @@
     var input = this;
     var file = input.files && input.files[0];
     if (!file) return;
-    if (file.size > 384 * 1024){ toast("插件文件超过 384 KiB"); input.value = ""; return; }
+    var maxPluginBytes = Number(state && state.maxPluginBytes);
+    if (!isFinite(maxPluginBytes) || maxPluginBytes <= 0){ toast("请先连接电视再导入插件"); input.value = ""; return; }
+    if (file.size > maxPluginBytes){ toast("插件文件超过 " + (maxPluginBytes / 1024) + " KiB"); input.value = ""; return; }
     var reader = new FileReader();
     reader.onload = function(){
       send("importFile", JSON.stringify({name:file.name, source:String(reader.result || "")}), poll);
