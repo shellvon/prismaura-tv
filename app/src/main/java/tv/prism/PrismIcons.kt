@@ -167,6 +167,19 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
             "diamond" -> drawPath(path {
                 moveTo(s * .5f, s * .10f); lineTo(s * .90f, s * .5f); lineTo(s * .5f, s * .90f); lineTo(s * .10f, s * .5f); close()
             }, color, style = Stroke(w * .8f, join = StrokeJoin.Round))
+            /* 音质不是信号强度：递增的柱子只会被读成 Wi-Fi 信号格。改成推子——三根暗轨各挂
+               一个滑块，滑块高低错开，读作「在调声音的那一档」。轨道压到 w*.55 且不做端点，
+               滑块才占主导，整块形状是横竖交织的，不会退化成柱状图。 */
+            "fader" -> {
+                val knobs = listOf(.60f, .30f, .47f)
+                listOf(.24f, .50f, .76f).forEachIndexed { i, x ->
+                    drawLine(color.copy(alpha = .34f), p(x, .13f), p(x, .87f), w * .55f, StrokeCap.Round)
+                    drawRoundRect(
+                        color, topLeft = Offset(s * (x - .095f), s * (knobs[i] - .05f)),
+                        size = Size(s * .19f, s * .10f), cornerRadius = CornerRadius(s * .05f),
+                    )
+                }
+            }
             "search" -> {
                 drawCircle(color, radius = s * .27f, center = p(.44f, .44f), style = Stroke(w))
                 drawLine(color, p(.64f, .64f), p(.84f, .84f), w, StrokeCap.Round)
@@ -295,6 +308,10 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
             "chev" -> drawPath(path {
                 moveTo(s * .26f, s * .38f); lineTo(s * .5f, s * .62f); lineTo(s * .74f, s * .38f)
             }, color, style = Stroke(w, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            /* 进页面的箭头朝右：⌄ 读作「向下展开」，而这个胶囊按下去是进入播放页。 */
+            "chevR" -> drawPath(path {
+                moveTo(s * .38f, s * .26f); lineTo(s * .62f, s * .5f); lineTo(s * .38f, s * .74f)
+            }, color, style = Stroke(w, cap = StrokeCap.Round, join = StrokeJoin.Round))
             "refresh" -> {
                 drawArc(color, startAngle = -90f, sweepAngle = -285f, useCenter = false,
                     topLeft = p(.18f, .18f), size = Size(s * .64f, s * .64f), style = Stroke(w, cap = StrokeCap.Round))
@@ -328,7 +345,7 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
     Box(modifier.size(size).auraFocus(CircleShape, 1.06f, ring = if (primary) c.foreground else null)
         .clip(CircleShape).background(if (primary) c.accent else c.panel)
         .clickable(onClick = onClick).semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
-        Glyph(icon, Modifier.size(size * .46f), if (primary) c.onAccent else c.foreground.copy(alpha = .82f))
+        Glyph(icon, Modifier.size(size * .6f), if (primary) c.onAccent else c.foreground.copy(alpha = .82f))
     }
 }
 
@@ -338,7 +355,7 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(18.dp)
     Column(
-        modifier.width(112.dp).height(94.dp)
+        modifier.width(112.dp).height(104.dp)
             .auraFocus(shape, 1f)
             .onFocusChanged { focused = it.isFocused }
             .clip(shape)
@@ -349,11 +366,11 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
             .padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
     ) {
-        Box(Modifier.size(44.dp).clip(CircleShape)
+        Box(Modifier.size(48.dp).clip(CircleShape)
             .background(if (active) c.accent else c.foreground.copy(alpha = .08f)), contentAlignment = Alignment.Center) {
-            Glyph(icon, Modifier.size(22.dp), if (active) c.onAccent else c.foreground.copy(alpha = .88f))
+            Glyph(icon, Modifier.size(26.dp), if (active) c.onAccent else c.foreground.copy(alpha = .88f))
         }
         Spacer(Modifier.height(8.dp))
-        Text(label, color = if (focused || active) c.accent else c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(label, color = if (focused || active) c.accent else c.muted, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }

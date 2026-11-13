@@ -1,0 +1,11 @@
+<resources>
+    <!-- API 31+ 有系统闪屏：图标用矢量（这里才支持），窗口背景仍留位图兜底。 -->
+    <style name="PrismTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+        <item name="android:windowSplashScreenBackground">#08090B</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/launch_logo</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#08090B</item>
+        <item name="android:navigationBarColor">#08090B</item>
+    </style>
+</resources>

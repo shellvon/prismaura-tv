@@ -3,61 +3,76 @@ package tv.prism
 import android.app.Activity
 import android.graphics.drawable.BitmapDrawable
 import androidx.palette.graphics.Palette
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.togetherWith
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.snap
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.focusable
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.blur
-import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.graphics.drawscope.translate
-import androidx.compose.ui.graphics.drawscope.scale
-import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -66,26 +81,36 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.semantics.Role
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
-import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
 import coil.imageLoader
+import coil.request.ImageRequest
 import coil.request.SuccessResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -95,46 +120,31 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import coil.request.ImageRequest
-import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.Path
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.withFrameNanos
-import kotlin.math.cos
-import kotlin.math.sin
 import kotlin.math.PI
-
-private fun artworkScrim(colors: PrismColors): Brush {
-    val opacity = when {
-        colors.background.luminance() > .5f -> listOf(.94f, .96f, .98f)
-        // Compose blur is unavailable before Android 12. Keep unblurred artwork subdued.
-        android.os.Build.VERSION.SDK_INT < 31 -> listOf(.82f, .90f, .97f)
-        else -> listOf(.58f, .76f, .93f)
-    }
-    return Brush.verticalGradient(opacity.map { colors.background.copy(alpha = it) })
-}
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.exp
+import kotlin.math.sin
 
 private fun time(ms: Long): String = "%02d:%02d".format(ms / 60_000, (ms / 1000) % 60)
 
 @Composable
-private fun rememberLyricPosition(position: Long, playing: Boolean, readPosition: () -> Long): State<Long> {
+private fun rememberLyricPosition(songKey: String?, position: Long, playing: Boolean, readPosition: () -> Long): State<Long> {
     val readCurrent by rememberUpdatedState(readPosition)
-    return produceState(initialValue = position, position, playing) {
-        value = readCurrent()
-        while (playing) withFrameNanos { value = readCurrent() }
+    return key(songKey) {
+        produceState(initialValue = position, position, playing) {
+            if (!playing) value = position
+            while (playing) withFrameNanos { value = readCurrent() }
+        }
     }
 }
 
-/* One palette per cover URL, cached; concurrent requests share one pending task.
-   Per frame only a gradient is drawn, never a decode. */
+/* Cover colours, one palette per URL; concurrent requests share one pending task. */
 private object AmbienceCache {
     private val cache = object : LinkedHashMap<String, List<Int>>(8, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Int>>?) = size > 24
     }
     private val pending = HashMap<String, Deferred<List<Int>>>()
-    /* Extraction runs on a scope that outlives any page, so one page leaving
-       can't cancel another page's pending task. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Synchronized fun lookup(url: String): List<Int>? = cache[url]
     @Synchronized private fun store(url: String, colors: List<Int>) { cache[url] = colors }
@@ -145,9 +155,9 @@ private object AmbienceCache {
             pending.getOrPut(url) {
                 scope.async(start = CoroutineStart.LAZY) { extract().also { if (it.isNotEmpty()) store(url, it) } }
             }.also { task ->
-                task.invokeOnCompletion { synchronized(this@AmbienceCache) {
-                    if (pending[url] === task) pending.remove(url)
-                } }
+                task.invokeOnCompletion {
+                    synchronized(this@AmbienceCache) { if (pending[url] === task) pending.remove(url) }
+                }
             }
         }
         job.start()
@@ -177,12 +187,10 @@ private fun rememberAmbience(song: Song?): List<Int> {
 }
 
 @Composable
-private fun AuraAmbience(song: Song?, modifier: Modifier = Modifier) {
+private fun AuraAmbience(song: Song?, centerX: Float, centerY: Float, modifier: Modifier = Modifier) {
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
     val raw = rememberAmbience(song)
-    /* Keep the old glow while a new cover is being analyzed, but only for the same
-       artwork — borrowing the previous song's colours would be worse than no glow. */
     val artwork = song?.artwork.orEmpty()
     var previous by remember { mutableStateOf("" to emptyList<Color>()) }
     LaunchedEffect(artwork, raw) {
@@ -193,65 +201,194 @@ private fun AuraAmbience(song: Song?, modifier: Modifier = Modifier) {
     }
     val stops = if (raw.isNotEmpty()) raw.map { Color(it) }
         else previous.second.takeIf { previous.first == artwork }.orEmpty()
-    if (stops.isEmpty()) return
-    val a0 by animateColorAsState(stops.getOrElse(0) { c.accent }, tween(if (motion) 1600 else 0), label = "ambience a0")
-    val a1 by animateColorAsState(stops.getOrElse(1) { stops[0] }, tween(if (motion) 1600 else 0), label = "ambience a1")
-    val a2 by animateColorAsState(stops.getOrElse(2) { stops[0] }, tween(if (motion) 1600 else 0), label = "ambience a2")
-    /* With motion off, skip the infinite animation entirely — it ticks every frame even
-       when unread; reading the phase at draw time keeps updates out of composition. */
+    /* No artwork, no palette: light the room with the app's own lamp instead of a per-song
+       random hue, so an artwork-less track still belongs to this player. */
+    val lamp = listOf(
+        lerp(c.accent, Color.White, .22f),
+        lerp(c.accent, Color.Black, .12f),
+        c.accent,
+    )
+    /* 每个采样色先压到 L≤0.16 再当光用：原样的亮封面会把歌词压到 4.3:1。
+       灯芯单独放行到 L≤0.30 —— 它只盖住封面自己那一块，碰不到歌词。 */
+    val base = stops.ifEmpty { lamp }.map { dimTo(it) }
+    val core by animateColorAsState(
+        vivid(liftTo(dimTo(stops.ifEmpty { lamp }.first(), .34f), .24f), 1.3f),
+        tween(if (motion) 1600 else 0), label = "ambience core",
+    )
+    val c0 by animateColorAsState(base.getOrElse(0) { c.accent }, tween(if (motion) 1600 else 0), label = "ambience a0")
+    val c1 by animateColorAsState(liftTo(base.getOrElse(1) { base[0] }, .09f), tween(if (motion) 1600 else 0), label = "ambience a1")
+    val c2 by animateColorAsState(liftTo(base.getOrElse(2) { base[0] }, .09f), tween(if (motion) 1600 else 0), label = "ambience a2")
     val phase = if (motion) rememberInfiniteTransition(label = "ambience drift").animateFloat(
         0f, 1f, infiniteRepeatable(tween(44_000, easing = LinearEasing)), label = "ambience phase",
     ) else null
     Canvas(modifier) {
-        val angle = (phase?.value ?: 0f) * 2f * PI.toFloat()
-        val center = Offset(size.width * (.30f + .035f * cos(angle)), size.height * (.42f + .035f * sin(angle)))
-        val radius = size.maxDimension * .8f
-        drawRect(Brush.radialGradient(
-            listOf(a0.copy(alpha = .26f), a1.copy(alpha = .15f), a2.copy(alpha = .08f), Color.Transparent),
-            center, radius,
-        ))
+        /* 三段式的径向渐变会在衰减到一半时留一道能看见的圆边；按指数采样到 0.92 再收到透明，
+           光才像从某个地方散出来的，而不是贴了一个圆。 */
+        fun glow(color: Color, alpha: Float, cx: Float, cy: Float, r: Float) {
+            val falloff = List(7) { i ->
+                val t = i / 6.5f
+                color.copy(alpha = alpha * exp(-3.2f * t * t))
+            } + Color.Transparent
+            drawRect(
+                Brush.radialGradient(falloff, center = Offset(size.width * cx, size.height * cy), radius = size.width * r),
+            )
+        }
+        val drift = .012f * cos((phase?.value ?: 0f) * 2f * PI.toFloat())
+        /* 主灯分两层：灯芯贴住封面，外面再套一层大半径的扩散。一层画不出「光从封面里散出来」，
+           只会得到一个边缘看得见的圆。 */
+        /* 光贴着卡片漏出来：半径只比封面大一点，溢出约一百像素就落进封面自己的模糊里。
+           铺到半屏就变成给整间屋子染色，图也没了。 */
+        glow(core, .72f, centerX + drift, centerY, .21f)        // 卡片辉光：贴着封面边缘
+        glow(c0, .13f, centerX + drift, centerY + .02f, .62f)   // 底光：只负责把角落填一点色
+        glow(c1, .18f, .72f, .52f - drift, .42f)                // 副灯：只在歌词那一栏积一滩
+        glow(c2, .12f, .36f, 1.04f, .48f)                       // 地面：托住控制条
     }
 }
 
-/** A glyph with no chrome at all. The focus ring is a 1dp circle, not a filled pill. */
+private data class LyricSizes(val text: Int, val line: Int, val support: Int)
+
+/* 熄屏稳定后整个播放页会离场（黑屏下不再合成），醒回来是一次全新的组合。入场镜头若
+   跟着再来一遍，封面就会从屏幕中间飞回左边——用户看到的是「位置被重置了」。
+   入场只属于本次启动的第一次进入播放页。 */
+private object SleeveEntrance { var done = false }
+
+private fun lyricSizes(level: String, immersion: Boolean): LyricSizes = when (level) {
+    "小" -> if (immersion) LyricSizes(38, 48, 15) else LyricSizes(28, 37, 12)
+    "大" -> if (immersion) LyricSizes(68, 84, 22) else LyricSizes(46, 60, 17)
+    "特大" -> if (immersion) LyricSizes(80, 98, 24) else LyricSizes(54, 70, 19)
+    else -> if (immersion) LyricSizes(54, 68, 19) else LyricSizes(38, 52, 15)
+}
+
+/* 模糊封面只当氛围，不当画面。遮罩左轻右重：封面那一侧留得下图，歌词那一侧压到能读字。
+   注意 Android 12 以下 Modifier.blur 是空操作，真正让它糊的是 128px 的解码尺寸。 */
+private fun coverScrim(colors: PrismColors): Brush =
+    Brush.horizontalGradient(listOf(.56f, .76f, .93f).map { colors.background.copy(alpha = it) })
+
+/* Ceiling on sampled colours before they become light: 0.16 keeps lyrics above 5.9:1 on
+   any cover, where the raw sample lands at 4.3:1. */
+
+/* A night-time sleeve samples to a near-black blue; used as-is the light equals the room and
+   disappears. Lift it to a floor before drawing, keeping the hue. */
+/* A sleeve that averages out to grey still has a hue; pushing saturation is what keeps the
+   light from reading as "the blurred photo got brighter". */
+private fun vivid(c: Color, k: Float): Color {
+    val hsv = FloatArray(3)
+    android.graphics.Color.colorToHSV(c.toArgb(), hsv)
+    hsv[1] = (hsv[1] * k).coerceAtMost(1f)
+    return Color(android.graphics.Color.HSVToColor(hsv))
+}
+
+private fun liftTo(c: Color, floor: Float): Color {
+    if (c.luminance() >= floor) return c
+    fun at(k: Float) = Color(
+        (c.red * k).coerceAtMost(1f), (c.green * k).coerceAtMost(1f), (c.blue * k).coerceAtMost(1f),
+    )
+    var lo = 0f
+    var hi = 8f
+    repeat(16) {
+        val m = (lo + hi) / 2f
+        if (at(m).luminance() > floor) hi = m else lo = m
+    }
+    return at(lo)
+}
+private fun dimTo(c: Color, ceiling: Float = .16f): Color {
+    if (c.luminance() <= ceiling) return c
+    var lo = 0f
+    var hi = 1f
+    repeat(12) {
+        val m = (lo + hi) / 2f
+        if (Color(c.red * m, c.green * m, c.blue * m).luminance() > ceiling) hi = m else lo = m
+    }
+    return Color(c.red * lo, c.green * lo, c.blue * lo)
+}
+
+internal val lyricFontLevels = listOf("小", "标准", "大", "特大")
+
+private fun hueFor(seed: String): Float = (abs(seed.hashCode()) % 360).toFloat()
+
+private fun tierLabel(tier: String): String = when (tier) {
+    "low" -> "流畅"; "standard" -> "标准"; "high" -> "高品"; "super" -> "无损优先"
+    "flac" -> "无损"; "flac24bit" -> "24-bit 无损"; "hires" -> "Hi-Res"; "dolby" -> "杜比"
+    "atmos" -> "Atmos"; "atmos_plus" -> "Atmos+"; else -> tier
+}
+
+private fun calibrationText(ms: Long): String =
+    if (ms == 0L) "0.0s" else "%+.1fs".format(ms / 1000f)
+
+/* The plate is painted first and the photo lands on top of it, so a sleeve that is still
+   downloading — or that never arrives — is a printed cover, not a black rectangle. Skipping
+   tracks is the case that matters: the next song's plate is there on the same frame. */
 @Composable
-private fun BareButton(icon: String, size: Dp, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun CoverPlate(song: Song?, modifier: Modifier = Modifier) {
     val c = LocalPrismColors.current
-    var focused by remember { mutableStateOf(false) }
-    Box(
-        modifier.size(size + 12.dp).onFocusChanged { focused = it.isFocused }
-            .clip(CircleShape)
-            .background(if (focused) Color.White.copy(alpha = .05f) else Color.Transparent)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Glyph(icon, Modifier.size(size * .52f), if (focused) c.foreground else c.foreground.copy(alpha = .45f))
+    val motion = LocalAuraMotion.current
+    val shape = RoundedCornerShape(14.dp)
+    val url = song?.artwork.orEmpty()
+    val hasArt = url.startsWith("http") || url.startsWith("content")
+    val hue = hueFor(song?.key ?: song?.title.orEmpty())
+    var loaded by remember(url) { mutableStateOf(false) }
+    val photo by animateFloatAsState(if (loaded) 1f else 0f, tween(if (motion) 320 else 0), label = "sleeve photo")
+    Box(modifier.clip(shape).background(c.panel).border(1.dp, c.foreground.copy(alpha = .07f), shape)) {
+        Canvas(Modifier.fillMaxSize()) {
+            drawRect(Brush.radialGradient(
+                listOf(Color.hsv(hue, .18f, .24f), Color.hsv(hue, .12f, .13f)),
+                center = Offset(size.width * .2f, size.height * .08f), radius = size.maxDimension * 1.1f,
+            ))
+            var y = 3.dp.toPx()
+            while (y < size.height) {
+                drawLine(c.foreground.copy(alpha = .014f), Offset(0f, y), Offset(size.width, y), 1f)
+                y += 4.dp.toPx()
+            }
+        }
+        /* The plate prints the title's initial, so it must leave as the photo arrives: fading a
+           photo in *over* the glyph let the letter ghost through for a third of a second on
+           every track change. Two layers, one crossfade. */
+        Column(Modifier.fillMaxSize().padding(20.dp).graphicsLayer { alpha = 1f - photo },
+            verticalArrangement = Arrangement.SpaceBetween) {
+            Text(
+                song?.title.orEmpty().take(1).ifBlank { "—" },
+                color = Color.hsv(hue, .30f, .72f),
+                fontSize = 92.sp, lineHeight = 92.sp, fontFamily = FontFamily.Serif,
+            )
+            Column {
+                Box(Modifier.fillMaxWidth().height(1.dp).background(c.foreground.copy(alpha = .14f)))
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    listOfNotNull(
+                        song?.title.orEmpty().takeIf { it.isNotBlank() },
+                        song?.album.orEmpty().takeIf { it.isNotBlank() } ?: "无专辑信息",
+                    ).joinToString("\n"),
+                    color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (hasArt) {
+            AsyncImage(
+                coverRequest(url), null,
+                Modifier.fillMaxSize().graphicsLayer { alpha = photo },
+                contentScale = ContentScale.Crop,
+                onState = { loaded = it is AsyncImagePainter.State.Success },
+            )
+        }
     }
 }
 
-/** Lyric size tiers shared by the player and full-screen lyrics; sp values. */
-private data class PlayerLyricSizes(
-    val prevSp: Int, val currentSp: Int, val currentLineSp: Int, val supportSp: Int,
-    val fullCurrentSp: Int, val fullLineSp: Int, val fullNearSp: Int, val fullFarSp: Int, val fullSupportSp: Int,
-)
-
-private fun lyricSizesFor(level: String): PlayerLyricSizes = when (level) {
-    "小" -> PlayerLyricSizes(12, 22, 30, 11, 30, 38, 18, 15, 13)
-    "大" -> PlayerLyricSizes(16, 30, 40, 13, 42, 54, 22, 19, 17)
-    else -> PlayerLyricSizes(14, 26, 35, 12, 36, 46, 20, 17, 15)
-}
-
-@Composable fun PrismPlayer(
+@Composable
+fun PrismPlayer(
     song: Song?, lyrics: List<LyricLine>, lyricStatus: String, position: Long, duration: Long,
     playing: Boolean, playMode: PlaybackMode, favorite: Boolean, quality: String, playingQuality: String,
     queueIndex: Int, queueSize: Int, status: String,
     streamFormat: String,
     hasMv: Boolean,
+    mvResolving: Boolean = false,
     mvOpen: Boolean = false,
+    overlayOpen: Boolean = false,
     readPosition: () -> Long,
     onScreenOff: () -> Unit,
     onBack: () -> Unit, onPlay: () -> Unit, onPrevious: () -> Unit, onNext: () -> Unit,
     onShuffle: () -> Unit, onFavorite: () -> Unit, onQueue: () -> Unit, onMv: () -> Unit,
+    onModeStep: (Int) -> Unit = {},
     onRadioMenu: () -> Unit = {},
     onRadioToggle: () -> Unit = {},
     radioActive: Boolean = false,
@@ -260,6 +397,7 @@ private fun lyricSizesFor(level: String): PlayerLyricSizes = when (level) {
     onArtist: (() -> Unit)? = null,
     onAlbum: (() -> Unit)? = null,
     tiers: List<String> = emptyList(),
+    ladder: List<String> = emptyList(),
     onSelectQuality: (String) -> Unit = {},
     lyricFontLevel: String = "标准",
     onLyricFontLevel: (String) -> Unit = {},
@@ -270,354 +408,1101 @@ private fun lyricSizesFor(level: String): PlayerLyricSizes = when (level) {
     playbackSource: Song? = null,
 ) {
     val c = LocalPrismColors.current
-    /* The preference is what to ask for; this is what is actually coming out of the speakers,
-       and it is the one worth printing. */
+    val motion = LocalAuraMotion.current
     val playingTier = playingQuality.ifBlank { quality }
-    val canCycle = tiers.size > 1
-    val playFocus = remember { FocusRequester() }
-    val progressFocus = remember { FocusRequester() }
-    val qualityFocus = remember { FocusRequester() }
-    val artistFocus = remember { FocusRequester() }
-    val albumFocus = remember { FocusRequester() }
+    val currentSeek by rememberUpdatedState(onSeek)
     val artistName = song?.artist.orEmpty().takeIf { it.isNotBlank() && it != "未知歌手" }
     val albumName = song?.album.orEmpty().takeIf { it.isNotBlank() }
-    val artistLink = artistName != null && onArtist != null
-    val albumLink = albumName != null && onAlbum != null
-    val belowLinks = if (canCycle) qualityFocus else progressFocus
-    /* The header sits outside the transport's geometric reach, so the queue button gets its
-       own requester and a declared path back down. */
-    val topFocus = remember { FocusRequester() }
-    var focusedControl by remember { mutableStateOf("") }
-    var radioFocused by remember { mutableStateOf(false) }
-    val radioHint = when {
-        radioActive -> "电台已开启 · 确定关闭，长按更换待播"
-        radioLoading -> "正在准备电台 · 确定取消"
-        else -> "确定开启电台，保留当前歌曲 · 长按更多"
+    val sourceSong = playbackSource ?: song
+    val stream = streamFormat.ifBlank { tierLabel(playingTier) }
+    /* The room shows the tier in words; codec and bitrate live in the ⋯ header. */
+    val qualityText = tierLabel(playingTier).takeIf { it != playingTier } ?: stream
+
+    var immersive by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var controlsVisible by remember { mutableStateOf(true) }
+    var hint by remember { mutableStateOf("") }
+    var wakeKey by remember { mutableStateOf<Key?>(null) }
+    var progressFocused by remember { mutableStateOf(false) }
+    var interaction by remember { mutableIntStateOf(0) }
+    var l2Tick by remember { mutableIntStateOf(0) }
+    var l2Level by remember { mutableIntStateOf(0) }
+    var l2Bar by remember { mutableStateOf(true) }
+    var l2SeekText by remember { mutableStateOf("") }
+    var l2SeekSeq by remember { mutableIntStateOf(0) }
+
+    val parkFocus = remember { FocusRequester() }
+    val playFocus = remember { FocusRequester() }
+    val prevFocus = remember { FocusRequester() }
+    val nextFocus = remember { FocusRequester() }
+    val railFocus = remember { FocusRequester() }
+    val favFocus = remember { FocusRequester() }
+    val queueFocus = remember { FocusRequester() }
+    val dotsFocus = remember { FocusRequester() }
+    val mvFocus = remember { FocusRequester() }
+    val immersiveFocus = remember { FocusRequester() }
+    val offFocus = remember { FocusRequester() }
+    val l2Focus = remember { FocusRequester() }
+
+    val rawLyricPosition = if (lyrics.isNotEmpty()) rememberLyricPosition(song?.key, position, playing, readPosition)
+        else rememberUpdatedState(position)
+    // Calibration affects lyric timing only; transport controls use the playback clock.
+    val lyricPosition = remember(rawLyricPosition, lyricOffsetMs) {
+        derivedStateOf { rawLyricPosition.value - lyricOffsetMs }
     }
-    /* True while focus sits in a row that needs left/right to move between its own items — the
-       chrome icons. Everywhere else left/right is the seek key, which is what a remote user
-       expects when the player is open. */
-    var chromeFocus by remember { mutableStateOf(false) }
-    var standby by remember { mutableStateOf(false) }
-    val standbyFocus = remember { FocusRequester() }
-    var lyricPanelOpen by remember { mutableStateOf(false) }
-    val lyricEntryFocus = remember { FocusRequester() }
-    val stripFirstFocus = remember { FocusRequester() }
-    val panelScope = rememberCoroutineScope()
-    val closeLyricPanel: () -> Unit = {
-        lyricPanelOpen = false
-        panelScope.launch {
+    val active by remember(lyrics, lyricPosition) {
+        derivedStateOf(structuralEqualityPolicy()) { lyrics.indexOfLast { it.timeMs <= lyricPosition.value } }
+    }
+
+    val idleTimeout = LocalAccessibilityManager.current?.calculateRecommendedTimeoutMillis(
+        10_000L, containsIcons = true, containsText = true, containsControls = true,
+    ) ?: 10_000L
+    val needsAttention = status.startsWith("正在解析") || status.startsWith("正在尝试") ||
+        status.startsWith("正在打开") || status.startsWith("正在加载") || status.startsWith("MV") ||
+        status.contains("失败") || status.contains("不可用")
+
+    LaunchedEffect(interaction, playing, lyrics.isEmpty(), immersive, menuOpen, mvOpen, overlayOpen, needsAttention, idleTimeout) {
+        controlsVisible = true
+        if (playing && lyrics.isNotEmpty() && !immersive && !menuOpen && !mvOpen && !overlayOpen && !needsAttention) {
+            delay(idleTimeout)
+            controlsVisible = false
+        }
+    }
+    val controlsAlpha = animateFloatAsState(
+        if (controlsVisible) 1f else 0f, tween(if (motion) 350 else 0), label = "player chrome",
+    )
+    // Reveal the cover centrally before moving it beside the lyrics.
+    val entrance = remember { Animatable(if (motion && !SleeveEntrance.done) 0f else 1f) }
+    LaunchedEffect(motion) {
+        if (motion && entrance.value < 1f) {
+            delay(120)
+            entrance.animateTo(1f, keyframes {
+                durationMillis = 1180
+                0f at 0
+                .40f at 430
+                1f at 1180
+            })
+        } else entrance.snapTo(1f)
+        SleeveEntrance.done = true
+    }
+
+    var menuWasOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(menuOpen) {
+        if (menuOpen) menuWasOpen = true
+        else if (menuWasOpen) {
             withFrameNanos { }
-            runCatching { lyricEntryFocus.requestFocus() }
+            runCatching { dotsFocus.requestFocus() }
         }
     }
-    LaunchedEffect(lyricPanelOpen) {
-        if (lyricPanelOpen) {
-            repeat(3) { withFrameNanos { } }
-            runCatching { stripFirstFocus.requestFocus() }
-        }
-    }
-    LaunchedEffect(standby, mvOpen) {
-        if (mvOpen) return@LaunchedEffect
-        val target = when {
-            standby -> standbyFocus
-            lyricPanelOpen -> stripFirstFocus
-            else -> playFocus
-        }
-        target.requestAfterScroll { }
-    }
-    val hasWordLyrics = remember(lyrics) { lyrics.any { !it.words.isNullOrEmpty() } }
-    val rawLyricPosition = if (hasWordLyrics) rememberLyricPosition(position, playing, readPosition).value else position
-    /* Calibration shifts only the lyric's judging time (playhead − offset); negative is
-       allowed so an early line stays hidden at 0:00. */
-    val lyricPosition = rawLyricPosition - lyricOffsetMs
-    val fontSizes = lyricSizesFor(lyricFontLevel)
-    LaunchedEffect(playMode, favorite, playing, playingTier) {
-        focusedControl = when {
-            focusedControl.startsWith("播放模式") -> "播放模式：${playMode.label}"
-            focusedControl.startsWith("音质") -> "音质 ${tierLabel(playingTier)}" + if (canCycle) " · 确定键切换" else ""
-            focusedControl in setOf("收藏", "取消收藏") -> if (favorite) "取消收藏" else "收藏"
-            focusedControl in setOf("播放", "暂停") -> if (playing) "暂停" else "播放"
-            else -> focusedControl
-        }
-    }
-    val progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
-    val currentSeek by rememberUpdatedState(onSeek)
-    /* The record turns while it plays and stops when it pauses. */
-    val spin = remember { mutableFloatStateOf(0f) }
-    val motion = LocalAuraMotion.current
-    /* Full-screen lyrics are an opaque overlay: stop the spin, orbit light, ambience and
-       wave underneath instead of burning frames invisibly. */
-    LaunchedEffect(playing, motion, standby) {
-        if (!playing || !motion || standby) return@LaunchedEffect
-        var last = 0L
-        while (true) withFrameNanos { now ->
-            if (last != 0L) spin.floatValue = (spin.floatValue + (now - last) / 1_000_000_000f * 12f) % 360f
-            last = now
-        }
-    }
-    val density = LocalDensity.current
-    var controlsHeight by remember { mutableStateOf(0.dp) }
-    BoxWithConstraints(Modifier.fillMaxSize().onPreviewKeyEvent { event ->
-        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-        /* In standby any key is the way out, including Back: Back still means "leave the
-           player", but leaving a screensaver should not also close the player. */
-        if (standby) { standby = false; true }
-        else when {
-            event.key in setOf(Key.Back, Key.Escape) -> { if (lyricPanelOpen) closeLyricPanel() else onBack(); true }
-            !chromeFocus && event.key in setOf(Key.DirectionLeft, Key.DirectionRight) -> {
-                if (duration > 0) currentSeek((position + if (event.key == Key.DirectionLeft) -10_000 else 10_000).coerceIn(0, duration))
-                true
+    LaunchedEffect(immersive) {
+        if (immersive) {
+            // Wait for the immersion focus target to attach.
+            repeat(4) {
+                withFrameNanos { }
+                if (runCatching { l2Focus.requestFocus(); true }.getOrDefault(false)) return@LaunchedEffect
             }
-            else -> false
         }
-    }) {
+    }
+    LaunchedEffect(mvOpen, overlayOpen, controlsVisible, immersive, menuOpen) {
+        if (mvOpen || overlayOpen || menuOpen || immersive) return@LaunchedEffect
+        // Acquire the stable root immediately, including when returning from a detail page.
+        parkFocus.requestAfterScroll { }
+        val target = if (controlsVisible) playFocus else parkFocus
+        // Touch mode can defer focus until the first remote key.
+        repeat(30) {
+            if (runCatching { target.requestFocus() }.isSuccess) return@LaunchedEffect
+            delay(120)
+        }
+    }
+    LaunchedEffect(immersive, l2Tick) {
+        if (!immersive) return@LaunchedEffect
+        l2Bar = true
+        l2Level = 0
+        delay(3000)
+        l2Bar = false
+        l2Level = 1
+        delay(5000)
+        l2Level = 2
+    }
+    LaunchedEffect(l2SeekSeq) {
+        if (l2SeekSeq == 0) return@LaunchedEffect
+        delay(1_200)
+        l2SeekText = ""
+    }
+
+    fun seekBy(delta: Long) {
+        if (duration <= 0) return
+        currentSeek((rawLyricPosition.value + delta).coerceIn(0, duration))
+    }
+
+    fun immersiveSeek(delta: Long) {
+        if (duration <= 0) return
+        val from = rawLyricPosition.value
+        val to = (from + delta).coerceIn(0, duration)
+        if (to == from) return
+        currentSeek(to)
+        val seconds = abs(to - from) / 1000
+        l2SeekText = if (to < from) "‹ $seconds 秒" else "$seconds 秒 ›"
+        l2SeekSeq++
+    }
+
+    val controlSemantics = if (controlsVisible) Modifier else Modifier.clearAndSetSemantics { }
+    val sizes = lyricSizes(lyricFontLevel, immersion = false)
+    val immersionSizes = lyricSizes(lyricFontLevel, immersion = true)
+    val padX = 32.dp
+    val padTop = 18.dp
+
+    BoxWithConstraints(
+        Modifier.fillMaxSize()
+            .focusRequester(parkFocus)
+            .onPreviewKeyEvent { event ->
+                if (wakeKey == event.key) {
+                    if (event.type == KeyEventType.KeyUp) wakeKey = null
+                    return@onPreviewKeyEvent true
+                }
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                if (immersive) {
+                    l2Tick++
+                    when (event.key) {
+                        Key.Back, Key.Escape -> { immersive = false; true }
+                        Key.DirectionLeft -> { immersiveSeek(-10_000); true }
+                        Key.DirectionRight -> { immersiveSeek(10_000); true }
+                        Key.DirectionUp, Key.DirectionDown -> true
+                        Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                            onPlay(); wakeKey = event.key; true
+                        }
+                        else -> false
+                    }
+                } else {
+                    if (!controlsVisible) {
+                        if (event.key in setOf(
+                                Key.DirectionUp, Key.DirectionDown, Key.DirectionLeft, Key.DirectionRight,
+                                Key.DirectionCenter, Key.Enter, Key.NumPadEnter, Key.Tab, Key.Spacebar,
+                            )) {
+                            controlsVisible = true
+                            interaction++
+                            wakeKey = event.key
+                            return@onPreviewKeyEvent true
+                        }
+                    }
+                    if (controlsVisible) interaction++
+                    when {
+                        event.key in setOf(Key.Back, Key.Escape) -> { onBack(); true }
+                        else -> false
+                    }
+                }
+            }
+            .focusable()
+            .pointerInput(Unit) { detectTapGestures { if (!immersive) { controlsVisible = true; interaction++ } } },
+    ) {
         val w = maxWidth
         val h = maxHeight
-        /* The room takes the colour of the record. A walkman-era sleeve in your hands, not a
-           framed thumbnail on a wall: the artwork becomes the light in the room, heavily held
-           back so the lyric stays the brightest thing on screen. */
-        if (song != null && !standby) {
-            AsyncImage(coverRequest(song.artwork, 128), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-            Box(Modifier.fillMaxSize().background(artworkScrim(c)))
-            AuraAmbience(song, Modifier.fillMaxSize())
+        /* While the lyric request is still out the two-column layout stands as it is; the layout
+           only moves once the answer is known to be "no lyrics", never while it is still coming. */
+        val lyricPending = lyricStatus.contains("加载中") || lyricStatus.contains("正在")
+        val noLyrics = lyrics.isEmpty() && !lyricPending
+        val sleeveBig = minOf(w * .29f, h * .50f)
+        // Reserve measured title height without changing the column width.
+        val columnWidth = minOf(w * .30f, h * .52f)
+        val identityTop = h * .12f
+        val sleeveSmall = minOf(w * .292f, h * .49f)
+        val artSize by animateDpAsState(
+            if (noLyrics) sleeveBig else sleeveSmall,
+            tween(if (motion) 460 else 0, easing = FastOutSlowInEasing), label = "sleeve",
+        )
+        val textMax = minOf(w * .33f, 420.dp)
+        var textPx by remember { mutableIntStateOf(0) }
+        val textWidth = with(LocalDensity.current) { textPx.toDp() }
+        val lockupText = if (textWidth > 0.dp) textWidth else textMax * .7f
+        /* The sleeve breathes: it sits a screen-fraction in from the edge, not glued to it. */
+        val identityMargin = w * .146f
+        val identityX by animateDpAsState(
+            if (noLyrics) (w - (sleeveBig + 40.dp + lockupText)) / 2 else identityMargin,
+            tween(if (motion) 460 else 0, easing = FastOutSlowInEasing), label = "identity x",
+        )
+        val identityY by animateDpAsState(
+            if (noLyrics) h * .44f - sleeveBig / 2 else identityTop,
+            tween(if (motion) 460 else 0, easing = FastOutSlowInEasing), label = "identity y",
+        )
+        val freeLeft = identityMargin + columnWidth
+        val freeRight = w - padX
+        val freeWidth = (freeRight - freeLeft).coerceAtLeast(160.dp)
+        val lyricWidth = minOf(freeWidth * .88f, w * .47f)
+        val lyricLeft = freeLeft + (freeWidth - lyricWidth) / 2
+        val lyricTop = h * .16f
+        val lyricHeight = h * .62f
+
+        /* 房间的底子还是这张封面：模糊后铺满，光晕叠在它上面。两者都不能省——只留模糊图，
+           页脚是一块能认出内容的糊影；只留光，房间又空得没有来处。 */
+        Box(Modifier.fillMaxSize().background(c.background))
+        val artUrl = song?.artwork.orEmpty()
+        if (artUrl.startsWith("http") || artUrl.startsWith("content")) {
+            /* 换歌时上一张先留在原地，新图解码完再换上，避免中间闪一帧黑。 */
+            var wash by remember { mutableStateOf<Painter?>(null) }
+            AsyncImage(
+                coverRequest(artUrl, 128), null,
+                Modifier.fillMaxSize()
+                    .graphicsLayer { scaleX = 1.10f; scaleY = 1.10f }
+                    .blur(30.dp)
+                    .graphicsLayer { alpha = .42f },
+                contentScale = ContentScale.Crop,
+                placeholder = wash,
+                onSuccess = { wash = it.painter },
+            )
+            Box(Modifier.fillMaxSize().background(coverScrim(c)))
         }
-        /* The mark lives at the same x it does on every other page. No back button here: Back
-           on the remote already means "leave the player", and a button beside the logo pushed
-           the brand off its fixed position. */
-        Row(Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+        AuraAmbience(
+            song,
+            centerX = (identityX + artSize / 2) / w,
+            centerY = (identityY + artSize / 2) / h,
+            modifier = Modifier.fillMaxSize(),
+        )
+
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = padX, vertical = padTop)
+                .graphicsLayer { alpha = controlsAlpha.value }.then(controlSemantics),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             AuraBrand()
-            Spacer(Modifier.width(22.dp))
+            Spacer(Modifier.width(18.dp))
             Text("正在聆听", color = c.muted, fontSize = 12.sp)
+            if (queueSize > 0) {
+                Spacer(Modifier.width(10.dp))
+                Text("%02d / %d".format(queueIndex + 1, queueSize), color = c.muted.copy(alpha = .7f), fontSize = 11.sp)
+            }
             Spacer(Modifier.weight(1f))
-            Text("${if (queueSize > 0) "%02d".format(queueIndex + 1) else "00"} · $queueSize", color = c.muted, fontSize = 12.sp)
-            Spacer(Modifier.width(20.dp))
+            val chromeDown = Modifier.focusProperties { down = railFocus }
             if (hasMv) {
-                MvAction(onMv, Modifier.focusProperties { down = topFocus }.onFocusChanged {
-                    if (it.isFocused) { chromeFocus = true; focusedControl = "MV" }
-                })
+                PlayerIcon("mv", if (mvResolving) "正在解析 MV" else "MV", { onMv() },
+                    Modifier.focusRequester(mvFocus).then(chromeDown), onFocused = { hint = "观看 MV" },
+                    text = if (mvResolving) "…" else "MV")
                 Spacer(Modifier.width(10.dp))
             }
-            PlayerIcon("lyric", "歌词", { lyricPanelOpen = !lyricPanelOpen },
-                Modifier.focusRequester(lyricEntryFocus).focusProperties { down = when { canCycle -> qualityFocus; albumLink -> albumFocus; artistLink -> artistFocus; else -> progressFocus } },
-                active = lyricPanelOpen,
-                onFocused = { chromeFocus = true; focusedControl = "歌词 · 字号、时间校准与副歌词" })
+            PlayerIcon("expand", "沉浸", { immersive = true; interaction++ },
+                Modifier.focusRequester(immersiveFocus).then(chromeDown),
+                onFocused = { hint = "沉浸播放 · 歌词占满屏幕" })
             Spacer(Modifier.width(10.dp))
-            PlayerIcon("expand", "全屏歌词", { standby = true },
-                Modifier.focusProperties { down = when { canCycle -> qualityFocus; albumLink -> albumFocus; artistLink -> artistFocus; else -> progressFocus } },
-                onFocused = { chromeFocus = true; focusedControl = "全屏歌词" })
-            Spacer(Modifier.width(10.dp))
-            PlayerIcon("bulbOff", "熄屏播放", onScreenOff,
-                Modifier.focusRequester(topFocus).focusProperties { down = when { canCycle -> qualityFocus; albumLink -> albumFocus; artistLink -> artistFocus; else -> progressFocus } },
-                onFocused = { chromeFocus = true; focusedControl = "熄屏播放 · 确定或返回恢复" })
+            PlayerIcon("bulbOff", "熄屏", onScreenOff,
+                Modifier.focusRequester(offFocus).then(chromeDown),
+                onFocused = { hint = "熄屏播放 · 确定或返回恢复" })
         }
-        Box(Modifier.offset(x = w * .035f, y = h * .135f).size(h * .52f), contentAlignment = Alignment.Center) {
-            AuraOrbit(Modifier.fillMaxSize(), playing && !standby)
-                /* A record, not a framed thumbnail: it turns while it plays, and the grooves and
-                   spindle are painted on top so the rotation reads even on flat artwork. */
-                Box(Modifier.size(h * .34f).clip(CircleShape).background(c.panel)
-                    .border(1.dp, c.accent.copy(alpha = .3f), CircleShape)) {
-                    CoverArt(song, Modifier.fillMaxSize().graphicsLayer { rotationZ = spin.floatValue }, 0.dp)
-                    Canvas(Modifier.fillMaxSize()) {
-                        val r = size.minDimension / 2f
-                        listOf(.72f, .64f, .57f).forEach { ring ->
-                            drawCircle(c.background.copy(alpha = .16f), radius = r * ring, center = center, style = Stroke(1.dp.toPx()))
-                        }
-                        drawCircle(Brush.radialGradient(listOf(Color.Transparent, c.background.copy(alpha = .55f)), radius = r, center = center), radius = r, center = center)
+
+        val textAlpha: () -> Float = {
+            val settle = ((entrance.value - .44f) / .56f).coerceIn(0f, 1f)
+            (settle * settle * (3f - 2f * settle) * 1.3f).coerceIn(0f, 1f)
+        }
+
+        val sleeveMotion = Modifier.graphicsLayer {
+            val appear = (entrance.value / .40f).coerceIn(0f, 1f)
+            val settle = ((entrance.value - .40f) / .60f).coerceIn(0f, 1f)
+            val eased = settle * settle * (3f - 2f * settle)
+            translationX = (w / 2 - (identityX + artSize / 2)).toPx() * (1f - eased)
+            translationY = (h / 2 - (identityY + artSize / 2)).toPx() * (1f - eased)
+            val s = .94f + .06f * appear
+            scaleX = s
+            scaleY = s
+            alpha = appear
+        }
+
+        if (noLyrics) {
+            Row(
+                Modifier.offset(x = identityX, y = identityY).height(artSize),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.size(artSize).then(sleeveMotion)) { CoverPlate(song, Modifier.fillMaxSize()) }
+                Spacer(Modifier.width(40.dp))
+                IdentityText(
+                    title = song?.title ?: "音乐，即将响起",
+                    artistName = artistName, stream = qualityText,
+                    platform = sourceSong?.platform,
+                    status = lyricStatus, stacked = true, textAlpha = textAlpha,
+                    modifier = Modifier.widthIn(max = textMax).onSizeChanged { textPx = it.width },
+                )
+            }
+        } else {
+            Column(Modifier.offset(x = identityX, y = identityY).width(columnWidth)) {
+                Box(Modifier.size(artSize).then(sleeveMotion)) { CoverPlate(song, Modifier.fillMaxSize()) }
+                Spacer(Modifier.height(14.dp))
+                IdentityText(
+                    title = song?.title ?: "音乐，即将响起",
+                    artistName = artistName, stream = qualityText,
+                    platform = sourceSong?.platform,
+                    status = "", stacked = false, textAlpha = textAlpha,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+
+        if (!noLyrics) {
+            RollingLyrics(
+                lyrics, active, lyricStatus, lyricPosition,
+                sizes.text, sizes.line, sizes.support, subLyrics,
+                Modifier.offset(x = lyricLeft, y = lyricTop).width(lyricWidth).height(lyricHeight)
+                    .graphicsLayer {
+                        val settle = ((entrance.value - .44f) / .56f).coerceIn(0f, 1f)
+                        val eased = settle * settle * (3f - 2f * settle)
+                        alpha = eased
+                        translationX = 14.dp.toPx() * (1f - eased)
+                        translationY = 18.dp.toPx() * (1f - eased)
+                    },
+                centered = true, fade = .20f,
+            )
+        }
+
+        Column(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                .graphicsLayer { alpha = controlsAlpha.value }.then(controlSemantics)
+                .padding(start = padX, end = padX, bottom = 14.dp),
+        ) {
+                Box(Modifier.fillMaxWidth().height(26.dp).focusRequester(railFocus)
+                    .onFocusChanged {
+                        progressFocused = it.isFocused
+                        if (it.isFocused) hint = "← →  快退 / 快进 10 秒"
                     }
-                    Box(Modifier.size(h * .075f).align(Alignment.Center).clip(CircleShape)
-                        .background(c.background.copy(alpha = .92f)).border(1.dp, c.accent.copy(alpha = .4f), CircleShape),
-                        contentAlignment = Alignment.Center) {
-                        Box(Modifier.size(5.dp).clip(CircleShape).background(c.accent.copy(alpha = .8f)))
+                    .pointerInput(duration) {
+                        detectTapGestures { if (duration > 0 && size.width > 0) currentSeek((duration * (it.x / size.width).coerceIn(0f, 1f)).toLong()) }
+                    }
+                    .onPreviewKeyEvent { e ->
+                        if (e.type == KeyEventType.KeyDown && e.key in setOf(Key.DirectionLeft, Key.DirectionRight)) {
+                            seekBy(if (e.key == Key.DirectionLeft) -10_000 else 10_000)
+                            true
+                        } else false
+                    }
+                    .focusProperties { down = playFocus; up = when { hasMv -> mvFocus; else -> offFocus } }
+                    .semantics {
+                        contentDescription = "播放进度"
+                        progressBarRangeInfo = ProgressBarRangeInfo(
+                            if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f, 0f..1f,
+                        )
+                        setProgress { v ->
+                            if (duration > 0) { currentSeek((duration * v.coerceIn(0f, 1f)).toLong()); true } else false
+                        }
+                    }
+                    .focusable(),
+            ) {
+                ProgressRail(
+                    progress = { if (duration > 0) (rawLyricPosition.value.toFloat() / duration).coerceIn(0f, 1f) else 0f },
+                    focused = progressFocused,
+                    playing = playing && controlsVisible,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                ClockText(rawLyricPosition, duration, forward = true)
+                Text(
+                    if (needsAttention) status else hint,
+                    color = if (needsAttention) c.muted else c.accent.copy(alpha = .58f),
+                    fontSize = 11.sp, letterSpacing = 1.1.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center, modifier = Modifier.weight(1f).padding(horizontal = 16.dp),
+                )
+                ClockText(rawLyricPosition, duration, forward = false)
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                    PlayerIcon(
+                        if (favorite) "heartFilled" else "heart",
+                        if (favorite) "取消收藏" else "收藏",
+                        onFavorite,
+                        rim = if (favorite) c.accent.copy(alpha = .45f) else null,
+                        modifier = Modifier.focusRequester(favFocus)
+                            .focusProperties { right = prevFocus; up = railFocus },
+                        onFocused = { hint = if (favorite) "取消收藏" else "收藏" },
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    PlayerIcon("prev", "上一首", onPrevious,
+                        modifier = Modifier.focusRequester(prevFocus)
+                            .focusProperties { left = favFocus; right = playFocus; up = railFocus },
+                        onFocused = { hint = "上一首" })
+                    PlayButton(playing, onPlay,
+                        Modifier.focusRequester(playFocus)
+                            .focusProperties { left = prevFocus; right = nextFocus; up = railFocus },
+                        onFocused = { hint = if (playing) "暂停" else "播放" })
+                    PlayerIcon("next", "下一首", onNext,
+                        modifier = Modifier.focusRequester(nextFocus)
+                            .focusProperties { left = playFocus; right = queueFocus; up = railFocus },
+                        onFocused = { hint = "下一首" })
+                }
+                Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        PlayerIcon("list", "播放列表", onQueue,
+                            modifier = Modifier.focusRequester(queueFocus)
+                                .focusProperties { left = nextFocus; right = dotsFocus; up = railFocus },
+                            onFocused = { hint = "播放列表 · $queueSize 首" })
+                        MoreDots(
+                            onClick = { interaction++; menuOpen = true },
+                            modifier = Modifier.focusRequester(dotsFocus)
+                                .focusProperties { left = queueFocus; up = railFocus }
+                                .onFocusChanged { if (it.isFocused) hint = "更多 · 歌手、专辑、音质与歌词" },
+                        )
                     }
                 }
+            }
         }
-        /* The lyric column is capped by the space left above the controls, so long lines
-           never push into the progress bar. */
-        Column(Modifier.offset(x = w * .46f, y = h * .185f).width(w * .48f)
-            .heightIn(max = (h - h * .185f - controlsHeight - 12.dp).coerceAtLeast(0.dp))) {
-            Text(song?.title ?: "音乐，即将响起", color = c.foreground, fontSize = 32.sp, lineHeight = 40.sp,
-                fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(10.dp))
-            /* Artist and album stay one line of context, but each name is its own target:
-               OK on 周杰伦 opens the artist, OK on 《叶惠美》 opens the album. */
-            if (artistName != null || albumName != null) {
+
+        if (!controlsVisible && !immersive) {
+            Box(Modifier.fillMaxSize().pointerInput(Unit) {
+                detectTapGestures { controlsVisible = true; interaction++ }
+            })
+        }
+
+        // Read animation values in graphicsLayer to avoid frame-by-frame recomposition.
+        val roomDim = remember { Animatable(0f) }
+        LaunchedEffect(immersive, motion) {
+            val target = if (immersive) .62f else 0f
+            if (motion) roomDim.animateTo(target, tween(620, easing = FastOutSlowInEasing)) else roomDim.snapTo(target)
+        }
+        Box(Modifier.fillMaxSize().graphicsLayer { alpha = roomDim.value }.background(Color.Black))
+
+        AnimatedVisibility(
+            visible = immersive,
+            enter = fadeIn(tween(if (motion) 200 else 0, easing = LinearEasing)) +
+                scaleIn(tween(if (motion) 620 else 0, easing = FastOutSlowInEasing), initialScale = .968f),
+            exit = fadeOut(tween(if (motion) 260 else 0)) +
+                scaleOut(tween(if (motion) 300 else 0, easing = FastOutSlowInEasing), targetScale = 1.025f),
+        ) {
+            Immersion(
+                song = song, lyrics = lyrics, lyricStatus = lyricStatus,
+                clock = rawLyricPosition, lyricClock = lyricPosition, duration = duration,
+                active = active, sizes = immersionSizes, subLyrics = subLyrics, playing = playing,
+                level = l2Level, barVisible = l2Bar, motion = motion, focus = l2Focus,
+                onPlay = onPlay, onInteraction = { l2Tick++ }, seekHint = l2SeekText,
+            )
+        }
+
+        if (menuOpen) {
+            PlayerMenu(
+                artistName = artistName, albumName = albumName,
+                sourceLabel = sourceSong?.sourceLabel.orEmpty(), stream = stream, playingTier = playingTier,
+                platform = sourceSong?.platform,
+                ladder = ladder, tiers = tiers,
+                playMode = playMode, radioActive = radioActive, radioLoading = radioLoading,
+                canArtist = artistName != null && onArtist != null, canAlbum = albumName != null && onAlbum != null,
+                fontLevel = lyricFontLevel, subLyrics = subLyrics, offsetMs = lyricOffsetMs,
+                canCalibrate = lyrics.isNotEmpty(),
+                onClose = { menuOpen = false },
+                onQuality = { onSelectQuality(it) },
+                onArtist = { onArtist?.invoke() }, onAlbum = { onAlbum?.invoke() },
+                onFontLevel = onLyricFontLevel, onSubLyrics = onSubLyrics, onCalibration = onLyricCalibration,
+                onMode = onShuffle, onModeStep = onModeStep, onRadio = onRadioToggle,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ClockText(clock: State<Long>, duration: Long, forward: Boolean) {
+    val c = LocalPrismColors.current
+    val ms by remember(clock, duration, forward) {
+        derivedStateOf { if (forward) clock.value.coerceAtLeast(0) else duration }
+    }
+    Text(time(ms), color = c.muted, fontSize = 11.sp)
+}
+
+@Composable
+private fun MoreDots(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val c = LocalPrismColors.current
+    var focused by remember { mutableStateOf(false) }
+    Box(
+        modifier.size(44.dp)
+            .onFocusChanged { focused = it.isFocused }
+            .clip(CircleShape)
+            .background(if (focused) c.accent.copy(alpha = .16f) else Color.Transparent)
+            .border(if (focused) 2.dp else 1.dp,
+                if (focused) c.accent else c.accent.copy(alpha = if (c.background.luminance() > .5f) .3f else .15f),
+                CircleShape)
+            .semantics { contentDescription = "更多" }
+            .tvClickable(onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(18.dp)) {
+            val r = size.minDimension * .085f
+            val cy = size.height / 2f
+            listOf(.18f, .5f, .82f).forEach { f ->
+                drawCircle(if (focused) c.accent else c.muted, radius = r, center = Offset(size.width * f, cy))
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlayerIcon(
+    icon: String, label: String, onClick: () -> Unit, modifier: Modifier = Modifier,
+    active: Boolean = false, rim: Color? = null, onFocused: () -> Unit = {},
+    text: String? = null,
+) {
+    val c = LocalPrismColors.current
+    var focused by remember { mutableStateOf(false) }
+    /* The gold hairline has to sit a step darker on porcelain or it disappears into the paper. */
+    val idle = c.accent.copy(alpha = if (c.background.luminance() > .5f) .3f else .15f)
+    Box(
+        modifier.size(44.dp).onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }
+            .clip(CircleShape)
+            .background(if (focused) c.accent.copy(alpha = .16f) else Color.Transparent)
+            .border(
+                if (focused) 2.dp else 1.dp,
+                when {
+                    focused -> c.accent
+                    rim != null -> rim
+                    else -> idle
+                },
+                CircleShape,
+            )
+            .semantics { contentDescription = label; selected = active }
+            .tvClickable(onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (text != null) {
+            /* Two letters read as "this is a video", which a screen-with-a-play glyph does not
+               at 20dp — it reads as "fullscreen" next to the real fullscreen mark. The disc and
+               the focus ring are shared with the icon buttons so the row stays one rhythm. */
+            Text(text, color = if (focused) c.accent else c.muted, fontSize = 11.5f.sp,
+                fontWeight = FontWeight.Medium, letterSpacing = .9.sp, maxLines = 1)
+        } else {
+            Glyph(icon, Modifier.size(if (icon.startsWith("heart")) 19.dp else 20.dp),
+                if (focused || icon == "heartFilled") c.accent else c.muted)
+        }
+    }
+}
+
+@Composable
+private fun PlayButton(playing: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, onFocused: () -> Unit = {}) {
+    val c = LocalPrismColors.current
+    var focused by remember { mutableStateOf(false) }
+    Box(
+        modifier.size(58.dp)
+            .semantics { contentDescription = if (playing) "暂停" else "播放" }
+            .onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (focused) {
+            Box(Modifier.fillMaxSize().clip(CircleShape).background(c.accent.copy(alpha = .12f))
+                .border(2.dp, c.foreground.copy(alpha = .9f), CircleShape))
+        }
+        Box(
+            Modifier.size(52.dp).clip(CircleShape).background(c.accent),
+            contentAlignment = Alignment.Center,
+        ) {
+            Glyph(if (playing) "pause" else "play", Modifier.size(20.dp), c.onAccent)
+        }
+    }
+}
+
+/* The pill says what is playing; the platform glyph is the whole "from". The ⋯ menu carries
+   the source in words, so the room stays quiet. */
+@Composable
+private fun StreamPill(platform: MusicPlatform?, text: String) {
+    val c = LocalPrismColors.current
+    Row(
+        Modifier.clip(RoundedCornerShape(50))
+            .background(c.accent.copy(alpha = .07f))
+            .border(1.dp, c.accent.copy(alpha = .24f), RoundedCornerShape(50))
+            .padding(horizontal = 9.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (platform != null) {
+            PlatformIcon(platform, Modifier.size(13.dp))
+            Spacer(Modifier.width(5.dp))
+        }
+        Text(text, color = c.accent, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/* stacked = nothing beside the sleeve, so the words sit in a column of their own and centre
+   themselves; inline = the words hang under a corner-placed sleeve and stay left-aligned. */
+@Composable
+private fun IdentityText(
+    title: String, artistName: String?, stream: String,
+    platform: MusicPlatform?, status: String, stacked: Boolean,
+    textAlpha: () -> Float, modifier: Modifier = Modifier,
+) {
+    val c = LocalPrismColors.current
+    Column(modifier.graphicsLayer { alpha = textAlpha() }) {
+        if (stacked) {
+            Text(
+                title, color = c.foreground, fontSize = 27.sp, lineHeight = 34.sp, fontWeight = FontWeight.Medium,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+            )
+            if (artistName != null) {
+                Spacer(Modifier.height(9.dp))
+                Text(
+                    artistName, color = c.muted, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+            StreamPill(platform, stream)
+            if (status.isNotBlank()) {
+                Spacer(Modifier.height(14.dp))
+                Text(status, color = c.muted.copy(alpha = .55f), fontSize = 11.sp, letterSpacing = .8.sp)
+            }
+        } else {
+            /* 左对齐，贴住封面的左边线：这块是偏轴的（封面在左、歌词在右），居中会多出一条
+               自己的轴线；而且歌名一变长，居中会把参差的边左右推，左对齐只有右端在变。 */
+            Text(
+                title, color = c.foreground, fontSize = 22.sp, lineHeight = 24.sp, fontWeight = FontWeight.Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            if (artistName != null || stream.isNotBlank()) {
+                Spacer(Modifier.height(6.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (artistName != null) {
-                        PlayerSubjectLink(
-                            artistName, onArtist,
-                            Modifier.focusRequester(artistFocus)
-                                .then(if (albumLink) Modifier.focusProperties { right = albumFocus } else Modifier)
-                                .focusProperties { up = topFocus; down = belowLinks },
-                            onFocused = { chromeFocus = albumLink; focusedControl = "歌手：$artistName · 确定键查看" },
+                        Text(
+                            artistName, color = c.muted, fontSize = 12.sp, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
                         )
+                        Spacer(Modifier.width(10.dp))
                     }
-                    if (artistName != null && albumName != null) Text("  ·  ", color = c.muted, fontSize = 15.sp)
-                    if (albumName != null) {
-                        PlayerSubjectLink(
-                            "《$albumName》", onAlbum,
-                            Modifier.focusRequester(albumFocus)
-                                .then(if (artistLink) Modifier.focusProperties { left = artistFocus } else Modifier)
-                                .focusProperties { up = topFocus; down = belowLinks },
-                            onFocused = { chromeFocus = artistLink; focusedControl = "专辑：$albumName · 确定键查看" },
-                        )
-                    }
+                    StreamPill(platform, stream)
                 }
             }
-            Spacer(Modifier.height(12.dp))
-            if (song != null) {
-                /* One pill, not two. The source and the tier used to sit in separate capsules,
-                   each naming the same stream; a separator says it at half the visual weight
-                   and keeps the cycle affordance on the whole pill. */
-                val sourceSong = playbackSource ?: song
-                val index = tiers.indexOf(playingTier).takeIf { it >= 0 } ?: tiers.indexOf(quality)
-                val next = if (tiers.size > 1) tiers.getOrNull(index + 1) ?: tiers.first() else null
-                val stream = streamFormat.ifBlank { tierLabel(playingTier) }
-                Box((if (next != null) Modifier.focusRequester(qualityFocus).auraFocus(RoundedCornerShape(50), 1.04f)
-                        .onFocusChanged { if (it.isFocused) { chromeFocus = false; focusedControl = "音质 ${tierLabel(playingTier)} · 确定键切换" } }
-                        .focusProperties { down = progressFocus; up = when { albumLink -> albumFocus; artistLink -> artistFocus; else -> topFocus } }
-                        .clickable { onSelectQuality(next) }
-                    else Modifier)
-                    .clip(RoundedCornerShape(50)).background(c.panel)
-                    .border(1.dp, if (next != null) c.accent.copy(alpha = .28f) else c.line.copy(alpha = .7f), RoundedCornerShape(50))
-                    .semantics {
-                        contentDescription = when {
-                            next != null -> "${sourceSong.sourceLabel}，音质 ${tierLabel(playingTier)}，$stream，确定键切换为${tierLabel(next)}"
-                            tiers.isEmpty() -> "${sourceSong.sourceLabel}，音质 ${tierLabel(playingTier)}，正在确认可用档位"
-                            else -> "${sourceSong.sourceLabel}，音质 ${tierLabel(playingTier)}，该音源只提供这一档"
+        }
+    }
+}
+
+@Composable
+private fun Immersion(
+    song: Song?, lyrics: List<LyricLine>, lyricStatus: String, clock: State<Long>, lyricClock: State<Long>, duration: Long,
+    active: Int, sizes: LyricSizes, subLyrics: Boolean, playing: Boolean,
+    level: Int, barVisible: Boolean, motion: Boolean, focus: FocusRequester, onPlay: () -> Unit,
+    onInteraction: () -> Unit, seekHint: String,
+) {
+    val c = LocalPrismColors.current
+    val barAlpha by animateFloatAsState(if (barVisible) 1f else 0f, tween(if (motion) 240 else 0), label = "immersion bar")
+    val noLyrics = lyrics.isEmpty()
+    val identityAlpha by animateFloatAsState(if (level > 1) .38f else 1f, tween(if (motion) 900 else 0), label = "immersion identity")
+    val enter = remember { Animatable(if (motion) 0f else 1f) }
+    LaunchedEffect(Unit) { if (motion) enter.animateTo(1f, tween(820, easing = LinearEasing)) }
+    fun beat(from: Float, to: Float) =
+        ((enter.value - from) / (to - from)).coerceIn(0f, 1f).let { it * it * (3f - 2f * it) }
+
+    /* The light *is* the cover: three clamped radials plus a vignette, on from the first frame
+       whether or not the lyrics have landed. Nothing about the room waits for the text. */
+    val wash = rememberAmbience(song)
+    val light = remember(wash) {
+        val base = wash.map { dimTo(Color(it)) }.ifEmpty {
+            listOf(dimTo(c.accent), dimTo(lerp(c.accent, Color.Black, .5f)), dimTo(lerp(c.accent, Color.White, .3f)))
+        }
+        List(3) { base[it % base.size] }
+    }
+    val lamp = remember { Animatable(0f) }
+    LaunchedEffect(noLyrics, motion) {
+        if (noLyrics) {
+            delay(if (motion) 500 else 0)
+            lamp.animateTo(1f, tween(if (motion) 700 else 0))
+        } else lamp.animateTo(0f, tween(if (motion) 260 else 0))
+    }
+    val note = when {
+        lyricStatus.contains("加载中") || lyricStatus.contains("正在") -> "正在找这首歌的歌词"
+        lyricStatus.contains("本地") -> "本地文件没有歌词"
+        else -> "纯音乐 · 暂无歌词"
+    }
+
+    Box(
+        Modifier.fillMaxSize().background(c.background)
+            .focusRequester(focus).focusable()
+            .pointerInput(Unit) { detectTapGestures { onInteraction() } },
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            fun glow(color: Color, alpha: Float, cx: Float, cy: Float, r: Float) {
+                drawRect(
+                    Brush.radialGradient(
+                        listOf(color.copy(alpha = alpha), color.copy(alpha = alpha * .5f), Color.Transparent),
+                        center = Offset(size.width * cx, size.height * cy), radius = size.width * r,
+                    ),
+                )
+            }
+            drawRect(
+                Brush.radialGradient(
+                    listOf(light[0].copy(alpha = .45f), c.background.copy(alpha = .9f)),
+                    center = Offset(size.width * .5f, size.height * .5f), radius = size.width * .85f,
+                ),
+            )
+            glow(light[2], .55f, .48f, .06f, .62f)
+            glow(light[0], .50f, .29f, .35f, .46f)
+            glow(light[1], .38f, .71f, .63f, .52f)
+
+            if (lamp.value > 0f) {
+                /* One continuous falloff from centre to edge: any stop that lands on a visible
+                   level reads as a ring around the lamp. */
+                val centre = Offset(size.width * .5f, size.height * .46f)
+                val r = size.minDimension * .34f
+                val warm = lerp(Color(0xFFF0D9A8), c.accent, .3f)
+                val tail = exp(-5.6f)
+                val stops = (0..26).map { i ->
+                    val t = i / 26f
+                    warm.copy(alpha = (((exp(-5.6f * t * t) - tail) / (1f - tail)) * .9f * lamp.value).coerceIn(0f, 1f))
+                }
+                drawCircle(Brush.radialGradient(stops, center = centre, radius = r), radius = r, center = centre)
+            }
+        }
+        /* Vignette on the lyric column only: it fixes the local case where a highlight lands
+           exactly under a line, which the global ceiling cannot reach. */
+        Canvas(Modifier.align(Alignment.Center).fillMaxWidth(.86f).fillMaxHeight(.66f)) {
+            val guard = 1f - .55f * lamp.value
+            drawRect(
+                Brush.radialGradient(
+                    (0..6).map { i ->
+                        val t = i / 6f
+                        Color.Black.copy(alpha = .44f * (1f - t) * (1f - t) * guard)
+                    },
+                    center = center, radius = size.minDimension * .62f,
+                ),
+            )
+        }
+
+        val meta = song?.artist.orEmpty().takeIf { it.isNotBlank() && it != "未知歌手" }.orEmpty()
+        Row(
+            Modifier.align(Alignment.TopStart).padding(start = 32.dp, top = 24.dp)
+                .fillMaxWidth(.72f).graphicsLayer { alpha = identityAlpha * beat(.55f, 1f) },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                song?.title.orEmpty(), color = c.foreground.copy(alpha = .84f), fontSize = 14.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
+            )
+            if (meta.isNotBlank()) {
+                Spacer(Modifier.width(12.dp))
+                Box(Modifier.size(3.dp).clip(CircleShape).background(c.foreground.copy(alpha = .28f)))
+                Spacer(Modifier.width(12.dp))
+                Text(meta, color = c.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+
+        if (noLyrics) {
+            Text(
+                note, color = c.muted.copy(alpha = .62f), fontSize = 14.sp, letterSpacing = 1.4.sp,
+                modifier = Modifier.align(Alignment.Center).offset(y = 108.dp)
+                    .graphicsLayer { alpha = lamp.value },
+            )
+        } else {
+            RollingLyrics(
+                lyrics, active, lyricStatus, lyricClock,
+                sizes.text, sizes.line, sizes.support, subLyrics,
+                Modifier.align(Alignment.Center).fillMaxWidth(.72f).fillMaxHeight(.62f)
+                    .graphicsLayer {
+                        val e = beat(.16f, 1f)
+                        alpha = e
+                        translationY = 24.dp.toPx() * (1f - e)
+                    },
+                centered = true, fade = .36f,
+            )
+        }
+
+        Column(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(start = 32.dp, end = 32.dp, bottom = 26.dp)
+                .graphicsLayer { alpha = if (level > 1) 0f else beat(.34f, 1f) },
+        ) {
+            AuraProgress(
+                progress = { if (duration > 0) (clock.value.toFloat() / duration).coerceIn(0f, 1f) else 0f },
+                height = 2.dp,
+            )
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp).alpha(if (level > 0) 0f else 1f)) {
+                ClockText(clock, duration, forward = true)
+                Spacer(Modifier.weight(1f))
+                ClockText(clock, duration, forward = false)
+            }
+        }
+
+        Box(
+            Modifier.align(Alignment.BottomCenter).padding(bottom = 52.dp).size(44.dp)
+                .graphicsLayer { alpha = barAlpha * beat(.42f, 1f) }
+                .clip(CircleShape).background(c.accent)
+                .clearAndSetSemantics {
+                    if (barVisible) {
+                        contentDescription = if (playing) "暂停" else "播放"
+                        onClick { onPlay(); true }
+                    }
+                }
+                .pointerInput(barVisible) {
+                    detectTapGestures { if (barVisible) onPlay() else onInteraction() }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Glyph(if (playing) "pause" else "play", Modifier.size(22.dp), c.onAccent)
+        }
+
+        val hintAlpha by animateFloatAsState(if (seekHint.isNotEmpty()) 1f else 0f, tween(160), label = "seek hint")
+        if (hintAlpha > 0f) {
+            Text(
+                seekHint, color = c.accent, fontSize = 13.sp, letterSpacing = 1.6.sp,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 104.dp)
+                    .graphicsLayer { alpha = hintAlpha * beat(.30f, 1f) },
+            )
+        }
+    }
+}
+
+/* 一行只做一件事，控件形状说出是哪件：Step = 左右键改值（‹ v ›），Open = OK 进下一层（›），
+   Toggle = 开关（胶囊）。以前 极光电台 是光秃秃一个「关」字、歌词是圆圈里的 ⌄、布尔值又画成
+   ‹ 开 ›，同一件事三种画法——这里按种类定形，不再按页面定形。 */
+private enum class RowKind { Step, Open, Toggle }
+
+private data class MenuEntry(
+    val label: String, val value: String, val dim: Boolean, val kind: RowKind,
+    val on: Boolean = false, val icon: String = "",
+)
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun PlayerMenu(
+    artistName: String?, albumName: String?, sourceLabel: String, stream: String, playingTier: String,
+    platform: MusicPlatform?,
+    ladder: List<String>, tiers: List<String>,
+    playMode: PlaybackMode, radioActive: Boolean, radioLoading: Boolean,
+    canArtist: Boolean, canAlbum: Boolean,
+    fontLevel: String, subLyrics: Boolean, offsetMs: Long, canCalibrate: Boolean,
+    onClose: () -> Unit, onQuality: (String) -> Unit, onArtist: () -> Unit, onAlbum: () -> Unit,
+    onFontLevel: (String) -> Unit, onSubLyrics: (Boolean) -> Unit, onCalibration: (Long) -> Unit,
+    onMode: () -> Unit, onModeStep: (Int) -> Unit, onRadio: () -> Unit,
+) {
+    val c = LocalPrismColors.current
+    val motion = LocalAuraMotion.current
+    var level by remember { mutableIntStateOf(1) }
+    var row by remember { mutableIntStateOf(0) }
+    // Returning from lyric settings restores the parent row.
+    var parentRow by remember { mutableIntStateOf(0) }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; runCatching { focus.requestFocus() } }
+    val enter = remember { Animatable(if (motion) 0f else 1f) }
+    LaunchedEffect(Unit) { if (motion) enter.animateTo(1f, tween(300, easing = FastOutSlowInEasing)) }
+    var closing by remember { mutableStateOf(false) }
+    var afterClose by remember { mutableStateOf<(() -> Unit)?>(null) }
+    fun dismiss(action: (() -> Unit)? = null) {
+        if (!closing) { afterClose = action; closing = true }
+    }
+    LaunchedEffect(closing) {
+        if (closing) {
+            enter.animateTo(0f, tween(if (motion) 180 else 0))
+            onClose()
+            afterClose?.invoke()
+        }
+    }
+    val revealRow = remember { BringIntoViewRequester() }
+    LaunchedEffect(level, row) {
+        repeat(2) { withFrameNanos { } }
+        revealRow.bringIntoView()
+    }
+
+    // Exclude tiers already found unavailable for this song.
+    val rungs = ladder.ifEmpty { tiers }
+    val usable = rungs.filter { tiers.isEmpty() || it in tiers }
+    val current = playingTier.ifBlank { usable.lastOrNull().orEmpty() }
+
+    val level1 = listOf(
+        MenuEntry("音频质量", tierLabel(current), usable.size < 2, RowKind.Step, icon = "fader"),
+        MenuEntry("查看歌手", "", !canArtist, RowKind.Open, icon = "mic"),
+        MenuEntry("查看专辑", "", !canAlbum, RowKind.Open, icon = "album"),
+        MenuEntry("歌词", fontLevel, false, RowKind.Open, icon = "lyric"),
+        /* 播放模式是行内步进（左右键直接切模式），和音频质量一样，不是二级菜单。 */
+        MenuEntry("播放模式", playMode.label, false, RowKind.Step, icon = "shuffle"),
+        MenuEntry("极光电台", if (radioLoading) "准备中" else "", radioLoading, RowKind.Toggle, on = radioActive, icon = "radio"),
+    )
+    val level2 = listOf(
+        MenuEntry("字号", fontLevel, false, RowKind.Step, icon = "lyric"),
+        MenuEntry("翻译与注音", "", false, RowKind.Toggle, on = subLyrics, icon = "layers"),
+        MenuEntry("时间校准", calibrationText(offsetMs), !canCalibrate, RowKind.Step, icon = "history"),
+    )
+    val rows = if (level == 1) level1 else level2
+    val index = row.coerceIn(0, rows.lastIndex)
+
+    fun stepFont(dir: Int) {
+        val options = lyricFontLevels
+        val i = options.indexOf(fontLevel).coerceAtLeast(0)
+        onFontLevel(options[(i + dir).coerceIn(0, options.lastIndex)])
+    }
+
+    fun stepQuality(dir: Int) {
+        if (usable.isEmpty()) return
+        val at = usable.indexOfFirst { it == current }.takeIf { it >= 0 } ?: usable.lastIndex
+        val next = usable[(at + dir).coerceIn(0, usable.lastIndex)]
+        if (next != current) onQuality(next)
+    }
+
+    Dialog(onDismissRequest = { dismiss() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(Modifier.fillMaxSize()) {
+            Box(
+                Modifier.fillMaxSize()
+                    .graphicsLayer { alpha = .42f + .58f * enter.value }
+                    .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .42f), Color.Black.copy(alpha = .68f))))
+                    .pointerInput(Unit) { detectTapGestures { dismiss() } },
+            )
+            Column(
+                Modifier.align(Alignment.BottomEnd).padding(end = 32.dp, bottom = 56.dp).width(448.dp)
+                    .graphicsLayer {
+                        alpha = enter.value
+                        translationY = 22.dp.toPx() * (1f - enter.value)
+                    }
+                    .clip(RoundedCornerShape(12.dp)).background(c.panel.copy(alpha = .97f))
+                    .border(1.dp, c.foreground.copy(alpha = .12f), RoundedCornerShape(12.dp))
+                    .focusRequester(focus)
+                    .onPreviewKeyEvent { event ->
+                        if (closing) return@onPreviewKeyEvent true
+                        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                        val n = rows.size
+                        fun back() { if (level == 2) { level = 1; row = parentRow } else dismiss() }
+                        fun activate() {
+                            if (level == 2) {
+                                when (index) {
+                                    0 -> stepFont(1)
+                                    1 -> onSubLyrics(!subLyrics)
+                                    2 -> if (canCalibrate) onCalibration((offsetMs + 100).coerceIn(-LyricCalibration.LIMIT_MS, LyricCalibration.LIMIT_MS))
+                                }
+                            } else {
+                                when (index) {
+                                    0 -> stepQuality(1)
+                                    1 -> if (canArtist) dismiss(onArtist)
+                                    2 -> if (canAlbum) dismiss(onAlbum)
+                                    3 -> { parentRow = index; level = 2; row = 0 }
+                                    4 -> onMode()
+                                    5 -> if (!radioLoading) onRadio()
+                                }
+                            }
+                        }
+                        fun adjust(dir: Int) {
+                            if (level == 2) {
+                                when (index) {
+                                    0 -> stepFont(dir)
+                                    1 -> onSubLyrics(dir > 0)
+                                    2 -> if (canCalibrate) onCalibration((offsetMs + dir * 100L).coerceIn(-LyricCalibration.LIMIT_MS, LyricCalibration.LIMIT_MS))
+                                }
+                            } else {
+                                when (index) {
+                                    0 -> stepQuality(dir)
+                                    4 -> onModeStep(dir)
+                                    5 -> if (!radioLoading && (dir > 0) != radioActive) onRadio()
+                                    /* 别的行不认左右：一级页按左不该把整个面板收掉——那和
+                                       「退出」是两件事，却被同一个键做了。 */
+                                    else -> Unit
+                                }
+                            }
+                        }
+                        when (event.key) {
+                            Key.Back, Key.Escape -> { back(); true }
+                            Key.DirectionUp -> { row = (index - 1 + n) % n; true }
+                            Key.DirectionDown -> { row = (index + 1) % n; true }
+                            Key.DirectionLeft -> { adjust(-1); true }
+                            Key.DirectionRight -> {
+                                if (level == 1 && index == 3) { parentRow = index; level = 2; row = 0 } else adjust(1)
+                                true
+                            }
+                            Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> { activate(); true }
+                            else -> false
                         }
                     }
-                    .padding(horizontal = 12.dp, vertical = 7.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        PlatformIcon(sourceSong.platform, Modifier.size(16.dp))
-                        Spacer(Modifier.width(8.dp))
-                        /* The tier is a preference; the codec and bitrate are what the decoder
-                           actually got. Printing both let "高品" sit next to 128 kbps, which
-                           is the duplicate (and the lie) the design called out. */
-                        Text("${sourceSong.sourceLabel} · $stream" + if (next != null) "  ⇄" else "",
-                            color = c.accent, fontSize = 11.sp, maxLines = 1)
+                    .focusable().padding(6.dp).verticalScroll(rememberScrollState()),
+            ) {
+                Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                    if (level == 1) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                artistName ?: "未知歌手", color = c.foreground, fontSize = 16.sp, maxLines = 1,
+                                modifier = Modifier.weight(1f, fill = false)
+                                    .then(if (motion) Modifier.basicMarquee(delayMillis = 1600) else Modifier),
+                            )
+                            Text("  ·  ", color = c.muted.copy(alpha = .5f), fontSize = 16.sp)
+                            Text(
+                                if (albumName != null) "《$albumName》" else "无专辑", color = c.muted, fontSize = 16.sp, maxLines = 1,
+                                modifier = Modifier.weight(1f, fill = false)
+                                    .then(if (motion) Modifier.basicMarquee(delayMillis = 1600) else Modifier),
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (platform != null) {
+                                PlatformIcon(platform, Modifier.size(14.dp))
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            Text("$sourceLabel · $stream", color = c.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.foreground.copy(alpha = .09f)))
+                        Spacer(Modifier.height(4.dp))
+                    } else {
+                        Text("‹　歌词", color = c.muted, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.foreground.copy(alpha = .09f)))
+                        Spacer(Modifier.height(4.dp))
                     }
-                }
-            }
-            Spacer(Modifier.height(18.dp))
-            val active = lyrics.indexOfLast { it.timeMs <= lyricPosition }
-                Column(Modifier.weight(1f, fill = false).clipToBounds()) {
-                    val line = active
-                    /* At the large tier, drop the previous line so the current lyric
-                       gets the whole column. */
-                    if (lyricFontLevel != "大") {
-                        Text(lyrics.getOrNull(line - 1)?.text ?: " ", color = c.muted, fontSize = fontSizes.prevSp.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Spacer(Modifier.height(12.dp))
-                    }
-                    val current = lyrics.getOrNull(line)
-                    AnimatedContent(current, contentKey = { it?.timeMs }, label = "lyric line",
-                        transitionSpec = {
-                            (fadeIn(tween(if (motion) 300 else 0)) + slideInVertically(tween(if (motion) 300 else 0)) { it / 5 }) togetherWith
-                                fadeOut(tween(if (motion) 140 else 0))
-                        }) { displayed ->
-                        Column {
-                            if (displayed != null) LyricText(displayed, lyricPosition,
-                                fontSize = fontSizes.currentSp.sp, lineHeight = fontSizes.currentLineSp.sp)
-                            else Text(if (lyrics.isNotEmpty()) "静候前奏，慢慢入境" else lyricStatus, color = c.muted, fontSize = 16.sp,
-                                maxLines = 5, overflow = TextOverflow.Ellipsis)
-                            displayed?.supportingLines?.takeIf { subLyrics && it.isNotEmpty() }?.let { supporting ->
-                                Text(supporting.joinToString("\n"), color = c.muted, fontSize = fontSizes.supportSp.sp, maxLines = 3,
-                                    overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
+                    rows.forEachIndexed { i, entry ->
+                        val on = i == index
+                        /* ‹ › stays quiet until the row has focus: the brackets are the
+                           affordability, not decoration on every line. */
+                        val mark = when {
+                            entry.dim -> .2f
+                            on -> .85f
+                            else -> .28f
+                        }
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 60.dp).padding(horizontal = 8.dp)
+                                .graphicsLayer {
+                                    val gap = .09f * i
+                                    val a = ((enter.value - gap) / (1f - gap)).coerceIn(0f, 1f)
+                                    alpha = a
+                                    translationY = 12.dp.toPx() * (1f - a)
+                                }
+                                .then(if (on) Modifier.bringIntoViewRequester(revealRow) else Modifier)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (on) c.accent.copy(alpha = .11f) else Color.Transparent)
+                                .then(if (on) Modifier.border(2.dp, c.accent.copy(alpha = .5f), RoundedCornerShape(8.dp)) else Modifier)
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (entry.icon.isNotEmpty()) {
+                                Box(
+                                    Modifier.size(34.dp).clip(RoundedCornerShape(9.dp))
+                                        .background(if (on) c.accent.copy(alpha = .14f) else c.foreground.copy(alpha = .05f)),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Glyph(entry.icon, Modifier.size(19.dp),
+                                        if (entry.dim) c.muted.copy(alpha = .35f) else if (on) c.accent else c.muted)
+                                }
+                                Spacer(Modifier.width(14.dp))
+                            }
+                            Text(
+                                entry.label, color = when {
+                                    entry.dim -> c.muted.copy(alpha = .4f)
+                                    on -> c.accent
+                                    else -> c.foreground
+                                },
+                                fontSize = 18.sp, maxLines = 1,
+                            )
+                            Spacer(Modifier.weight(1f))
+                            val settle = when {
+                                entry.dim -> c.muted.copy(alpha = .4f)
+                                on -> c.accent
+                                else -> c.foreground.copy(alpha = .6f)
+                            }
+                            if (entry.kind == RowKind.Toggle) {
+                                if (entry.value.isNotEmpty()) {
+                                    Text(entry.value, color = settle, fontSize = 15.sp, maxLines = 1)
+                                    Spacer(Modifier.width(12.dp))
+                                }
+                                PrismCapsule(entry.on)
+                            } else {
+                                if (entry.kind == RowKind.Step) {
+                                    Text("‹", color = c.accent.copy(alpha = mark), fontSize = 18.sp)
+                                    Spacer(Modifier.width(9.dp))
+                                }
+                                if (entry.value.isNotEmpty()) {
+                                    Text(entry.value, color = settle, fontSize = 17.sp, maxLines = 1)
+                                }
+                                if (entry.kind == RowKind.Step) Spacer(Modifier.width(9.dp))
+                                else Spacer(Modifier.width(10.dp))
+                                Text("›", color = c.accent.copy(alpha = mark), fontSize = 18.sp)
                             }
                         }
                     }
-                    Spacer(Modifier.height(12.dp))
-                    Text(lyrics.getOrNull(line + 1)?.text ?: " ", color = c.muted, fontSize = fontSizes.prevSp.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-        }
-        var progressFocused by remember { mutableStateOf(false) }
-        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-            .onSizeChanged { controlsHeight = with(density) { it.height.toDp() } }
-            .padding(start = 42.dp, end = 42.dp, top = 18.dp, bottom = 34.dp)) {
-            Box(Modifier.fillMaxWidth().height(32.dp).focusRequester(progressFocus)
-                .onFocusChanged { progressFocused = it.isFocused; if (it.isFocused) { chromeFocus = false; focusedControl = "← → 快退 / 快进 10 秒" } }
-                .pointerInput(duration) { detectTapGestures { if (duration > 0 && size.width > 0) currentSeek((duration * (it.x / size.width).coerceIn(0f, 1f)).toLong()) } }
-                .focusProperties {
-                    down = if (lyricPanelOpen) stripFirstFocus else playFocus
-                    /* Up leaves the rail for the quality pill, then the artist/album line, then
-                       the header. Without this the top-right queue button had no route from
-                       anywhere on the player. */
-                    up = when { canCycle -> qualityFocus; albumLink -> albumFocus; artistLink -> artistFocus; else -> topFocus }
-                }.semantics {
-                    contentDescription = "播放进度"
-                    progressBarRangeInfo = ProgressBarRangeInfo(progress, 0f..1f)
-                    setProgress { v -> if (duration > 0) { currentSeek((duration * v.coerceIn(0f, 1f)).toLong()); true } else false }
-                }.focusable()) {
-                WaveGroove(progress, playing && !standby, Modifier.fillMaxWidth(), height = 32.dp, seed = song?.key?.hashCode() ?: 0, showPlayhead = progressFocused,
-                    beat = if (lyrics.isNotEmpty()) lyrics.indexOfLast { it.timeMs <= lyricPosition } else -1)
-                if (progressFocused) Box(Modifier.fillMaxWidth().height(1.dp).align(Alignment.BottomCenter).background(c.accent.copy(alpha = .6f)))
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(time(position), color = c.muted, fontSize = 11.sp)
-                /* Opening an artist or album can mean a network search before the detail
-                   page exists. That wait used to be silent because the line only surfaced
-                   parse failures; the press looked ignored for a second or two. */
-                Text(if (status.startsWith("正在解析") || status.startsWith("正在尝试") || status.startsWith("正在打开") || status.startsWith("正在加载") || status.contains("失败")) status else if (radioFocused) radioHint else focusedControl,
-                    color = c.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 16.dp).weight(1f, fill = false), textAlign = TextAlign.Center)
-                Text(time(duration), color = c.muted, fontSize = 11.sp)
-            }
-            /* Fixed-height slot: the control row (72dp) and the strip (58dp) are different
-               heights, and swapping them directly would bounce the progress bar. The
-               crossfade is alpha-only with a snap size transform. */
-            Box(Modifier.fillMaxWidth().height(72.dp), contentAlignment = Alignment.Center) {
-                AnimatedContent(lyricPanelOpen, modifier = Modifier.fillMaxWidth(),
-                    transitionSpec = {
-                        (fadeIn(tween(if (motion) 180 else 0)) togetherWith fadeOut(tween(if (motion) 120 else 0)))
-                            .using(SizeTransform(sizeAnimationSpec = { _, _ -> snap() }))
-                    }, label = "control strip") { open ->
-                    if (open) {
-                        LyricStrip(
-                            fontLevel = lyricFontLevel,
-                            onFontLevel = onLyricFontLevel,
-                            subLyrics = subLyrics,
-                            onSubLyrics = onSubLyrics,
-                            offsetMs = lyricOffsetMs,
-                            onCalibration = onLyricCalibration,
-                            canCalibrate = lyrics.isNotEmpty(),
-                            onClose = closeLyricPanel,
-                            firstFocus = stripFirstFocus,
-                            railFocus = progressFocus,
-                            onFocusHint = { chromeFocus = true; focusedControl = it },
-                        )
-                    } else Row(Modifier.fillMaxWidth().padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (chromeFocus) "← →  选择" else "", color = c.muted, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                        Row(horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.CenterVertically) {
-                            /* Every control points its Up edge at the rail: the geometric search finds
-                               nothing above the transport row and would otherwise leave the player. */
-                            val upToRail = Modifier.focusProperties { up = progressFocus }
-                            val modeHint = if (radioActive) "切换播放模式将退出电台" else "播放模式：${playMode.label} · 确定键切换"
-                            PlayerIcon(if (radioActive) "list" else when (playMode) { PlaybackMode.SHUFFLE -> "shuffle"; PlaybackMode.REPEAT_ONE -> "repeatOne"; PlaybackMode.REPEAT_ALL -> "repeat"; else -> "list" }, "播放模式", onShuffle, upToRail,
-                                onFocused = { chromeFocus = true; focusedControl = modeHint })
-                            PlayerIcon("prev", "上一首", onPrevious, upToRail, onFocused = { chromeFocus = true; focusedControl = "上一首" })
-                            PlayButton(playing, onPlay, Modifier.focusRequester(playFocus).focusProperties { up = progressFocus },
-                                onFocused = { chromeFocus = true; focusedControl = if (playing) "暂停" else "播放" })
-                            PlayerIcon("next", "下一首", onNext, upToRail, onFocused = { chromeFocus = true; focusedControl = "下一首" })
-                            PlayerIcon(if (favorite) "heartFilled" else "heart", if (favorite) "取消收藏" else "收藏", onFavorite, upToRail,
-                                onFocused = { chromeFocus = true; focusedControl = if (favorite) "取消收藏" else "收藏" })
-                        }
-                        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
-                            PlayerIcon("list", "播放列表 $queueSize", onQueue,
-                                Modifier.focusProperties { up = progressFocus },
-                                onFocused = { chromeFocus = true; focusedControl = "播放列表 · $queueSize 首" })
-                            PlayerIcon("radio", if (radioActive) "关闭电台" else if (radioLoading) "取消准备电台" else "开启电台", onRadioToggle,
-                                Modifier.focusProperties { up = progressFocus }.onFocusChanged {
-                                    radioFocused = it.isFocused
-                                }, onLongPress = onRadioMenu, active = radioActive || radioLoading,
-                                onFocused = { chromeFocus = true })
-                        }
-                    }
                 }
             }
         }
-        if (standby) PrismStandby(song, lyrics, lyricStatus, position, duration, lyricPosition,
-            fontSizes, lyricFontLevel, subLyrics, focus = standbyFocus)
     }
 }
+
+private val EaseOutCubic = Easing { t -> 1f - (1f - t) * (1f - t) * (1f - t) }
+private val EaseInQuad = Easing { t -> t * t }
 
 @Composable
 internal fun PrismScreenOff(
@@ -627,7 +1512,7 @@ internal fun PrismScreenOff(
     val view = LocalView.current
     val focus = remember { FocusRequester() }
     val wake by rememberUpdatedState(onWake)
-    val hint = remember { Animatable(0f) }
+    val ember = remember { Animatable(0f) }
     val entryBrightness = remember { window?.attributes?.screenBrightness }
 
     DisposableEffect(view, keepAwake) {
@@ -646,118 +1531,99 @@ internal fun PrismScreenOff(
         withFrameNanos { }
         focus.requestFocus()
     }
-    /* Brightness drops to zero only after the hint fades, so the hint is visible
-       on any TV before true black. */
+    /* The lamp comes up with the curtain, not after it: waiting for black reads as two
+       separate events (screen dies, then something appears), which is what made the fade
+       feel staged instead of continuous. */
+    LaunchedEffect(motion) {
+        if (motion) ember.animateTo(1f, tween(620, easing = EaseOutCubic)) else ember.snapTo(1f)
+    }
     LaunchedEffect(settled, motion) {
         if (!settled) return@LaunchedEffect
-        if (motion) {
-            hint.animateTo(1f, tween(200))
-            delay(2000)
-            hint.animateTo(0f, tween(600))
-        } else {
-            hint.snapTo(1f)
-            delay(2000)
-            hint.snapTo(0f)
-        }
+        delay(2200)
+        if (motion) ember.animateTo(0f, tween(1500, easing = EaseInQuad)) else ember.snapTo(0f)
         if (window != null) window.attributes = window.attributes.apply { screenBrightness = 0f }
     }
-    /* Transparent on purpose: the curtain below paints the black; this layer only
-       takes focus and taps, and shows the hint. */
-    Box(Modifier.fillMaxSize()
+    val accent = LocalPrismColors.current.accent
+    BoxWithConstraints(Modifier.fillMaxSize()
         .focusRequester(focus).focusable()
         .pointerInput(Unit) { detectTapGestures { wake() } }) {
-        if (hint.value > 0f) {
-            Text("熄屏播放中 · 按确定或返回恢复",
-                modifier = Modifier.align(Alignment.Center).alpha(hint.value * .42f),
-                color = Color.White, fontSize = 15.sp)
+        /* 呼吸：灯亮着就应该有起伏。9 秒一轮、幅度只有几个百分点——看得见「活着」，
+           看不出在「闪」。相位只写在 draw 里读，所以不重组。 */
+        val breath = remember { mutableFloatStateOf(0f) }
+        LaunchedEffect(motion) {
+            if (!motion) return@LaunchedEffect
+            var start = 0L
+            var lit = false
+            while (true) {
+                withFrameNanos { now ->
+                    if (start == 0L) start = now
+                    breath.floatValue = ((now - start) / 1_000_000_000f) * (2f * PI.toFloat() / 9f)
+                }
+                if (ember.value > 0f) lit = true else if (lit) break
+            }
         }
+        /* 半径收在 0.24 屏高：铺到 0.32 时它不再是灯，而是一块背景板；提示语跟着灯心走，
+           不再甩到屏幕下方另起一行。 */
+        val glowR = maxHeight * .26f
+        Canvas(Modifier.fillMaxSize()) {
+            val a = ember.value
+            if (a <= 0f) return@Canvas
+            val pulse = if (motion) sin(breath.floatValue) else 0f
+            /* One gradient from core to edge. Two overlapping gradients — a bright disc
+               inside a wider halo — is what left the ring: the inner stop fell to a level
+               brighter than the halo under it. 往下压一点，它就是洒在屋里的一片暖光，
+               而不是悬在空中的一颗球。 */
+            val r = size.height * .26f * (1f + .035f * pulse)
+            val warm = Color(0xFFF0D9A8)
+            val tail = exp(-5.2f)
+            val stops = (0..30).map { i ->
+                val t = i / 30f
+                val g = (exp(-5.2f * t * t) - tail) / (1f - tail)
+                lerp(warm, accent, (t / .62f).coerceIn(0f, 1f))
+                    .copy(alpha = (g * .84f * a * (1f + .07f * pulse)).coerceIn(0f, 1f))
+            }
+            scale(1f, .84f, pivot = center) {
+                drawCircle(Brush.radialGradient(stops, center = center, radius = r), radius = r, center = center)
+            }
+        }
+        Text(
+            "播放继续 · 确定或返回亮屏",
+            color = accent.copy(alpha = .58f),
+            fontSize = 13.sp, letterSpacing = 1.4.sp,
+            modifier = Modifier.align(Alignment.Center).offset(y = glowR * .76f)
+                .graphicsLayer { alpha = ember.value * (.88f + .12f * sin(breath.floatValue)) },
+        )
     }
 }
 
 @Composable
-private fun PrismStandby(
-    song: Song?, lyrics: List<LyricLine>, lyricStatus: String, position: Long, duration: Long,
-    lyricPosition: Long, fontSizes: PlayerLyricSizes, fontLevel: String, subLyrics: Boolean,
-    focus: FocusRequester,
+private fun RollingLyrics(
+    lyrics: List<LyricLine>, active: Int, status: String, position: State<Long>,
+    textSp: Int, lineSp: Int, supportSp: Int, subLyrics: Boolean,
+    modifier: Modifier = Modifier, centered: Boolean = false, fade: Float = .12f,
 ) {
-    val c = LocalPrismColors.current
-    val motion = LocalAuraMotion.current
-    val progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
-    val active = lyrics.indexOfLast { it.timeMs <= lyricPosition }
-    var hintVisible by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) { delay(4200); hintVisible = false }
-    /* A very slow zoom keeps the still frame alive without turning the cover into a widget. */
-    val zoom = if (motion) rememberInfiniteTransition(label = "standby drift").animateFloat(
-        initialValue = 1.02f, targetValue = 1.09f,
-        animationSpec = infiniteRepeatable(tween(48_000, easing = LinearEasing), RepeatMode.Reverse),
-        label = "cover drift",
-    ) else null
-    BoxWithConstraints(Modifier.fillMaxSize().background(c.background).focusRequester(focus).focusable()) {
-        val w = maxWidth
-        if (song != null) {
-            CoverArt(song, Modifier.fillMaxSize().graphicsLayer {
-                val factor = zoom?.value ?: 1.04f
-                scaleX = factor; scaleY = factor
-            }.blur(36.dp, BlurredEdgeTreatment.Unbounded), 0.dp)
-            /* The artwork stays a photograph; the words stay the brightest thing on screen. */
-            Box(Modifier.fillMaxSize().background(artworkScrim(c)))
-            AuraAmbience(song, Modifier.fillMaxSize())
-        }
-        /* The title is a film credit: present, but never competing with the lyric. */
-        Column(Modifier.align(Alignment.TopStart).padding(start = 56.dp, top = 40.dp).width(w * .55f)) {
-            Text(song?.title ?: "音乐，即将响起", color = c.foreground.copy(alpha = .92f), fontSize = 22.sp,
-                fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(5.dp))
-            Text(song?.artist.orEmpty(), color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        StandbyLyrics(lyrics, active, lyricStatus, lyricPosition, fontSizes, fontLevel, subLyrics,
-            Modifier.align(Alignment.Center).width(w * .78f))
-        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(start = 56.dp, end = 56.dp, bottom = 38.dp)) {
-            Box(Modifier.fillMaxWidth().height(2.dp).background(c.line.copy(alpha = .45f))) {
-                Box(Modifier.fillMaxWidth(progress).fillMaxHeight().background(c.accent.copy(alpha = .9f)))
-            }
-            Row(Modifier.fillMaxWidth().padding(top = 10.dp)) {
-                Text(time(position), color = c.muted, fontSize = 12.sp)
-                Spacer(Modifier.weight(1f))
-                Text(time(duration), color = c.muted, fontSize = 12.sp)
-            }
-        }
-        androidx.compose.animation.AnimatedVisibility(
-            hintVisible, modifier = Modifier.align(Alignment.TopEnd).padding(top = 40.dp, end = 56.dp),
-            enter = fadeIn(tween(400)), exit = fadeOut(tween(600)),
-        ) {
-            Text("按任意键返回", color = c.muted.copy(alpha = .7f), fontSize = 12.sp)
-        }
-    }
-}
-
-/* NetEase-style lyric column: the sung line sits in the middle, neighbours dim with distance,
-   and the column rolls one line at a time. A vertical DstIn mask softens both edges so lines
-   enter and leave the screen instead of being clipped. */
-@Composable
-private fun StandbyLyrics(lyrics: List<LyricLine>, active: Int, status: String, position: Long,
-                          fontSizes: PlayerLyricSizes, fontLevel: String, subLyrics: Boolean,
-                          modifier: Modifier = Modifier) {
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
     if (lyrics.isEmpty()) {
         Box(modifier, contentAlignment = Alignment.Center) {
-            Text(status.ifBlank { "暂无歌词" }, color = c.muted, fontSize = 19.sp, textAlign = TextAlign.Center,
-                maxLines = 8, overflow = TextOverflow.Ellipsis)
+            Text(status.ifBlank { "暂无歌词" }, color = c.muted, fontSize = if (centered) 20.sp else 15.sp,
+                textAlign = TextAlign.Center, maxLines = 8, overflow = TextOverflow.Ellipsis)
         }
         return
     }
-    val state = rememberLazyListState()
-    Box(
-        modifier.height(340.dp).clipToBounds()
-            /* Offscreen: the DstIn mask must erase only this column's pixels, not the cover
-               and its gradients underneath. */
-            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+    val targetIndex = active.coerceAtLeast(0)
+    // New lyrics get their own scroll state instead of inheriting the previous song's index.
+    val state = remember(lyrics) { LazyListState(firstVisibleItemIndex = targetIndex) }
+    val cut = remember(lyrics) { Animatable(0f) }
+    var previousTarget by remember(lyrics) { mutableStateOf(targetIndex) }
+    BoxWithConstraints(
+        modifier.clipToBounds()
+            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen; alpha = cut.value }
             .drawWithContent {
                 drawContent()
                 drawRect(
                     Brush.verticalGradient(
-                        0f to Color.Transparent, .2f to Color.Black, .8f to Color.Black, 1f to Color.Transparent,
+                        0f to Color.Transparent, fade to Color.Black, 1f - fade to Color.Black, 1f to Color.Transparent,
                     ),
                     blendMode = BlendMode.DstIn,
                 )
@@ -766,220 +1632,120 @@ private fun StandbyLyrics(lyrics: List<LyricLine>, active: Int, status: String, 
         LazyColumn(
             state = state,
             modifier = Modifier.fillMaxSize(),
-            /* Equal top and bottom padding makes "scroll to item" land the line on the centre
-               line; it also gives the first and last lines somewhere to scroll to. */
-            contentPadding = PaddingValues(vertical = 146.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            contentPadding = PaddingValues(vertical = maxHeight / 2),
+            verticalArrangement = Arrangement.spacedBy(if (centered) 20.dp else 12.dp),
+            userScrollEnabled = false,
         ) {
             itemsIndexed(lyrics) { index, line ->
-                val current = index == active
-                val distance = if (active < 0) Int.MAX_VALUE else kotlin.math.abs(index - active)
-                /* At the large tier, lines two rows away are not rendered at all,
-                   leaving room for the current line. */
-                if (!current && fontLevel == "大" && distance >= 3) return@itemsIndexed
-                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                    if (current) LyricText(line, position, Modifier.fillMaxWidth(),
-                        fontSizes.fullCurrentSp.sp, fontSizes.fullLineSp.sp, TextAlign.Center)
-                    else Text(line.text,
-                        color = c.muted.copy(alpha = when {
-                            distance == 1 -> .55f; distance == 2 -> .34f; distance == 3 -> .2f; else -> .1f
-                        }), fontSize = (if (distance == 1) fontSizes.fullNearSp else fontSizes.fullFarSp).sp, lineHeight = 24.sp,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth())
-                    if (current && subLyrics) line.supportingLines.takeIf { it.isNotEmpty() }?.let { supporting ->
-                        Text(supporting.joinToString("\n"), color = c.muted.copy(alpha = .9f), fontSize = fontSizes.fullSupportSp.sp, maxLines = 3,
-                            overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(top = 10.dp))
-                    }
-                }
+                RollingLyricRow(line, index, active, position, textSp, lineSp, supportSp, subLyrics, centered)
             }
         }
-        /* A tier change re-wraps lines, so centring must be recomputed. */
-        LaunchedEffect(active, lyrics, fontSizes, subLyrics) {
-            if (active < 0 || active >= lyrics.size) return@LaunchedEffect
+        LaunchedEffect(targetIndex, lyrics, textSp, lineSp, subLyrics, maxHeight, motion) {
             while (state.layoutInfo.viewportSize.height == 0) withFrameNanos { }
-            /* Let the highlight resize its row before the distance is measured. */
             withFrameNanos { }
-            val target = state.layoutInfo.visibleItemsInfo.firstOrNull { it.index == active }
-            if (target != null) {
-                val info = state.layoutInfo
-                val center = (info.viewportStartOffset + info.viewportEndOffset) / 2f
-                val delta = target.offset + target.size / 2f - center
-                if (kotlin.math.abs(delta) > .5f) {
-                    state.animateScrollBy(delta, tween(if (motion) 520 else 0, easing = FastOutSlowInEasing))
-                }
-            } else {
-                state.scrollToItem(active)
+            val previous = previousTarget
+            val sequential = targetIndex == previous + 1
+            // Seek jumps fade briefly; consecutive lines scroll normally.
+            val jump = abs(targetIndex - previous) > 1
+            previousTarget = targetIndex
+            if (jump && motion) cut.animateTo(.06f, tween(90, easing = LinearEasing))
+            if (!sequential || !motion || state.layoutInfo.visibleItemsInfo.none { it.index == targetIndex }) {
+                state.scrollToItem(targetIndex)
                 withFrameNanos { }
-                val info = state.layoutInfo
-                val item = info.visibleItemsInfo.firstOrNull { it.index == active }
-                val center = (info.viewportStartOffset + info.viewportEndOffset) / 2f
-                if (item != null) state.scrollBy(item.offset + item.size / 2f - center)
+            }
+            val info = state.layoutInfo
+            val item = info.visibleItemsInfo.firstOrNull { it.index == targetIndex } ?: return@LaunchedEffect
+            val center = (info.viewportStartOffset + info.viewportEndOffset) / 2f
+            val delta = item.offset + item.size / 2f - center
+            if (sequential && motion) {
+                cut.snapTo(1f)
+                state.animateScrollBy(delta, tween(620, easing = FastOutSlowInEasing))
+            } else {
+                state.scrollBy(delta)
+                // This effect owns both fades, so a cancelled seek cannot leave lyrics dimmed.
+                cut.animateTo(1f, tween(if (motion) 240 else 0, easing = FastOutSlowInEasing))
             }
         }
     }
 }
 
 @Composable
-private fun FontChip(label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, textSp: Int = 14, height: Dp = 40.dp) {
-    val c = LocalPrismColors.current
-    val shape = RoundedCornerShape(10.dp)
-    Box(modifier.height(height).auraFocus(shape, 1.05f)
-        .clip(shape)
-        .background(if (selected) c.accent.copy(alpha = .2f) else c.background.copy(alpha = .5f))
-        .border(1.dp, if (selected) c.accent else c.line.copy(alpha = .6f), shape)
-        .clickable(onClick = onClick)
-        .semantics { contentDescription = "歌词字号 $label"; this.selected = selected },
-        contentAlignment = Alignment.Center) {
-        Text(label, color = if (selected) c.accent else c.foreground, fontSize = textSp.sp)
-    }
-}
-
-@Composable
-private fun LyricStrip(
-    fontLevel: String, onFontLevel: (String) -> Unit,
-    subLyrics: Boolean, onSubLyrics: (Boolean) -> Unit,
-    offsetMs: Long, onCalibration: (Long) -> Unit,
-    canCalibrate: Boolean, onClose: () -> Unit,
-    firstFocus: FocusRequester, railFocus: FocusRequester, onFocusHint: (String) -> Unit,
+private fun RollingLyricRow(
+    line: LyricLine, index: Int, active: Int, position: State<Long>,
+    textSp: Int, lineSp: Int, supportSp: Int, subLyrics: Boolean, centered: Boolean,
 ) {
     val c = LocalPrismColors.current
-    val upToRail = Modifier.focusProperties { up = railFocus }
-    Row(Modifier.fillMaxWidth().padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("字号", color = c.muted, fontSize = 12.sp)
-        listOf("小", "标准", "大").forEach { label ->
-            /* The chips preview with an exaggerated relative scale (11/14/18sp), not the
-               real lyric sizes — the real gaps are barely visible and would shout over
-               the lyric. */
-            FontChip(label, fontLevel == label, { onFontLevel(label) },
-                Modifier.width(when (label) { "标准" -> 60.dp; "大" -> 44.dp; else -> 40.dp })
-                    .then(if (label == fontLevel) Modifier.focusRequester(firstFocus) else Modifier)
-                    .then(upToRail)
-                    .onFocusChanged { if (it.isFocused) onFocusHint("歌词字号 $label · 左右移动，即时生效") },
-                textSp = when (label) { "小" -> 11; "大" -> 18; else -> 14 }, height = 36.dp)
-        }
-        Spacer(Modifier.width(8.dp))
-        Text("校准", color = c.muted, fontSize = 12.sp)
-        if (canCalibrate) {
-            /* Fixed-width value slot: toggling between 无校准 and a delay must not
-               move the focused button. */
-            Text(LyricCalibration.describe(offsetMs), color = c.foreground, fontSize = 12.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(72.dp))
-            listOf(-100L to "-0.1s", 100L to "+0.1s").forEach { (delta, label) ->
-                Text(label, color = c.foreground, fontSize = 12.sp, modifier = Modifier
-                    .auraFocus(RoundedCornerShape(8.dp), 1.05f).clip(RoundedCornerShape(8.dp))
-                    .background(c.background.copy(alpha = .5f))
-                    .border(1.dp, c.line.copy(alpha = .6f), RoundedCornerShape(8.dp))
-                    .clickable { onCalibration((offsetMs + delta).coerceIn(-LyricCalibration.LIMIT_MS, LyricCalibration.LIMIT_MS)) }
-                    .then(upToRail)
-                    .onFocusChanged { if (it.isFocused) onFocusHint("歌词校准 · $label") }
-                    .padding(horizontal = 10.dp, vertical = 8.dp))
-            }
-            PlayerIcon("undo", "重置校准", { onCalibration(0) }, upToRail,
-                onFocused = { onFocusHint("歌词校准 · 重置为零") })
-        } else {
-            Text("无时间轴，无法校准", color = c.muted, fontSize = 12.sp)
-        }
-        Spacer(Modifier.width(8.dp))
-        Row(Modifier.auraFocus(RoundedCornerShape(50), 1f, ring = c.foreground).clip(RoundedCornerShape(50))
-            .then(upToRail)
-            .onFocusChanged { if (it.isFocused) onFocusHint("翻译与注音 · ${if (subLyrics) "显示" else "隐藏"}") }
-            .toggleable(subLyrics, role = Role.Switch, onValueChange = onSubLyrics)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("译/注音", color = c.muted, fontSize = 12.sp)
-            PrismCapsule(subLyrics)
-        }
-        Spacer(Modifier.weight(1f))
-        PlayerIcon("close", "收起调整，返回播放控制", onClose, upToRail,
-            onFocused = { onFocusHint("收起调整，返回播放控制") })
-    }
-}
-
-/* Names, not buttons: the artist and album read as part of the caption until the remote
-   lands on them, then the name turns gold and underlines itself on the same baseline. */
-@Composable
-private fun PlayerSubjectLink(label: String, onClick: (() -> Unit)?, modifier: Modifier = Modifier, onFocused: () -> Unit = {}) {
-    val c = LocalPrismColors.current
-    var focused by remember { mutableStateOf(false) }
-    if (onClick == null) {
-        Text(label, color = c.muted, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        return
-    }
-    Text(
-        label,
-        color = if (focused) c.accent else c.muted,
-        fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-        modifier = modifier
-            .onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }
-            .clip(RoundedCornerShape(4.dp))
-            .clickable(onClick = onClick)
-            .drawWithContent {
-                drawContent()
-                if (focused) drawLine(c.accent, Offset(0f, size.height - 1.dp.toPx()), Offset(size.width, size.height - 1.dp.toPx()), 1.dp.toPx())
-            }
-            .padding(horizontal = 3.dp, vertical = 2.dp),
+    val motion = LocalAuraMotion.current
+    // Show the first line during the intro without advancing its word highlighting.
+    val stage = active.coerceAtLeast(0)
+    val current = index == stage
+    val waiting = active < 0 && index == stage
+    val handoff by animateFloatAsState(
+        if (waiting && !line.words.isNullOrEmpty()) 1f else 0f,
+        tween(if (motion) 420 else 0), label = "first line handoff",
     )
-}
-
-private fun tierLabel(tier: String): String = when (tier) {
-    "low" -> "流畅"; "standard" -> "标准"; "high" -> "高品"; "super" -> "无损优先"
-    "flac" -> "无损"; "flac24bit" -> "24-bit 无损"; "hires" -> "Hi-Res"; "dolby" -> "杜比"; "atmos" -> "Atmos"; "atmos_plus" -> "Atmos+"; else -> tier
-}
-
-@Composable
-private fun PlayerIcon(icon: String, label: String, onClick: () -> Unit, modifier: Modifier = Modifier, onLongPress: (() -> Unit)? = null, active: Boolean = false, onFocused: () -> Unit = {}) {
-    val c = LocalPrismColors.current
-    var focused by remember { mutableStateOf(false) }
-    Box(modifier.size(44.dp).auraFocus(RoundedCornerShape(50), 1.08f).onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }
-        .background(if (focused || active) c.accent.copy(alpha = .12f) else Color.Transparent, CircleShape)
-        .border(1.dp, if (focused || active) c.accent else Color.Transparent, CircleShape)
-        .clip(CircleShape).semantics { contentDescription = label; selected = active }.tvClickable(onClick, onLongPress), contentAlignment = Alignment.Center) {
-        Glyph(icon, Modifier.size(if (icon == "radio") 20.dp else 18.dp), if (focused || active || icon == "heartFilled") c.accent else c.muted)
+    val size = textSp.sp
+    val leading = lineSp.sp
+    val distance = abs(index - stage)
+    val scale = animateFloatAsState(if (current) 1f else if (distance <= 1) .84f else .78f,
+        tween(if (motion) 620 else 0, easing = FastOutSlowInEasing), label = "lyric scale")
+    val opacity = animateFloatAsState(when {
+        current -> 1f
+        index < stage -> if (distance == 1) .28f else .16f
+        distance <= 1 -> if (c.background.luminance() > .5f) .56f else .36f
+        else -> if (c.background.luminance() > .5f) .38f else .22f
+    }, tween(if (motion) 620 else 0), label = "lyric opacity")
+    val align = if (centered) TextAlign.Center else TextAlign.Start
+    Column(Modifier.fillMaxWidth().graphicsLayer {
+        scaleX = scale.value; scaleY = scale.value; alpha = opacity.value
+        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(if (centered) .5f else 0f, .5f)
+    }, horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start) {
+        if (current) {
+            Box(Modifier.fillMaxWidth()) {
+                ActiveLyricText(line, position, size, leading, align)
+                if (handoff > 0f) {
+                    Text(line.text, color = c.foreground.copy(alpha = handoff), fontSize = size, lineHeight = leading,
+                        fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        textAlign = align, modifier = Modifier.fillMaxWidth())
+                }
+            }
+        }
+        else Text(line.text, color = c.foreground, fontSize = size, lineHeight = leading,
+            fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis,
+            textAlign = align, modifier = Modifier.fillMaxWidth())
+        if (subLyrics) line.supportingLines.takeIf { it.isNotEmpty() }?.let { supporting ->
+            Text(supporting.joinToString("\n"), color = c.foreground.copy(alpha = .66f),
+                fontSize = supportSp.sp, lineHeight = (supportSp + 5).sp, maxLines = 3,
+                overflow = TextOverflow.Ellipsis, textAlign = align,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+        }
     }
 }
 
-/** The primary object uses the active theme's accent. The glyph reads faster than the word
-    did, and an icon-only circle keeps the transport row from looking like a settings page. */
 @Composable
-private fun PlayButton(playing: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, onFocused: () -> Unit = {}) {
-    val c = LocalPrismColors.current
-    val shape = RoundedCornerShape(50)
-    Box(
-        modifier.size(58.dp).auraFocus(shape, 1.07f, ring = c.foreground)
-            .semantics { contentDescription = if (playing) "暂停" else "播放" }
-            .onFocusChanged { if (it.isFocused) onFocused() }
-            .clip(shape)
-            .background(Brush.linearGradient(listOf(lerp(c.accent, c.foreground, .22f), lerp(c.accent, c.background, .20f))))
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Glyph(if (playing) "pause" else "play", Modifier.size(24.dp), c.onAccent)
-    }
+private fun ActiveLyricText(line: LyricLine, position: State<Long>, textSize: TextUnit, lineHeight: TextUnit, align: TextAlign) {
+    LyricText(line, position.value, Modifier.fillMaxWidth(), textSize, lineHeight, align)
 }
 
-/** Pinned to the bottom of every page. Losing the song on navigation is not acceptable. */
+/* One target, one verdict: this capsule says what is playing and opens the player. Every
+   transport button that used to live here split focus into five stops for one job. */
 @Composable
 fun PrismMiniPlayer(
-    song: Song?, playing: Boolean, position: Long, duration: Long, lyric: String, favorite: Boolean,
-    onOpen: () -> Unit, onToggle: () -> Unit, onPrevious: () -> Unit, onNext: () -> Unit, onFavorite: () -> Unit, onQueue: () -> Unit,
+    song: Song?, playing: Boolean, position: Long, duration: Long, lyric: String, showLyric: Boolean,
+    onOpen: () -> Unit, onToggle: () -> Unit,
     openFocus: FocusRequester,
     upTarget: FocusAnchor? = null,
     upMemory: MutableState<FocusRequester?>? = null,
-    /* For a page whose body is a scrolling list: the remembered requester may belong to a row
-       that is no longer composed, so the page gets to scroll it back first. Returning false lets
-       the plain memory/entry routes run. */
     upRestore: (() -> Boolean)? = null,
-    onLongPress: (() -> Unit)? = null,
     playbackSource: Song? = null,
 ) {
     val c = LocalPrismColors.current
+    val motion = LocalAuraMotion.current
+    var focused by remember { mutableStateOf(false) }
+    val light by animateFloatAsState(if (focused) 1f else 0f, tween(if (motion) 180 else 0), label = "capsule light")
+    val shape = RoundedCornerShape(50)
     val progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
     val toPageEntry = Modifier.focusProperties { upTarget?.takeIf { it.attached }?.let { up = it.requester } }
-    /* Up prefers the body control the remote came from (e.g. a settings row) over the page
-       entry. The remembered requester may belong to a node that has left composition; a
-       failed request falls through to upTarget. */
     val upMemoryRoute = Modifier.onPreviewKeyEvent { event ->
         if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp) {
             if (upRestore?.invoke() == true) return@onPreviewKeyEvent true
@@ -988,191 +1754,149 @@ fun PrismMiniPlayer(
         }
         false
     }
-    Box(Modifier.fillMaxWidth().height(62.dp).clip(RoundedCornerShape(14.dp))
-        .background(c.panel).border(1.dp, c.line.copy(alpha = .65f), RoundedCornerShape(14.dp))
-        .then(upMemoryRoute)) {
-        Row(
-            Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            CoverArt(song, Modifier.size(36.dp), 7.dp)
-            if (song != null) { Spacer(Modifier.width(8.dp)); PlatformIcon((playbackSource ?: song).platform, Modifier.size(20.dp)) }
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f).focusRequester(openFocus).then(toPageEntry).auraFocus(scale = 1f).clip(RoundedCornerShape(12.dp))
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+        Box(
+            Modifier.width(if (showLyric) 520.dp else 300.dp).height(48.dp)
+                .graphicsLayer { translationY = -2.dp.toPx() * light }
+                .drawWithContent {
+                    drawContent()
+                    if (light <= 0f) return@drawWithContent
+                    val stroke = 1.dp.toPx()
+                    drawRoundRect(
+                        c.accent.copy(alpha = .5f * light),
+                        topLeft = Offset(stroke / 2f, stroke / 2f),
+                        size = Size(size.width - stroke, size.height - stroke),
+                        cornerRadius = CornerRadius(size.height / 2f), style = Stroke(stroke),
+                    )
+                    /* Focus is light, not a border: three fading rings outside the shape read
+                       as the capsule warming up rather than being outlined. */
+                    for (k in 1..3) {
+                        val pad = 2.dp.toPx() * k
+                        drawRoundRect(
+                            c.accent.copy(alpha = .07f * light / k),
+                            topLeft = Offset(-pad, -pad),
+                            size = Size(size.width + pad * 2, size.height + pad * 2),
+                            cornerRadius = CornerRadius(size.height / 2f + pad),
+                            style = Stroke(2.dp.toPx()),
+                        )
+                    }
+                }
+                .focusRequester(openFocus).then(toPageEntry)
+                .onFocusChanged { focused = it.isFocused }
+                /* No menu of its own: the Menu key must not fall through to 暂停. */
+                .onPreviewKeyEvent { it.key == Key.Menu && it.type == KeyEventType.KeyDown }
+                .then(upMemoryRoute)
+                .clip(shape).background(c.panel.copy(alpha = .97f))
                 .semantics { contentDescription = if (song == null) "搜索音乐" else "打开正在播放" }
-                .tvClickable(onOpen, onLongPress).padding(horizontal = 10.dp, vertical = 5.dp)) {
-                Text(song?.title ?: "此刻，适合听点什么？", color = c.foreground, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                /* The platform mark already names the source. Repeating its name and the
-                   stream format turned this into a metadata strip; one line of context is
-                   all the bar needs. */
-                Text(song?.artist ?: "选择一首歌，让房间慢下来", color = c.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            if (song != null) {
-                /* Every stop in this bar leads back to the page body on Up; without it the
-                   lyric and the transport buttons are a dead end. */
-                val exitUp = toPageEntry
-                if (lyric.isNotBlank()) {
-                    Text(lyric, modifier = Modifier.weight(1f).then(exitUp).tvClickable(onOpen, onLongPress).padding(horizontal = 12.dp), color = c.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                .tvClickable(onOpen, if (song == null) null else onToggle),
+        ) {
+            Row(
+                Modifier.fillMaxSize().padding(start = 6.dp, end = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CoverArt(song, Modifier.size(36.dp), 18.dp)
+                Spacer(Modifier.width(12.dp))
+                if (song == null) {
+                    Text("此刻，适合听点什么？", color = c.foreground, fontSize = 14.sp, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis)
+                } else if (showLyric && lyric.isNotBlank()) {
+                    Text(
+                        lyric, color = c.foreground.copy(alpha = .92f), fontSize = 14.sp, maxLines = 1,
+                        modifier = Modifier.weight(1f).focusedMarquee(focused),
+                    )
+                } else {
+                    Column(Modifier.weight(1f)) {
+                        Text(song.title, color = c.foreground, fontSize = 14.sp, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis)
+                        Text(
+                            song.artist.ifBlank { (playbackSource ?: song).sourceLabel },
+                            color = c.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-                Text(time(position) + " / " + time(duration), color = c.foreground.copy(alpha = .8f), fontSize = 13.sp)
-                Spacer(Modifier.width(10.dp))
-                PlayerIcon("prev", "上一首", onPrevious, exitUp)
-                Spacer(Modifier.width(4.dp))
-                PlayerIcon(if (playing) "pause" else "play", if (playing) "暂停" else "播放", onToggle, exitUp)
-                Spacer(Modifier.width(4.dp))
-                PlayerIcon("next", "下一首", onNext, exitUp)
-                Spacer(Modifier.width(4.dp))
-                PlayerIcon(if (favorite) "heartFilled" else "heart", if (favorite) "取消收藏" else "收藏", onFavorite, exitUp)
-                Spacer(Modifier.width(4.dp))
-                PlayerIcon("list", "播放列表", onQueue, exitUp)
-            } else PrismAction("搜索音乐", onOpen)
-        }
-        if (song != null) {
-        WaveGroove(
-            progress = progress,
-            playing = playing,
-            height = 6.dp,
-            seed = song?.key?.hashCode() ?: 0,
-            showPlayhead = false,
-            modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter),
-        )
+                if (song != null) {
+                    Spacer(Modifier.width(12.dp))
+                    NowPlayingBars(c.accent, Modifier.height(13.dp), barWidth = 2.5.dp, active = playing)
+                    Spacer(Modifier.width(10.dp))
+                    Glyph("chevR", Modifier.size(11.dp), c.accent.copy(alpha = .28f + .62f * light))
+                }
+            }
+            AuraProgress(progress = { progress }, height = 2.dp, modifier = Modifier.align(Alignment.BottomCenter))
         }
     }
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   The thread.
-
-   The old control was a glass slab with a bar spectrum inside it: a widget with
-   its own frame, its own corners, its own little world. This is the opposite —
-   one hairline of light lying on the black, and the played half of it is simply
-   brighter. There is no track, no box, no corner radius to argue about.
-
-   Two threads at different speeds and periods are drawn on top of each other.
-   Their interference is what makes the motion feel liquid instead of like a
-   marquee; a single travelling sine reads as a conveyor belt.
-
-   Both paths are built once, twice as wide as the view, with whole cycles across
-   the width — so scrolling by exactly one width loops without a seam. Per frame
-   the cost is two translates, four clipped strokes and one line: no rebuild, no
-   recomposition, no relayout. The phase is read inside the draw lambda, so
-   ticking it invalidates the draw phase only.
-   ───────────────────────────────────────────────────────────────────────────── */
-
-private fun threadPhases(seed: Int): Pair<Float, Float> {
-    val rnd = java.util.Random(seed.toLong() * 7919L + 13L)
-    return rnd.nextFloat() * 6.2832f to rnd.nextFloat() * 6.2832f
-}
-
-/* Sampling the same formula the path is built from lets the glow sit on the thread at the
-   progress edge instead of floating on the centre line. */
-private fun threadY(w: Float, h: Float, phases: Pair<Float, Float>, cycles: Int, amp: Float, x: Float): Float {
-    val t = (x / w) * 6.2832f * cycles
-    val v = sin(t + phases.first) * .74f + sin(2f * t + phases.second) * .26f
-    return h * .5f + h * .46f * amp * v
-}
-
-private fun buildThread(w: Float, h: Float, phases: Pair<Float, Float>, cycles: Int, amp: Float): Path {
-    val steps = 320
-    val p = Path()
-    for (i in 0..steps) {
-        val x = w * 2f * i / steps
-        val y = threadY(w, h, phases, cycles, amp, x)
-        if (i == 0) p.moveTo(x, y) else p.lineTo(x, y)
-    }
-    return p
-}
-
+/* 一条直轨，但让它有生命：未播段是可数的短刻度（还没录上去的音轨），已播段是实心金线，
+   线尾拖一小段彗尾，接缝一颗会呼吸的点，播放时还有一道很淡的光沿已播段扫过去。
+   这些都是叠加在「播到哪了」之上的细部，读数永远优先——所以轨道本体始终是平直的。 */
 @Composable
-fun WaveGroove(
-    progress: Float,
-    playing: Boolean,
-    modifier: Modifier = Modifier,
-    height: Dp = 34.dp,
-    seed: Int = 0,
-    showPlayhead: Boolean = true,
-    beat: Int = -1,
-) {
+private fun ProgressRail(progress: () -> Float, focused: Boolean, playing: Boolean, modifier: Modifier = Modifier) {
     val c = LocalPrismColors.current
-    val phase = remember { mutableFloatStateOf(0f) }
-    /* We can't hear the music from here without an audio Visualizer in the player process, so
-       the ribbon is driven by an envelope built from two incommensurate sines. They never line
-       up, which is what stops the motion from reading as a looping conveyor. */
-    val energy = remember { mutableFloatStateOf(.55f) }
     val motion = LocalAuraMotion.current
-    /* Every new lyric line lands as a swell: the one cue the player already knows about the
-       vocal, so the ribbon breathes with the song instead of with the clock. */
-    val pulse = remember { Animatable(0f) }
-    LaunchedEffect(beat, playing, motion) {
-        if (!playing || !motion || beat < 0) return@LaunchedEffect
-        pulse.snapTo(1f)
-        pulse.animateTo(0f, tween(900, easing = LinearEasing))
-    }
-    LaunchedEffect(playing, motion) {
-        if (!playing || !motion) return@LaunchedEffect
-        var last = 0L
-        var t = 0f
-        while (true) withFrameNanos { now ->
-            if (last != 0L) {
-                val dt = (now - last) / 1_000_000_000f
-                t += dt
-                phase.floatValue = (phase.floatValue + dt / 9f) % 1f
-                energy.floatValue = (.5f + .5f * sin(t * 2.3f) * sin(t * .9f + 1.1f)).coerceIn(0f, 1f)
-            }
-            last = now
-        }
-    }
-
-    Box(
-        modifier.height(height).clipToBounds().drawWithCache {
-            val w = size.width
-            val h = size.height
-            val phasesA = threadPhases(seed)
-            val a = buildThread(w, h, phasesA, 3, .60f)
-            val b = buildThread(w, h, threadPhases(seed + 41), 5, .34f)
-            val gold = Brush.horizontalGradient(
-                listOf(Color(0xFFF0D9A4), Color(0xFFC79E52), Color(0xFFE4C489)),
-            )
-            val brightA = Stroke(1.6.dp.toPx(), cap = StrokeCap.Round)
-            val brightB = Stroke(1.dp.toPx(), cap = StrokeCap.Round)
-            onDrawBehind {
-                val swell = (energy.floatValue + pulse.value * .5f).coerceIn(0f, 1f)
-                val sy = .5f + .55f * swell
-                val dxA = -phase.floatValue * w
-                val dxB = -phase.floatValue * w * 1.65f
-                val edge = w * progress
-                /* The threads breath around the centre line. Without this, a travelling sine
-                   reads as a static shape sliding sideways. */
-                scale(1f, sy, pivot = Offset(0f, h / 2f)) {
-                    translate(dxA, 0f) {
-                        /* The halo first, wide and almost invisible: it is what makes a 1px line
-                           look lit rather than drawn. */
-                        clipRect(0f, 0f, edge - dxA, h) {
-                            drawPath(a, c.accent.copy(alpha = .10f), style = Stroke(7.dp.toPx(), cap = StrokeCap.Round))
-                            drawPath(a, gold, style = brightA)
-                            drawPath(b, c.accent.copy(alpha = .30f), style = brightB)
-                        }
-                        clipRect(edge - dxA, 0f, w - dxA, h) {
-                            drawPath(a, c.accent.copy(alpha = .13f), style = brightA)
-                            drawPath(b, c.accent.copy(alpha = .06f), style = brightB)
-                        }
-                    }
-                    translate(dxB, 0f) {
-                        clipRect(0f, 0f, edge - dxB, h) { drawPath(b, c.accent.copy(alpha = .42f), style = brightB) }
-                        clipRect(edge - dxB, 0f, w - dxB, h) { drawPath(b, c.accent.copy(alpha = .05f), style = brightB) }
-                    }
-                }
-                /* The lit thread's clip ends at edge - dxA in path space; read its height there
-                   so the light rides the wave as it swells and travels. */
-                val waveY = threadY(w, h, phasesA, 3, .60f, (edge - dxA).coerceIn(0f, w * 2f))
-                val glowCenter = Offset(edge.coerceIn(0f, w), (h / 2f + (waveY - h / 2f) * sy).coerceIn(0f, h))
-                val glowRadius = (14.dp.toPx() * (.8f + .5f * swell))
-                drawCircle(Brush.radialGradient(listOf(c.accent.copy(alpha = .55f), c.accent.copy(alpha = .12f), Color.Transparent), center = glowCenter, radius = glowRadius), radius = glowRadius, center = glowCenter)
-                drawLine(c.foreground.copy(alpha = .9f), Offset((glowCenter.x - 3.dp.toPx()).coerceAtLeast(0f), glowCenter.y), Offset((glowCenter.x + 3.dp.toPx()).coerceAtMost(w), glowCenter.y), 1.5.dp.toPx(), StrokeCap.Round)
-                if (showPlayhead && progress > 0f) {
-                    drawLine(c.accent.copy(alpha = .55f), Offset(edge, 0f), Offset(edge, h), 1.dp.toPx())
-                }
-            }
-        },
+    val thick by animateDpAsState(if (focused) 3.dp else 2.dp, tween(if (motion) 180 else 0), label = "rail thickness")
+    val knob by animateDpAsState(if (focused) 13.dp else 7.dp, tween(if (motion) 180 else 0), label = "rail knob")
+    /* 播放时钟一秒一跳，直画会一格一格地窜；让它用 300ms 追过去，读数才对得上「连续」。 */
+    val shown by animateFloatAsState(
+        progress().coerceIn(0f, 1f), tween(if (motion) 300 else 0, easing = LinearEasing), label = "rail progress",
     )
+    val beat = rememberInfiniteTransition(label = "rail")
+    val cycle by if (motion && playing) beat.animateFloat(
+        0f, 1f, infiniteRepeatable(tween(5600, easing = LinearEasing)), label = "rail cycle",
+    ) else remember { mutableFloatStateOf(0f) }
+    Canvas(modifier.fillMaxHeight()) {
+        val y = size.height / 2f
+        val end = size.width * shown
+        val w = thick.toPx()
+        val breath = 1f + .16f * sin(cycle * 4f * PI.toFloat())
+        val tick = 2.dp.toPx() to 5.dp.toPx()
+
+        drawLine(
+            c.foreground.copy(alpha = if (focused) .24f else .16f),
+            Offset(end, y), Offset(size.width, y), w * .8f, StrokeCap.Round,
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(tick.first, tick.second)),
+        )
+        if (end > .5f) {
+            drawLine(
+                Brush.horizontalGradient(
+                    listOf(c.accent.copy(alpha = .85f), lerp(c.accent, Color.White, .32f)),
+                    startX = 0f, endX = end.coerceAtLeast(1f),
+                ),
+                Offset(0f, y), Offset(end, y), w, StrokeCap.Round,
+            )
+            // 彗尾：端头后面一小段更亮，眼睛先落在这里
+            val tail = 52.dp.toPx()
+            if (end > tail) {
+                drawLine(
+                    Brush.horizontalGradient(
+                        listOf(Color.Transparent, c.foreground.copy(alpha = .22f)),
+                        startX = end - tail, endX = end,
+                    ),
+                    Offset(end - tail, y), Offset(end, y), w, StrokeCap.Round,
+                )
+            }
+            // 扫光：只在播放时，且只在已经播过的那一段里走，不越过接缝
+            if (motion && playing && end > w * 8) {
+                val band = size.width * .07f
+                val x = end * (cycle * 1.3f - .15f)
+                clipRect(0f, y - w * 2.2f, end, y + w * 2.2f) {
+                    drawRect(
+                        Brush.horizontalGradient(
+                            listOf(Color.Transparent, Color.White.copy(alpha = .12f), Color.Transparent),
+                            startX = x - band, endX = x + band,
+                        ),
+                        topLeft = Offset(0f, y - w * 2.2f), size = Size(end, w * 4.4f),
+                    )
+                }
+            }
+        }
+        val glowR = knob.toPx() * (if (focused) 1.9f else 1.5f) * breath
+        drawCircle(
+            Brush.radialGradient(
+                listOf(c.accent.copy(alpha = .34f), c.accent.copy(alpha = .10f), Color.Transparent),
+                center = Offset(end, y), radius = glowR,
+            ),
+            radius = glowR, center = Offset(end, y),
+        )
+        drawCircle(c.foreground, radius = knob.toPx() / 2f, center = Offset(end, y))
+    }
 }

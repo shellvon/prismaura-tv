@@ -39,9 +39,24 @@ fun videoSource(result: Any?): VideoSource? {
 private val extendedQualityOrder = listOf("mgg", "64k", "128k", "192k", "320k", "flac", "flac24bit", "hires", "dolby", "atmos", "atmos_plus")
 private val standardQualityOrder = listOf("low", "standard", "high", "super")
 
+private fun declaredQualities(plugin: Plugin): List<String> {
+    val declared = plugin.metadata.optJSONArray("supportedQualities") ?: return emptyList()
+    return (0 until declared.length()).map { declared.optString(it).lowercase() }.filter { it.isNotBlank() }
+}
+
+/** The plugin's whole ladder, rung by rung, whether or not this song answers each one. The
+    menu needs the list it did not get to pick from: a tier that is missing entirely reads as
+    "this source has one quality", while a tier shown as unavailable reads as a fact. */
+fun qualityLadder(plugin: Plugin, song: Song): List<String> {
+    val supported = declaredQualities(plugin)
+    if (supported.isEmpty()) return qualityOptions(plugin, song)
+    val order = if (supported.any { it in extendedQualityOrder }) extendedQualityOrder else standardQualityOrder
+    val ranked = order.filter { it in supported }
+    return ranked + supported.filterNot { it in ranked }
+}
+
 fun qualityOptions(plugin: Plugin, song: Song): List<String> {
-    val declared = plugin.metadata.optJSONArray("supportedQualities")
-    val supported = (0 until (declared?.length() ?: 0)).map { declared!!.optString(it).lowercase() }.filter { it.isNotBlank() }
+    val supported = declaredQualities(plugin)
     val actual = song.data.optJSONObject("qualities")?.let { q -> q.keys().asSequence().map { it.lowercase() }.toList() }.orEmpty()
     val order = if (supported.any { it in extendedQualityOrder }) extendedQualityOrder else standardQualityOrder
     val available = if (actual.isNotEmpty()) order.filter { it in actual && (supported.isEmpty() || it in supported) } else order.filter { it in supported }

@@ -26,6 +26,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.rotate
@@ -81,6 +82,49 @@ fun NowPlayingBars(color: Color, modifier: Modifier = Modifier, height: Dp = 14.
             fractions.forEach { fraction ->
                 Box(Modifier.width(barWidth).height(height * fraction).clip(RoundedCornerShape(1.dp)).background(color))
             }
+        }
+    }
+}
+
+/* 进度条只有一套语法：已播是 accent→白 的横向渐变，未播是前景 α.15，接缝散开一圈光。
+   三处（播放页主轨、沉浸底条、迷你胶囊）以前各自发明了一遍，差别其实只有「谁能被聚焦」
+   和「有没有缓冲」；这两个差别用参数表达，形状本身不再分叉。
+   主轨额外叠的彗尾、呼吸点、扫光留在 ProgressRail 里——那是「可聚焦」这一档的加料。 */
+@Composable
+internal fun AuraProgress(
+    progress: () -> Float,
+    modifier: Modifier = Modifier,
+    height: Dp = 2.dp,
+    buffered: (() -> Float)? = null,
+    seam: Boolean = true,
+) {
+    val c = LocalPrismColors.current
+    Canvas(modifier.fillMaxWidth().height(height)) {
+        val y = size.height / 2f
+        val end = size.width * progress().coerceIn(0f, 1f)
+        drawRect(c.foreground.copy(alpha = .15f))  // 未播段要读得出「还剩多少」
+        buffered?.let {
+            val inHand = size.width * it().coerceIn(0f, 1f)
+            if (inHand > end) drawRect(c.foreground.copy(alpha = .26f), size = Size(inHand, size.height))
+        }
+        if (end <= 0f) return@Canvas
+        drawRect(
+            Brush.horizontalGradient(
+                listOf(c.accent.copy(alpha = .62f), lerp(c.accent, Color.White, .34f)),
+                startX = 0f, endX = end.coerceAtLeast(1f),
+            ),
+            size = Size(end, size.height),
+        )
+        /* 接缝散开一圈光：这条线是「亮着」的，不是一个色块压在底边。 */
+        if (seam) {
+            val bloom = 9.dp.toPx()
+            drawCircle(
+                Brush.radialGradient(
+                    listOf(c.accent.copy(alpha = .42f), c.accent.copy(alpha = .12f), Color.Transparent),
+                    center = Offset(end, y), radius = bloom,
+                ),
+                radius = bloom, center = Offset(end, y),
+            )
         }
     }
 }
@@ -185,7 +229,7 @@ fun prismColors(theme: String): PrismColors = when (theme) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (live) NowPlayingBars(if (primary) c.onAccent else c.accent, height = 13.dp, barWidth = 2.5.dp)
             if (icon != null) Glyph(icon, Modifier.size(18.dp), if (primary) c.onAccent else c.accent)
-            Text(label, color = if (primary) c.onAccent else c.foreground, fontSize = 14.sp, fontWeight = if (primary) FontWeight.Medium else FontWeight.Normal, maxLines = 1)
+            Text(label, color = if (primary) c.onAccent else c.foreground, fontSize = 16.sp, fontWeight = if (primary) FontWeight.Medium else FontWeight.Normal, maxLines = 1)
         }
     }
 }
@@ -211,9 +255,9 @@ fun prismColors(theme: String): PrismColors = when (theme) {
    with the primary button sitting next to it. */
 @Composable fun PrismLink(label: String, onClick: () -> Unit, modifier: Modifier = Modifier, active: Boolean = false) {
     val c = LocalPrismColors.current
-    Box(modifier.heightIn(min = 28.dp).auraFocus(RoundedCornerShape(6.dp), 1.01f).clip(RoundedCornerShape(6.dp))
+    Box(modifier.heightIn(min = 36.dp).auraFocus(RoundedCornerShape(6.dp), 1.01f).clip(RoundedCornerShape(6.dp))
         .clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 4.dp), contentAlignment = Alignment.Center) {
-        Text(label, color = if (active) c.accent else c.muted, fontSize = 12.sp, maxLines = 1)
+        Text(label, color = if (active) c.accent else c.muted, fontSize = 14.sp, maxLines = 1)
     }
 }
 
@@ -225,7 +269,7 @@ fun prismColors(theme: String): PrismColors = when (theme) {
         .semantics { this.selected = selected }
         .padding(horizontal = if (dense) 14.dp else 18.dp, vertical = if (dense) 6.dp else 9.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Column(Modifier.width(IntrinsicSize.Max), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(label, color = if (selected) c.foreground else idle, fontSize = if (dense) 14.sp else 15.sp, fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal, maxLines = 1)
+            Text(label, color = if (selected) c.foreground else idle, fontSize = if (dense) 15.sp else 16.sp, fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal, maxLines = 1)
             Spacer(Modifier.height(if (dense) 4.dp else 5.dp))
             Box(Modifier.fillMaxWidth().height(2.dp).background(if (selected) c.accent else Color.Transparent, CircleShape))
         }

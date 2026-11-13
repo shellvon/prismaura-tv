@@ -103,26 +103,22 @@ internal fun SettingsDivider() {
 }
 
 /* The whole row owns focus: left gold bar + row highlight. Read-only rows (device,
-   WebView) pass no callbacks and are never focusable. onLeft/onRight returning false
-   means the value hit its end, handing the key to the geometric search. */
+   WebView) pass no callback and are never focusable. 左右键不归行：设置页左键是回导航栏，
+   行内只认 OK——所以这里没有 onLeft/onRight，别再把左键借给「改个值」。 */
 @Composable
 internal fun SettingsRow(
     label: String, description: String? = null, labelDim: Boolean = false,
     modifier: Modifier = Modifier,
     onActivate: (() -> Unit)? = null,
-    onLeft: (() -> Boolean)? = null,
-    onRight: (() -> Boolean)? = null,
     control: @Composable RowScope.() -> Unit,
 ) {
     val c = LocalPrismColors.current
-    val actionable = onActivate != null || onLeft != null || onRight != null
+    val actionable = onActivate != null
     Row(modifier.fillMaxWidth().heightIn(min = if (actionable) 56.dp else 48.dp)
         .then(if (!actionable) Modifier else Modifier.rowFocus()
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) false
                 else when (event.key) {
-                    Key.DirectionLeft -> onLeft?.invoke() ?: false
-                    Key.DirectionRight -> onRight?.invoke() ?: false
                     Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
                         if (onActivate != null) { onActivate(); true } else false
                     }
@@ -140,24 +136,30 @@ internal fun SettingsRow(
     }
 }
 
-/* Shows the current value; OK cycles to the next option. Not a focus target — the row
-   owns left/right, and the clickable here serves mouse and touch only. */
+/* 设置页是两栏：左边那一栏是导航，所以「左键」属于左栏，行内不能再借它改值。
+   改值只剩 OK（原地循环），控件也就得长成「可按的东西」——一枚显示当前值的胶囊，
+   右边一个小循环标记，和布尔开关同族：按下去，这一格自己变。
+   （播放页的弹层没有左栏，左键空闲，那里仍然用 ‹ 值 › 让左右键直接改。）
+   值夹在胶囊里，宽度给下限，循环时左边缘不会跳。 */
 @Composable
 internal fun <T> SettingsSeg(
     options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit,
-    modifier: Modifier = Modifier, cycling: Boolean = false,
+    modifier: Modifier = Modifier,
 ) {
     val c = LocalPrismColors.current
     val index = options.indexOfFirst { it.first == selected }
-    Row(modifier.height(34.dp).clip(RoundedCornerShape(9.dp))
+    val shape = RoundedCornerShape(9.dp)
+    Row(modifier.height(34.dp).clip(shape)
+        .background(c.foreground.copy(alpha = .06f))
+        .border(1.dp, c.foreground.copy(alpha = .10f), shape)
         .focusProperties { canFocus = false }
-        .clickable { if (options.isNotEmpty()) onSelect(options[(index + 1).mod(options.size)].first) },
-        verticalAlignment = Alignment.CenterVertically) {
-        Text(options.getOrNull(index)?.second.orEmpty(), Modifier.widthIn(min = 76.dp).padding(horizontal = 6.dp), color = c.foreground,
-            fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, maxLines = 1)
-        /* Cycling shows a loop mark instead of ‹ ›: OK changes the value, not left/right. */
-        Text(if (cycling) "⟳" else "›", Modifier.width(20.dp), color = c.accent,
-            fontSize = 15.sp, lineHeight = 20.sp, textAlign = TextAlign.Center)
+        .clickable { if (options.isNotEmpty()) onSelect(options[(index + 1).mod(options.size)].first) }
+        .padding(start = 12.dp, end = 10.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(options.getOrNull(index)?.second.orEmpty(), Modifier.widthIn(min = 72.dp),
+            color = c.foreground, fontSize = 14.sp, lineHeight = 20.sp,
+            fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, maxLines = 1)
+        Glyph("refresh", Modifier.size(11.dp), c.accent.copy(alpha = .55f))
     }
 }
 
@@ -196,8 +198,8 @@ internal fun SettingsRailItem(label: String, icon: String, selected: Boolean, on
            double line; when focused, the ring alone marks the item. */
         if (selected && !focused) Box(Modifier.align(Alignment.CenterStart).padding(start = 1.dp).size(2.dp, 24.dp).background(c.accent))
         Row(Modifier.fillMaxSize().padding(start = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Glyph(icon, Modifier.size(16.dp), if (selected) c.accent else c.muted)
-            Text(label, color = if (selected) c.foreground else c.muted, fontSize = 15.sp,
+            Glyph(icon, Modifier.size(20.dp), if (selected) c.accent else c.muted)
+            Text(label, color = if (selected) c.foreground else c.muted, fontSize = 16.sp,
                 fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal)
         }
     }
@@ -221,8 +223,8 @@ internal fun SettingsButton(
         .clickable(onClick = onClick)
         .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        if (icon != null) Glyph(icon, Modifier.size(13.dp), if (primary) c.onAccent else c.muted)
-        Text(label, color = contentColor, fontSize = 13.sp,
+        if (icon != null) Glyph(icon, Modifier.size(18.dp), if (primary) c.onAccent else c.muted)
+        Text(label, color = contentColor, fontSize = 15.sp,
             fontWeight = if (primary) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
     }
 }

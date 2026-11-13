@@ -1,5 +1,9 @@
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@android:color/black" />
-    <item android:width="96dp" android:height="96dp" android:gravity="center"
-        android:drawable="@mipmap/ic_prismaura" />
+    <!-- 整屏位图，不是「标记 + dp 定位」：三角形的位置和粗细都按屏高的比例算，
+         与开屏动画首帧逐像素对齐，铺满即可，换分辨率也不会错位。
+         用位图不用矢量：部分老固件（含 Android 9 电视）在 layer-list 里画不出 vector，
+         启动首帧会退化成纯黑。矢量只留给 API 31+ 的系统闪屏。 -->
+    <item>
+        <bitmap android:src="@drawable/launch_frame" android:gravity="fill" />
+    </item>
 </layer-list>

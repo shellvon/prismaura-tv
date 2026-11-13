@@ -25,16 +25,16 @@
   }
   body[data-reduce-motion="true"] *{animation:none!important;transition:none!important;scroll-behavior:auto!important}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html{margin:0;min-height:100%;background:#050506}
+  html{margin:0;height:100%;overflow:hidden;background:#050506}
   html:has(body[data-theme="porcelain"]){background:#CFC9BC}
-  body{margin:0;min-height:100dvh;background:var(--backdrop);color:var(--fg);
+  body{margin:0;height:100vh;height:100dvh;overflow:hidden;background:var(--backdrop);color:var(--fg);
     font-family:-apple-system,"PingFang SC","Noto Sans CJK SC",system-ui,sans-serif;
     transition:background .25s,color .25s}
   button{font:inherit;cursor:pointer}
   [hidden]{display:none !important}
   svg{display:block}
   /* The remote is a phone-shaped column: on a wide screen it stays a centred device, not a stretched form. */
-  .shell{max-width:480px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;
+  .shell{max-width:480px;margin:0 auto;height:100vh;height:100dvh;display:flex;flex-direction:column;
     background:var(--bg);border-left:1px solid var(--line);border-right:1px solid var(--line)}
 
   .top{flex:none;display:flex;align-items:center;gap:10px;padding:calc(11px + env(safe-area-inset-top)) 16px 11px;
@@ -46,10 +46,10 @@
   .top .where{margin:2px 0 0;font-size:11px;color:var(--muted)}
   .top .link{margin-left:auto;flex:none}
 
-  .status{margin:0;padding:9px 16px;font-size:12px;line-height:1.5;background:var(--surface);
+  .status{flex:none;max-height:6em;overflow:auto;margin:0;padding:9px 16px;font-size:12px;line-height:1.5;background:var(--surface);
     border-bottom:1px solid var(--line);color:var(--fg);word-break:break-word}
 
-  .main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 16px 18px}
+  .main{flex:1;min-height:0;overflow-y:auto;overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch;padding:14px 16px 18px}
   .panel{display:flex;flex-direction:column;gap:12px}
   .card{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:16px;
     display:flex;flex-direction:column;gap:10px;transition:background .25s,border-color .25s}
@@ -117,6 +117,13 @@
 
   /* Search: one field with its own magnifier, then the two dropdowns that narrow it. */
   .search-row{display:flex;align-items:center;gap:8px}
+  #search-results{display:flex;flex-direction:column;gap:8px}
+  .search-result{display:flex;align-items:center;gap:10px;width:100%;min-height:64px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--fg);text-align:left}
+  .search-result.on{border-color:var(--accent);color:var(--accent)}
+  .search-result .result-copy{flex:1;min-width:0}
+  .search-result strong{display:block;font-size:15px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .search-result small{display:block;margin-top:5px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .search-result .result-duration{flex:none;font-size:12px;color:var(--muted)}
   .input-wrap{position:relative;flex:1;min-width:0;display:flex;align-items:center}
   .input-wrap > svg{position:absolute;left:12px;width:17px;height:17px;fill:none;stroke:var(--muted);
     stroke-width:1.8;stroke-linecap:round;pointer-events:none}
@@ -318,7 +325,7 @@
       <section class="card">
         <p class="eyebrow">
           <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5 21 21"/></svg>
-          在电视上搜索
+          搜索音乐
         </p>
         <form class="search-row" id="search-form">
           <span class="input-wrap">
@@ -337,7 +344,13 @@
           <button class="linkbtn" type="button" data-page="search">打开电视搜索页
             <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
         </div>
-        <p class="meta">搜索由电视执行，结果在电视上浏览与播放；手机负责输入与筛选，长关键词不必用遥控器一个字一个字点</p>
+        <p class="meta">歌曲结果可直接点击播放；歌手、专辑和歌单详情在电视上查看。</p>
+      </section>
+      <section class="card" id="search-results-card">
+        <div class="card-head"><p class="eyebrow">搜索结果</p><span class="count" id="search-result-count"></span></div>
+        <p class="meta" id="search-result-status" role="status" aria-live="polite">输入关键词开始搜索</p>
+        <div id="search-results"></div>
+        <button class="btn" type="button" id="search-more" hidden>加载更多</button>
       </section>
     </section>
 
@@ -427,7 +440,7 @@
       <section class="card">
         <p class="eyebrow">歌词与动效</p>
         <label class="setting">播放条歌词<input type="checkbox" data-preference="miniLyrics"></label>
-        <label class="setting">歌词字号<select data-preference="lyricFontLevel"><option value="小">小</option><option value="标准">标准</option><option value="大">大</option></select></label>
+        <label class="setting">歌词字号<select data-preference="lyricFontLevel"><option value="小">小</option><option value="标准">标准</option><option value="大">大</option><option value="特大">特大</option></select></label>
         <label class="setting">翻译与注音<input type="checkbox" data-preference="subLyrics"></label>
         <label class="setting">减少动态效果<input type="checkbox" data-preference="reduceMotion"></label>
       </section>
@@ -529,6 +542,7 @@
   var state = null, tab = "play", booted = false, tabChosen = false;
   var dragging = false, polling = false, openConfig = null, sourcesSignature = "";
   var filtersSignature = "", sheetOpen = false, sheetKind = "", sheetSourcesSignature = "";
+  var searchResultsSignature = "";
   var pendingPreferences = new Set(), shelvesSignature = "";
   var restoreSubmitting = false, restoreLocalError = "";
   var replacementReturnFocus = null, replacementScrollX = 0, replacementScrollY = 0;
@@ -709,7 +723,9 @@
       $("quality").title = "音质：" + $("quality-text").textContent;
       $("queue-text").textContent = String(s.queueSize);
       $("queue").title = "播放列表 · " + s.queueSize + " 首";
-      $("mode-text").textContent = s.radioActive ? "电台" : modeShort[s.mode] || "顺序";
+      $("mode-text").textContent = modeShort[s.mode] || "顺序";
+      $("mode").title = "播放模式：" + (modeShort[s.mode] || "顺序") + (s.radioActive ? " · 电台已开启，切换模式会退出电台" : "");
+      $("mode").setAttribute("aria-label", $("mode").title);
       $("lyrics").classList.toggle("on", !!s.miniLyrics);
       $("lyrics").title = s.miniLyrics ? "播放条歌词：开" : "播放条歌词：关";
       $("fav").classList.toggle("on", !!s.favorite);
@@ -721,10 +737,34 @@
     renderSources(s.sources);
     applySourcesFold();
     renderFilters(s);
+    renderSearchResults(s);
     syncSheet();
     online(true);
     land(s);
   }
+  function renderSearchResults(s){
+    var music = s.searchType === "music";
+    var songs = music ? s.searchResults || [] : [];
+    var total = s.searchResultCount || 0;
+    $("search-result-count").textContent = total ? total + (music ? " 首" : " 条") : "";
+    var message = !s.searchTerm ? "输入关键词开始搜索" : !music ? "「" + s.searchTerm + "」的结果请在电视查看" :
+      s.searchBusy ? "正在搜索「" + s.searchTerm + "」…" : total ? "「" + s.searchTerm + "」· 点击歌曲播放" : "没有找到歌曲，可尝试其他关键词或音源";
+    if (total > songs.length && music) message += "（手机显示前 " + songs.length + " 首）";
+    if ($("search-result-status").textContent !== message) $("search-result-status").textContent = message;
+    var signature = JSON.stringify([s.searchGeneration, music, songs]);
+    if (signature !== searchResultsSignature){
+      $("search-results").innerHTML = songs.map(function(song){
+        return '<button type="button" class="search-result' + (song.current ? ' on' : '') + '" data-result-key="' + esc(song.key) + '" data-result-generation="' + Number(s.searchGeneration || 0) + '">'
+          + '<span class="result-copy"><strong>' + esc(song.title) + '</strong><small>' + esc([song.artist,song.source].filter(Boolean).join(" · ")) + '</small></span>'
+          + '<span class="result-duration">' + esc(song.duration) + '</span></button>';
+      }).join("");
+      searchResultsSignature = signature;
+    }
+    $("search-more").hidden = !music || !s.searchHasMore || songs.length >= 200;
+    $("search-more").disabled = !!s.searchBusy;
+    $("search-more").textContent = s.searchBusy ? "正在加载…" : "加载更多";
+  }
+
   function landFromLink(){
     var entry = location.hash.slice(1);
     var form = entry === "import-source" ? "import-form" : entry === "import-sheet" ? "sheet-form" : null;
@@ -1065,6 +1105,12 @@
   }
 
   $("prev").addEventListener("click", function(){ send("prev"); });
+  $("search-results").addEventListener("click", function(event){
+    var button = event.target.closest("[data-result-key]");
+    if (!button) return;
+    send("playSearchResult", JSON.stringify({key:button.getAttribute("data-result-key"),generation:Number(button.getAttribute("data-result-generation"))}));
+  });
+  $("search-more").addEventListener("click", function(){ send("searchMore"); });
   $("next").addEventListener("click", function(){ send("next"); });
   $("play").addEventListener("click", function(){ send("playPause"); });
   $("fav").addEventListener("click", function(){ send("favorite", "", poll); });

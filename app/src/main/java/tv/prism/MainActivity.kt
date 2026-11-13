@@ -53,6 +53,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
@@ -65,6 +66,7 @@ import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
@@ -76,6 +78,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -271,12 +275,22 @@ class MainActivity : ComponentActivity() {
     /* A tier the plugin answered with no URL is one it does not serve; offering it in the
        player pill again would promise a stream that cannot play. Keyed by song. */
     private val unsupportedTiers = mutableStateMapOf<String, Set<String>>()
+    // Per-song session overrides leave the global quality preference unchanged.
+    private val songTier = mutableStateMapOf<String, String>()
+    private fun tierFor(song: Song?): String = song?.let { songTier[it.key] } ?: quality
     private val tierCache = mutableMapOf<String, List<String>>()
     private var availableTiers by mutableStateOf<List<String>>(emptyList())
     private var playing by mutableStateOf(false)
+    private var exitArmedAt = 0L
     private var playbackState by mutableIntStateOf(Player.STATE_IDLE)
     private var busy by mutableStateOf(false)
     private var resolving: Job? = null
+    /* A tier swap is not a track change; it gets its own job so it can never cancel, or be
+       cancelled by, the resolver that put the current song on screen. */
+    private var streamSwap: Job? = null
+    /* One re-mint per track per failure: a second 403 on a freshly minted address means the
+       source itself is refusing, and asking a third time would only spin. */
+    private var remintKey = ""
     /* The song the player actually holds. Re-picking it — from an album page, a shelf or the
        queue — has to keep the audio running instead of starting the track over. */
     private var loadedKey = ""
@@ -352,9 +366,40 @@ class MainActivity : ComponentActivity() {
                instead of taking the "already loaded" shortcut. */
             loadedKey = ""
             val original = queue.getOrNull(queueIndex)
+            val httpCode = generateSequence(error as Throwable) { it.cause }.take(6)
+                .mapNotNull { Regex("Response code: (\\d{3})").find(it.message.orEmpty())?.groupValues?.get(1) }.firstOrNull()
+            // Refresh an expired URL once before the usual failure recovery.
+            if (recovery == null && httpCode in setOf("403", "404", "410") && original != null && original.pluginId != "local" &&
+                remintKey != original.key) {
+                val owner = plugins.state.value.plugins.firstOrNull { it.id == (playbackSong() ?: original).pluginId }
+                if (owner != null) {
+                    remintKey = original.key
+                    val tier = playingQuality.ifBlank { quality }
+                    val at = maxOf(positionMs, controller?.currentPosition ?: 0L)
+                    val wasPlaying = controller?.playWhenReady == true
+                    streamSwap?.cancel()
+                    streamSwap = lifecycleScope.launch {
+                        val source = try { plugins.mediaSource(owner, playbackSong() ?: original, tier, refresh = true) }
+                            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                            catch (e: Exception) { null }
+                        val uri = Uri.parse(source?.optString("url").orEmpty())
+                        if (source == null || uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank()) {
+                            onPlayerError(error)
+                            return@launch
+                        }
+                        playingQuality = source.optString("quality").ifBlank { tier }
+                        loadedKey = original.key
+                        controller?.setMediaItem(audioMediaItem(original, source))
+                        controller?.prepare()
+                        if (at > 0L) { controller?.seekTo(at); positionMs = at }
+                        if (wasPlaying) controller?.play()
+                    }
+                    return
+                }
+            }
             if (autoSourceFallback && controller?.playWhenReady == true && original != null && original.pluginId != "local") {
                 val existing = recovery?.takeIf { it.sources.original.key == original.key }
-                val pass = existing ?: PlaybackRecovery(SourceRecovery(plugins, original, playbackSong() ?: original, quality)) {
+                val pass = existing ?: PlaybackRecovery(SourceRecovery(plugins, original, playbackSong() ?: original, tierFor(original))) {
                     advanceAfterFailure(original, "播放失败", "播放失败：${original.title}，未找到可播放的同版本") { }
                 }.also { it.hasAcceptedStream = true; recovery = it }
                 if (existing != null) {
@@ -365,8 +410,6 @@ class MainActivity : ComponentActivity() {
                 continueRecovery(pass, maxOf(positionMs, controller?.currentPosition ?: 0L))
                 return
             }
-            val httpCode = generateSequence(error as Throwable) { it.cause }.take(6)
-                .mapNotNull { Regex("Response code: (\\d{3})").find(it.message.orEmpty())?.groupValues?.get(1) }.firstOrNull()
             val reason = when {
                 httpCode != null -> "音频地址不可访问（HTTP $httpCode）"
                 error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "音频地址请求失败，可重试或更换音源"
@@ -417,6 +460,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        /* A fresh task launch replays the intro even in a warm process; a config-change
+           recreation (saved state present) keeps it quiet. */
+        if (savedInstanceState == null) PrismLaunch.played = false
         androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
             systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
@@ -543,7 +589,13 @@ class MainActivity : ComponentActivity() {
             (searchSources.isEmpty() || plugin.id in searchSources) && (!append || plugin.id in searchNextPages) &&
                 (supported == null || (0 until supported.length()).any { supported.optString(it) == requestedType })
         }.sortedBy { searchLatency[it.id] ?: 0L }
-        if (sources.isEmpty() || query.isBlank()) { status = "请选择插件并输入搜索内容"; return }
+        if (sources.isEmpty() || query.isBlank()) {
+            searchJob?.cancel(); searchGeneration++
+            busy = false; hasMore = false; focusSearchResults = false
+            if (!append) { results = emptyList(); entities = emptyList() }
+            status = "请选择插件并输入搜索内容"
+            return
+        }
         if (!append) {
             val term = query.trim()
             val updated = (listOf(term) + searchHistory[requestedType].orEmpty().filterNot { it.equals(term, ignoreCase = true) }).take(30)
@@ -934,6 +986,45 @@ class MainActivity : ComponentActivity() {
         playAt(index)
     }
 
+    /* A single pick joins the listening context instead of replacing it: insert right after
+       the current track and play it, so 上一首 is still what you were hearing. */
+    private fun playSingle(song: Song) {
+        leaveRadio()
+        if (queue.isEmpty()) { playQueue(listOf(song)); return }
+        val existing = queue.indexOfFirst { it.key == song.key }
+        if (existing >= 0) { playAt(existing); return }
+        val at = (queueIndex + 1).coerceIn(0, queue.size)
+        queue = queue.toMutableList().also { it.add(at, song) }
+        playAt(at)
+    }
+
+    private fun removeQueueItem(index: Int) {
+        if (index !in queue.indices) return
+        val autoplay = controller?.playWhenReady == true
+        val removingCurrent = index == queueIndex
+        queue = queue.toMutableList().also { it.removeAt(index) }
+        when {
+            queue.isEmpty() -> {
+                autoSkipToken++
+                resolving?.cancel(); streamSwap?.cancel(); lyricJob?.cancel(); lyricToken++
+                recovery?.ready?.cancel(); recovery = null
+                leaveRadio()
+                queueIndex = -1; loadedKey = ""; ActiveQueue.source = null
+                lyrics = emptyList(); lyricStatus = "暂无歌词"
+                positionMs = 0; durationMs = 0; pendingSeekMs = null
+                controller?.stop(); controller?.clearMediaItems()
+            }
+            index < queueIndex -> queueIndex -= 1
+            /* Removing the song under the needle: the next one takes its place and plays,
+               so the title on screen and the audio never disagree. */
+            removingCurrent -> {
+                queueIndex = index.coerceAtMost(queue.lastIndex)
+                playAt(queueIndex, openPlayer = false, autoplay = autoplay)
+            }
+        }
+        saveResume()
+    }
+
     /** Fetch independently of the discovery page, so FM also works directly from the home card. */
     private suspend fun radioCandidates(): Pair<List<Song>, Boolean> {
         val installed = plugins.state.value.plugins
@@ -1254,12 +1345,23 @@ class MainActivity : ComponentActivity() {
         recovery = null
         ActiveQueue.source = null
         resolving?.cancel()
+        streamSwap?.cancel()
+        remintKey = ""
         lyricJob?.cancel()
+        lyricToken++
+        loadedKey = ""
+        pendingSeekMs = null
+        player.stop()
+        player.clearMediaItems()
         val previousLyrics = lyrics
         val previousLyricStatus = lyricStatus
         lyrics = emptyList()
         lyricStatus = "歌词加载中…"
         queueIndex = index
+        /* The lyric clock starts at this song's zero; the previous song's tail must not be
+           what the first lyric frames are measured against. */
+        positionMs = startAt.coerceAtLeast(0L)
+        durationMs = (song.durationSeconds * 1000).toLong().coerceAtLeast(0L)
         /* 校准跟着歌走，不跟着队列走；同名不同歌的 key 不同，不会继承上一首的校准。 */
         lyricCalibrationMs = LyricCalibration.load(this, song.key)
         if (song.pluginId == "local") {
@@ -1283,9 +1385,12 @@ class MainActivity : ComponentActivity() {
                 pendingSeekMs = null
                 /* The file may have prepared and then failed; the next track is the one on screen. */
                 loadedKey = ""
-                lyrics = previousLyrics
-                lyricStatus = previousLyricStatus
-                advanceAfterFailure(song, "本地文件播放失败", "本地文件播放失败：${e.message}", autoplay) { if (!autoSkip) restorePrevious() }
+                advanceAfterFailure(song, "本地文件播放失败", "本地文件播放失败：${e.message}", autoplay) {
+                    if (!autoSkip) {
+                        lyrics = previousLyrics; lyricStatus = previousLyricStatus
+                        restorePrevious()
+                    }
+                }
             }
             return
         }
@@ -1295,10 +1400,13 @@ class MainActivity : ComponentActivity() {
             loadedKey = ""
             positionMs = startAt
             durationMs = (song.durationSeconds * 1000).toLong().coerceAtLeast(0L)
-            val pass = PlaybackRecovery(SourceRecovery(plugins, song, streamSong, quality)) { hasAcceptedStream ->
-                if (!hasAcceptedStream) { lyrics = previousLyrics; lyricStatus = previousLyricStatus }
+            val pass = PlaybackRecovery(SourceRecovery(plugins, song, streamSong, tierFor(streamSong))) { hasAcceptedStream ->
                 advanceAfterFailure(song, "播放失败", "播放失败：${song.title}，未找到可播放的同版本", autoplay) {
-                    if (!hasAcceptedStream && !autoSkip) restorePrevious()
+                    if (!hasAcceptedStream && !autoSkip) {
+                        /* Lyrics travel with the title: they go back only when the display does. */
+                        lyrics = previousLyrics; lyricStatus = previousLyricStatus
+                        restorePrevious()
+                    }
                 }
             }
             recovery = pass
@@ -1318,7 +1426,7 @@ class MainActivity : ComponentActivity() {
         resolving = lifecycleScope.launch {
             reportPlayback("正在解析：${song.title}")
             try {
-                val attempts = qualityAttempts(qualityOptions(plugin, streamSong), quality)
+                val attempts = qualityAttempts(qualityOptions(plugin, streamSong), tierFor(streamSong))
                 var resolved: JSONObject? = null
                 var lastError: Exception? = null
                 var resolvedTier = ""
@@ -1364,9 +1472,12 @@ class MainActivity : ComponentActivity() {
                 pendingSeekMs = null
                 /* The old track is paused, not replaced. If no skip follows, put the needle back
                    where it was so the title on screen and the audio agree. */
-                lyrics = previousLyrics
-                lyricStatus = previousLyricStatus
-                advanceAfterFailure(song, "解析失败", "解析失败：${song.title} · ${e.message ?: "插件没有返回播放地址"}", autoplay) { if (!autoSkip) restorePrevious() }
+                advanceAfterFailure(song, "解析失败", "解析失败：${song.title} · ${e.message ?: "插件没有返回播放地址"}", autoplay) {
+                    if (!autoSkip) {
+                        lyrics = previousLyrics; lyricStatus = previousLyricStatus
+                        restorePrevious()
+                    }
+                }
             }
         }
     }
@@ -1374,6 +1485,45 @@ class MainActivity : ComponentActivity() {
     private fun playbackSong(): Song? {
         val song = queue.getOrNull(queueIndex) ?: return null
         return ActiveQueue.source?.takeIf { it.originalKey == song.key }?.song ?: song
+    }
+
+    // Keep the current stream and lyric state until the replacement URL is available.
+    private fun switchQuality(tier: String) {
+        val song = queue.getOrNull(queueIndex) ?: return
+        val player = controller ?: return
+        val streamSong = playbackSong() ?: song
+        if (song.pluginId == "local" || tier.isBlank()) return
+        if (tier == playingQuality.ifBlank { tierFor(streamSong) }) return
+        val plugin = plugins.state.value.plugins.firstOrNull { it.id == streamSong.pluginId } ?: return
+        val at = player.currentPosition.coerceAtLeast(0L).takeIf { it > 0L } ?: positionMs
+        val wasPlaying = player.playWhenReady
+        streamSwap?.cancel()
+        streamSwap = lifecycleScope.launch {
+            val source = try {
+                plugins.mediaSource(plugin, streamSong, tier, refresh = true)
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+              catch (e: Exception) {
+                reportPlayback("音质切换失败：${e.message ?: "音源没有应答"}")
+                return@launch
+            }
+            val uri = Uri.parse(source?.optString("url").orEmpty())
+            if (source == null || uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank()) {
+                unsupportedTiers[song.key] = unsupportedTiers[song.key].orEmpty() + tier
+                reportPlayback("音质切换失败：该音源不提供${qualityText(tier)}")
+                return@launch
+            }
+            val actual = source.optString("quality").ifBlank { tier }
+            playingQuality = actual
+            if (actual != tier) unsupportedTiers[song.key] = unsupportedTiers[song.key].orEmpty() + tier
+            songTier[song.key] = actual
+            songTier[streamSong.key] = actual
+            player.setMediaItem(audioMediaItem(song, source))
+            player.prepare()
+            if (at > 0L) { player.seekTo(at); positionMs = at }
+            if (wasPlaying) player.play()
+            ActiveQueue.source = PlayingSource(song.key, streamSong)
+            failedSongs.clear()
+        }
     }
 
     private fun setAutoSourceFallback(enabled: Boolean, persist: Boolean = true) {
@@ -1447,13 +1597,18 @@ class MainActivity : ComponentActivity() {
                         if (pass.position > 0) player.seekTo(pass.position)
                         player.prepare(); player.play()
                         started = withTimeoutOrNull(SourceRecovery.PREPARE_MS) { ready.await(); true } == true && player.playerError == null
-                        if (started && stream.song.key != original.key && player.duration > 0L) {
+                        if (started && original.durationSeconds > 0 && player.duration > 0L) {
                             started = recordingDurationMatches(original, player.duration / 1000.0)
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) { throw e }
                       catch (_: Exception) { /* The next tier belongs to this same finite pass. */ }
                     finally { if (pass.ready === ready) pass.ready = null }
-                    if (!current()) return@withTimeoutOrNull false
+                    /* Abandoned mid-prepare: stop the orphan here. Letting it run leaves the
+                       player on one track while the display names another. */
+                    if (!current()) {
+                        if (player.currentMediaItem?.mediaId == pass.mediaId) player.stop()
+                        return@withTimeoutOrNull false
+                    }
                     if (started) {
                         pendingSeekMs = null
                         pass.hasAcceptedStream = true
@@ -1478,6 +1633,10 @@ class MainActivity : ComponentActivity() {
                 recovery = null; loadedKey = ""; pendingSeekMs = null
                 player.stop()
                 pass.onFailure(pass.hasAcceptedStream)
+            } else if (!succeeded && controller?.currentMediaItem?.mediaId == pass.mediaId) {
+                /* The pass was abandoned (queue moved on) but its last stream is still in
+                   the player; silence it instead of leaking it into the new track's display. */
+                player.stop(); pendingSeekMs = null
             } else if (succeeded && current() && player.playbackState == Player.STATE_ENDED) {
                 // A short stream or a seek near its end can finish before this job returns.
                 resolving = null
@@ -1517,13 +1676,6 @@ class MainActivity : ComponentActivity() {
         lyricJob?.cancel()
         val token = ++lyricToken
         lyricJob = lifecycleScope.launch {
-            /* Some sources simply have no lyric for a track, and a slow source can leave the
-               loading line on screen long after the song has started. After twelve seconds say
-               the truth instead of pretending to keep loading. */
-            val fallback = launch {
-                delay(12_000)
-                if (token == lyricToken && lyrics.isEmpty()) lyricStatus = "暂无歌词"
-            }
             try {
                 val supplied = song.data.optString("rawLrc")
                 val result = if (supplied.isNotBlank()) JSONObject().put("rawLrc", supplied)
@@ -1542,7 +1694,6 @@ class MainActivity : ComponentActivity() {
                 }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (_: Exception) { if (token == lyricToken) { lyrics = emptyList(); lyricStatus = "暂无歌词" } }
-            finally { fallback.cancel() }
         }
     }
 
@@ -1699,7 +1850,7 @@ class MainActivity : ComponentActivity() {
                 getSharedPreferences("appearance", MODE_PRIVATE).edit().putBoolean(preference, enabled).apply()
             }
             "lyricFontLevel" -> {
-                require(value in setOf("小", "标准", "大")) { "未知歌词字号" }
+                require(value in lyricFontLevels) { "未知歌词字号" }
                 lyricFontLevel = value
                 getSharedPreferences("appearance", MODE_PRIVATE).edit().putString("lyric_font_level", value).apply()
             }
@@ -1875,7 +2026,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @SuppressLint("RestrictedApi") // Forward unhandled keys through ComponentActivity's dispatcher.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // Consume the whole wake press; a fresh down also recovers from a missing key-up.
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) wakeKeys.remove(event.keyCode)
@@ -1909,13 +2059,13 @@ class MainActivity : ComponentActivity() {
                 /* Remotes have a MENU key that long-press does not cover. The queue is the
                    thing with no other one-press door on the home page. */
                 KeyEvent.KEYCODE_MENU -> {
-                    super.dispatchKeyEvent(event)
+                    dispatchWithFocusRecovery(event)
                     return true
                 }
             }
         }
         if (event.keyCode == KeyEvent.KEYCODE_MENU && event.action == KeyEvent.ACTION_UP) {
-            if (super.dispatchKeyEvent(event)) return true
+            if (dispatchWithFocusRecovery(event)) return true
             if (queue.isNotEmpty()) queueOpen = true
             return true
         }
@@ -1926,16 +2076,30 @@ class MainActivity : ComponentActivity() {
             val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
             if (imm?.isAcceptingText == true) imm.hideSoftInputFromWindow(window.decorView.windowToken, 0)
         }
-        /* A named edge can still point at a node that left composition between the frame that
-           drew it and the key that follows — a recycled list item, a tab that just changed
-           shape. Compose dereferences the stored requester inside moveFocus and throws, and
-           the throw escapes from here, so the whole activity dies on a remote press. Losing
-           one keypress is the correct outcome for a stale target; keep the app alive. */
+        return dispatchWithFocusRecovery(event)
+    }
+
+    @SuppressLint("RestrictedApi") // Forward unhandled keys through ComponentActivity's dispatcher.
+    private fun dispatchWithFocusRecovery(event: KeyEvent): Boolean {
         return try {
             super.dispatchKeyEvent(event)
         } catch (e: IllegalStateException) {
-            if (e.message?.contains("FocusRequester is not initialized") != true) throw e
-            android.util.Log.w("PrismFocus", "方向目标已离场，忽略本次按键 ${event.keyCode}")
+            val noActiveFocus = e.message == "Event can't be processed because we do not have an active focus target."
+            val detachedTarget = e.message?.contains("FocusRequester is not initialized") == true
+            if (!noActiveFocus && !detachedTarget) throw e
+            if (event.action == KeyEvent.ACTION_DOWN) wakeKeys.add(event.keyCode)
+            if (noActiveFocus) {
+                // Android can still consider the Compose view focused after its internal
+                // target disappears. Reacquire view focus after the current dispatch finishes.
+                val owner = currentFocus ?: window.decorView
+                owner.post {
+                    if (!isFinishing && !isDestroyed && owner.isAttachedToWindow && owner.hasWindowFocus()) {
+                        owner.clearFocus()
+                        owner.requestFocus()
+                    }
+                }
+            }
+            android.util.Log.w("PrismFocus", "焦点暂不可用，忽略本次按键 ${event.keyCode}；恢复焦点=$noActiveFocus")
             true
         }
     }
@@ -1982,6 +2146,8 @@ class MainActivity : ComponentActivity() {
         var importDialog by remember { mutableStateOf(false) }
         var pendingSong by remember { mutableStateOf<Song?>(null) }
         var trackMenu by remember { mutableStateOf<TrackMenuTarget?>(null) }
+        val queuePlaybackFocus = remember { FocusRequester() }
+        val queueRootFocus = remember { FocusRequester() }
         var subjectMenu by remember { mutableStateOf<SavedSubject?>(null) }
         var collectionMenu by remember { mutableStateOf<CollectionMenuTarget?>(null) }
         var menuReturnFocus by remember { mutableStateOf<FocusRequester?>(null) }
@@ -2014,21 +2180,25 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(selectedList) { libraryManage = false; librarySelected = emptySet(); confirmBatchOpen = false }
         var searchFiltersOpen by remember { mutableStateOf(false) }
         var statusVisible by remember { mutableStateOf(false) }
+        var mvResolving by remember { mutableStateOf(false) }
         val statusNotice = status.takeUnless {
             it.startsWith("正在播放") || it.startsWith("正在解析") || it.startsWith("已暂停") || it.startsWith("上次听到") || it == "播放完毕"
         }.orEmpty()
         LaunchedEffect(statusNotice) { statusVisible = statusNotice.isNotBlank(); delay(4500); statusVisible = false }
         fun openMv(song: Song?) {
-            if (song == null) return
+            if (song == null || mvResolving) return
+            mvResolving = true
             lifecycleScope.launch {
                 reportPlayback("正在解析 MV…")
                 try {
-                    val source = plugins.resolveVideo(song) ?: error("该音源没有返回可播放的 MV 地址")
+                    val source = withTimeoutOrNull(15_000) { plugins.resolveVideo(song) }
+                        ?: error("音源没有返回可播放的 MV 地址，或请求已超时")
                     if (queue.getOrNull(queueIndex)?.key != song.key) return@launch
                     resumeAfterMv = controller?.playWhenReady == true
                     controller?.pause(); activeMv = source; reportPlayback("")
                 } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-                catch (e: Exception) { reportPlayback("MV 不可用：${e.message ?: "解析失败"}") }
+                catch (e: Exception) { reportPlayback("MV 解析失败：${e.message ?: "音源不可用"}") }
+                finally { mvResolving = false }
             }
         }
 
@@ -2051,7 +2221,7 @@ class MainActivity : ComponentActivity() {
                         .put("playing", playing && playbackState != Player.STATE_ENDED)
                         .put("position", positionMs)
                         .put("duration", durationMs)
-                        .put("quality", quality)
+                        .put("quality", tierFor(playbackSong()))
                         .put("qualityLabel", qualityText(playingQuality.ifBlank { quality }))
                         .put("mode", playMode.id)
                         .put("radioActive", ActiveQueue.radio)
@@ -2149,6 +2319,18 @@ class MainActivity : ComponentActivity() {
                            can be narrowed before typing. Computed live here rather than captured: a
                            source enabled on the TV must show up on the phone without a page reload. */
                         .put("searchType", searchType)
+                        .put("searchTerm", searchTerm)
+                        .put("searchGeneration", searchGeneration)
+                        .put("searchBusy", searchJob?.isActive == true)
+                        .put("searchHasMore", hasMore)
+                        .put("searchResultCount", if (searchType == "music") results.size else entities.size)
+                        .put("searchResults", JSONArray().also { array ->
+                            if (searchType == "music") results.take(200).forEach { track ->
+                                array.put(JSONObject().put("key", track.key).put("title", track.title.take(300))
+                                    .put("artist", track.artist.take(200)).put("source", track.sourceLabel.take(120))
+                                    .put("duration", track.durationLabel).put("current", track.key == queue.getOrNull(queueIndex)?.key))
+                            }
+                        })
                         .put("searchTypeOptions", JSONArray().also { array ->
                             searchTypeChoices(plugins.state.value.plugins.filter { it.enabled })
                                 .forEach { (type, label) -> array.put(JSONObject().put("id", type).put("label", label)) }
@@ -2197,15 +2379,9 @@ class MainActivity : ComponentActivity() {
                                 /* Extended tiers are real for some plugins; rejecting them here
                                    would make the phone's own quality sheet offer dead options. */
                                 require(value in setOf("low", "standard", "high", "super", "flac", "flac24bit", "hires", "dolby", "atmos", "atmos_plus", "64k", "128k", "192k", "320k", "mgg")) { "未知音质" }
-                                if (quality != value) {
-                                    updatePreference("quality", value)
-                                    /* On the TV the pill re-resolves the current track when the
-                                       tier changes; the phone has to do the same or the sheet
-                                       would say 高品 while the speakers stayed on 标准. */
-                                    if (queue.isNotEmpty() && queue.getOrNull(queueIndex)?.pluginId != "local") {
-                                        playAt(queueIndex, openPlayer = playerOpen, autoplay = controller?.playWhenReady == true, startAt = positionMs, sourceSong = playbackSong())
-                                    }
-                                }
+                                /* Same surface as the TV's sheet: it changes this song's stream,
+                                   not the library default — that one lives in 设置 → 首选音质. */
+                                if (queue.isNotEmpty() && queue.getOrNull(queueIndex)?.pluginId != "local") switchQuality(value)
                             }
                             "mode" -> {
                                 updatePreference("mode", value)
@@ -2229,6 +2405,18 @@ class MainActivity : ComponentActivity() {
                                 playerOpen = false
                                 page = "search"
                                 search(value)
+                            }
+                            "playSearchResult" -> {
+                                val payload = JSONObject(value)
+                                require(searchType == "music" && payload.getInt("generation") == searchGeneration) { "搜索结果已更新，请重新选择" }
+                                val songs = results.toList()
+                                val index = songs.indexOfFirst { it.key == payload.getString("key") }
+                                require(index >= 0) { "这首歌已不在搜索结果中，请重新搜索" }
+                                playSingle(songs[index])
+                            }
+                            "searchMore" -> {
+                                check(!busy && hasMore && searchType == "music") { "当前无法加载更多" }
+                                search(searchTerm, append = true, focusResults = false)
                             }
                             /* The phone's own filter row. Same rules as the TV chips: refuse while a
                                search is in flight, clear what the previous filter produced, and re-run
@@ -2519,6 +2707,10 @@ class MainActivity : ComponentActivity() {
                 menuWasOpen = false
                 val target = menuReturnFocus; menuReturnFocus = null
                 if (page != menuPage || browseItem !== menuBrowse || playerOpen != menuPlayer) return@LaunchedEffect
+                if (queueOpen) {
+                    (if (queue.isEmpty()) queueRootFocus else queuePlaybackFocus).requestAfterScroll { }
+                    return@LaunchedEffect
+                }
                 repeat(4) {
                     withFrameNanos { }
                     if (target != null && runCatching { target.requestFocus(); true }.getOrDefault(false)) return@LaunchedEffect
@@ -2578,6 +2770,8 @@ class MainActivity : ComponentActivity() {
                     qualities?.has("hires") == true -> "Hi-Res"
                     qualities?.has("flac24bit") == true -> "24-bit"
                     qualities?.has("flac") == true -> "无损"
+                    /* Standard-tier plugins say super instead of naming a codec. */
+                    qualities?.has("super") == true -> "无损"
                     else -> null
                 }
                 qualityTags[song.key] = tag.orEmpty()
@@ -2708,8 +2902,10 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(page) {
             if (page != "search") focusSearchResults = false
             /* The bar already owns focus while previewing; moving it now would stop the user
-               from continuing left/right along the tabs. */
-            if (navBarFocused || remotePillFocused) return@LaunchedEffect
+               from continuing left/right along the tabs. The player owns focus the same way:
+               a detail's Back restores the player, and the page must not yank the remote
+               out from under it. */
+            if (navBarFocused || remotePillFocused || playerOpen) return@LaunchedEffect
             /* Back from a detail restores the card that opened it; that effect owns focus. */
             if (pendingReturnFocus.isNotBlank()) return@LaunchedEffect
             withFrameNanos { }
@@ -2730,7 +2926,7 @@ class MainActivity : ComponentActivity() {
            held focus, so hand focus to whatever the new shape shows first — or back to the bar
            when the list came back empty, which would otherwise strand focus nowhere. */
         LaunchedEffect(page, browseItem, chartSelection) {
-            if (navBarFocused) return@LaunchedEffect
+            if (navBarFocused || playerOpen) return@LaunchedEffect
             /* A new list shape means a new set of rows; the old position must not be scrolled back. */
             detailFocusMemory.value = null
             val returnKey = pendingReturnFocus
@@ -2933,6 +3129,12 @@ class MainActivity : ComponentActivity() {
                     pageScope.launch { withFrameNanos { }; runCatching { homeFocus.requestFocus() } }
                 }
                 else -> {
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (playing && now - exitArmedAt > 2_000) {
+                        exitArmedAt = now
+                        status = "再按一次返回键退出"
+                        return@BackHandler
+                    }
                     recovery?.ready?.cancel(); recovery = null
                     resolving?.cancel()
                     /* Back can arrive while the controller is still connecting; stopping only the
@@ -3024,6 +3226,13 @@ class MainActivity : ComponentActivity() {
         CompositionLocalProvider(LocalPrismColors provides prismColors(theme), LocalAuraMotion provides (motionEnabled && !(playerScreenOff && screenOffSettled))) {
             val c = LocalPrismColors.current
             Box(Modifier.fillMaxSize()) {
+            /* Cold start: the light comes into the room before the furniture does. Drawn above
+               everything by zIndex because it is inserted first, and only once per process. */
+            /* 减少动效 只跳过动画，不跳过这块标：否则静态启动画面在开关打开时一并消失。 */
+            var introVisible by remember { mutableStateOf(!playerOpen && !PrismLaunch.played) }
+            /* 冷启动的开屏只认应用内「减少动效」：系统动画缩放为 0 时（不少电视出厂如此）
+               Compose 的过渡会整体失效，开屏等于没有动画。 */
+            if (introVisible) PrismIntro(!reduceMotion, Modifier.zIndex(1f)) { introVisible = false; PrismLaunch.played = true }
             Box(Modifier.fillMaxSize().focusProperties { canFocus = !playerOpen }) {
             PrismBackground {
                 Column(Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 20.dp)) {
@@ -3211,7 +3420,7 @@ class MainActivity : ComponentActivity() {
                                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
                                         itemsIndexed(shelf.songs.take(20)) { index, song ->
                                             val focus = shelfCards[shelfIndex][index]
-                                            PrismCoverCard(song, index, { playQueue(shelf.songs, index) }, Modifier.focusRequester(focus).focusProperties {
+                                            PrismCoverCard(song, index, { playSingle(song) }, Modifier.focusRequester(focus).focusProperties {
                                                 up = shelfActionFocus
                                                 if (shelfIndex == shelfCards.lastIndex && queue.isNotEmpty()) down = miniFocus
                                             }.then(downToCard(shelfIndex + 1, index))
@@ -3372,7 +3581,7 @@ class MainActivity : ComponentActivity() {
                                             itemsIndexed(browseSongs) { index, song ->
                                                 val rowFocus = trackFocus(song.key)
                                                 detailCardFocus["song:${song.key}"] = rowFocus
-                                                PrismTrackRow(song, index, { playQueue(browseSongs.toList(), index) },
+                                                PrismTrackRow(song, index, { playSingle(song) },
                                                     modifier = Modifier.focusRequester(rowFocus).then(
                                                         if (index == 0) Modifier.focusAnchor(firstSongFocus)
                                                             .onPreviewKeyEvent { event ->
@@ -3416,7 +3625,7 @@ class MainActivity : ComponentActivity() {
                                             itemsIndexed(chartSongs) { index, song ->
                                             val rowFocus = if (index == 0) discoverEntryFocus.requester else trackFocus(song.key)
                                             detailCardFocus["song:${song.key}"] = rowFocus
-                                            PrismTrackRow(song, index, { playQueue(chartSongs.toList(), index) }, modifier = if (index == 0) Modifier.focusAnchor(discoverEntryFocus).focusProperties { if (detailHeaderFocus.attached) up = detailHeaderFocus.requester } else Modifier.focusRequester(rowFocus), current = queue.getOrNull(queueIndex)?.key == song.key, qualityTag = qualityTags[song.key]?.takeIf { it.isNotBlank() }, onFocus = { detailFocusMemory.value = rowFocus to index; resolveQuality(song) }, onLongPress = { trackMenu = TrackMenuTarget(song, originFocus = "song:${song.key}") })
+                                            PrismTrackRow(song, index, { playSingle(song) }, modifier = if (index == 0) Modifier.focusAnchor(discoverEntryFocus).focusProperties { if (detailHeaderFocus.attached) up = detailHeaderFocus.requester } else Modifier.focusRequester(rowFocus), current = queue.getOrNull(queueIndex)?.key == song.key, qualityTag = qualityTags[song.key]?.takeIf { it.isNotBlank() }, onFocus = { detailFocusMemory.value = rowFocus to index; resolveQuality(song) }, onLongPress = { trackMenu = TrackMenuTarget(song, originFocus = "song:${song.key}") })
                                             }
                                         }
                                     }
@@ -3681,8 +3890,8 @@ class MainActivity : ComponentActivity() {
                                 val suggestionRows = pinnedSuggestions ?: availableSuggestions
                                 val suggestionsVisible = searchSuggestionsVisible
                                 val searchContentFocus = if (suggestionsVisible) firstSuggestionFocus else searchResultsFocus
-                                LaunchedEffect(focusSearchResults, busy, results.isNotEmpty(), entities.isNotEmpty(), hasMore, navBarFocused) {
-                                    if (!focusSearchResults || navBarFocused || playerOpen) return@LaunchedEffect
+                                LaunchedEffect(focusSearchResults, busy, results.isNotEmpty(), entities.isNotEmpty(), hasMore, navBarFocused, searchFiltersOpen) {
+                                    if (!focusSearchResults || navBarFocused || playerOpen || searchFiltersOpen) return@LaunchedEffect
                                     if (results.isEmpty() && entities.isEmpty() && busy) return@LaunchedEffect
                                     if (results.isNotEmpty() || entities.isNotEmpty() || hasMore) {
                                         searchListState.scrollToItem(0)
@@ -3809,6 +4018,7 @@ class MainActivity : ComponentActivity() {
                                                first chip and the bar's left/right walk stopped working. */
                                             val open = !searchFiltersOpen
                                             searchFiltersOpen = open
+                                            if (open) focusSearchResults = false
                                             if (open) pageScope.launch {
                                                 repeat(3) { withFrameNanos { } }
                                                 searchChipFocus.requestIfAttached()
@@ -3833,13 +4043,22 @@ class MainActivity : ComponentActivity() {
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Text("音源", color = c.muted, fontSize = 10.sp, modifier = Modifier.width(30.dp))
                                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)) {
-                                            item { PrismAction(if (searchSources.isEmpty()) "✓ 全部音源" else "全部音源", { if (!busy) { searchSources = emptySet(); results = emptyList(); entities = emptyList(); hasMore = false; if (keyword.isNotBlank()) search(keyword) } }, Modifier.focusAnchor(searchChipFocus).focusProperties { if (searchSourceFocus.attached) up = searchSourceFocus.requester }) }
+                                            item { PrismAction(if (searchSources.isEmpty()) "✓ 全部音源" else "全部音源", {
+                                                searchSources = emptySet(); focusSearchResults = false
+                                                results = emptyList(); entities = emptyList(); hasMore = false
+                                                if (keyword.isNotBlank()) search(keyword, focusResults = false)
+                                            }, Modifier.focusAnchor(searchChipFocus).focusProperties { if (searchSourceFocus.attached) up = searchSourceFocus.requester }) }
                                             itemsIndexed(activePlugins) { chipIndex, p ->
                                                 val platform = p.platform
                                                 val name = p.displayName
                                                 PlatformAction(platform, if (p.id in searchSources) "✓ $name" else name,
                                                     if (chipIndex == 0 && !searchChipFocus.attached) Modifier.focusAnchor(searchChipFocus) else Modifier) {
-                                                    if (!busy) { searchSources = if (p.id in searchSources) searchSources - p.id else searchSources + p.id; selectedPlugin = p.id; results = emptyList(); entities = emptyList(); hasMore = false; if (keyword.isNotBlank()) search(keyword) }
+                                                    /* Checking sources is a browsing act: the remote stays on the
+                                                       chips, not on the first result that re-arrives. */
+                                                    searchSources = if (p.id in searchSources) searchSources - p.id else searchSources + p.id
+                                                    selectedPlugin = p.id; focusSearchResults = false
+                                                    results = emptyList(); entities = emptyList(); hasMore = false
+                                                    if (keyword.isNotBlank()) search(keyword, focusResults = false)
                                                 }
                                             }
                                             if (activePlugins.isEmpty()) item { PrismAction("添加音源", { settingsSection = "音源"; page = "plugins" }) }
@@ -4008,7 +4227,9 @@ class MainActivity : ComponentActivity() {
                                     itemsIndexed(results, key = { _, song -> song.key }) { index, song ->
                                         val rowFocus = if (index == 0) searchResultsFocus.requester else trackFocus(song.key)
                                         detailCardFocus["song:${song.key}"] = rowFocus
-                                        PrismTrackRow(song, index, { playQueue(results.toList(), index) },
+                                        /* A search pick joins the queue playing now; it does not
+                                           wipe the songs you were listening to. */
+                                        PrismTrackRow(song, index, { playSingle(song) },
                                             current = queue.getOrNull(queueIndex)?.key == song.key,
                                             onLongPress = { trackMenu = TrackMenuTarget(song, originFocus = "song:${song.key}") },
                                             /* 只有首行按上回分类 tab；其余行按行号上下点名，
@@ -4447,7 +4668,7 @@ class MainActivity : ComponentActivity() {
                                         detailCardFocus["song:${song.key}"] = rowFocus
                                         val rowMenu: (() -> Unit)? = if (libraryManage) null else { -> trackMenu = TrackMenuTarget(song, selectedList, "song:${song.key}") }
                                         PrismTrackRow(song, index,
-                                            { if (libraryManage) toggleLibrarySelection(song.key) else playQueue(songs, index) },
+                                            { if (libraryManage) toggleLibrarySelection(song.key) else playSingle(song) },
                                             modifier = (if (index == 0) Modifier.focusAnchor(libraryContentFocus).focusProperties { if (selectedPlaylist == null && !libraryManage) upTo(libraryTabs.getValue(libraryTabKey)) else if (libraryHeaderFocus.attached) up = libraryHeaderFocus.requester } else Modifier.focusRequester(rowFocus))
                                                 /* 迷你条按上回到离开时的那一行，而不是页首 tab。 */
                                                 .onFocusChanged { if (it.isFocused) bodyFocusMemory.value = rowFocus },
@@ -4565,15 +4786,17 @@ class MainActivity : ComponentActivity() {
                                         fun pickQuality(value: String) {
                                             updatePreference("quality", value)
                                         }
+                                        /* 两栏布局里左键归左栏（按左就回导航），行内用 OK 循环改值。 */
                                         fun cycleQuality() {
                                             val i = qualityTiers.indexOfFirst { it.first == quality }
-                                            pickQuality(qualityTiers[(i + 1).mod(qualityTiers.size)].first)
+                                            if (i < 0) return
+                                            pickQuality(qualityTiers[(i + 1) % qualityTiers.size].first)
                                         }
                                         SettingsCard("音质") {
                                             SettingsRow("首选音质",
                                                 modifier = Modifier.focusAnchor(sectionEntryFocus.getValue("播放")).then(entryEdge).rememberFocus(bodyFocusMemory),
                                                 onActivate = { cycleQuality() }) {
-                                                SettingsSeg(qualityTiers, quality, ::pickQuality, cycling = true)
+                                                SettingsSeg(qualityTiers, quality, ::pickQuality)
                                             }
                                             SettingsDivider()
                                             PrismSwitchRow("播放失败自动换源", autoSourceFallback, { setAutoSourceFallback(it) },
@@ -4585,13 +4808,14 @@ class MainActivity : ComponentActivity() {
                                         }
                                         fun cycleMode() {
                                             val i = playModes.indexOfFirst { it.first == playMode }
-                                            pickMode(playModes[(i + 1).mod(playModes.size)].first)
+                                            if (i < 0) return
+                                            pickMode(playModes[(i + 1) % playModes.size].first)
                                         }
                                         SettingsCard("播放与搜索") {
                                             SettingsRow("播放模式",
                                                 modifier = edgeToRail.rememberFocus(bodyFocusMemory),
                                                 onActivate = { cycleMode() }) {
-                                                SettingsSeg(playModes, playMode, ::pickMode, cycling = true)
+                                                SettingsSeg(playModes, playMode, ::pickMode)
                                             }
                                             SettingsDivider()
                                             val workerOptions = listOf(0 to "自动 · ${PluginWorkers.automatic(this@MainActivity)} 个", 1 to "1 个", 2 to "2 个", 3 to "3 个", 4 to "4 个")
@@ -4600,12 +4824,13 @@ class MainActivity : ComponentActivity() {
                                             }
                                             fun cycleWorkers() {
                                                 val i = workerOptions.indexOfFirst { it.first == pluginWorkerLimit }
-                                                pickWorkers(workerOptions[(i + 1).mod(workerOptions.size)].first)
+                                                if (i < 0) return
+                                                pickWorkers(workerOptions[(i + 1) % workerOptions.size].first)
                                             }
                                             SettingsRow("搜索并发", "调大更快，也更占内存",
                                                 modifier = edgeToRail.rememberFocus(bodyFocusMemory),
                                                 onActivate = { cycleWorkers() }) {
-                                                SettingsSeg(workerOptions, pluginWorkerLimit, ::pickWorkers, cycling = true)
+                                                SettingsSeg(workerOptions, pluginWorkerLimit, ::pickWorkers)
                                             }
                                         }
                                         /* All lyric-display preferences live in this card. Time calibration
@@ -4615,18 +4840,19 @@ class MainActivity : ComponentActivity() {
                                                 updatePreference("miniLyrics", it.toString())
                                             }, edgeToRail.rememberFocus(bodyFocusMemory), description = "底部播放条显示当前一句")
                                             SettingsDivider()
-                                            val levels = listOf("小" to "小", "标准" to "标准", "大" to "大")
+                                            val levels = lyricFontLevels.map { it to it }
                                             fun pickFont(level: String) {
                                                 updatePreference("lyricFontLevel", level)
                                             }
                                             fun cycleFont() {
                                                 val i = levels.indexOfFirst { it.first == lyricFontLevel }
-                                                pickFont(levels[(i + 1).mod(levels.size)].first)
+                                                if (i < 0) return
+                                                pickFont(levels[(i + 1) % levels.size].first)
                                             }
                                             SettingsRow("字号",
                                                 modifier = edgeToRail.rememberFocus(bodyFocusMemory),
                                                 onActivate = { cycleFont() }) {
-                                                SettingsSeg(levels, lyricFontLevel, ::pickFont, cycling = true)
+                                                SettingsSeg(levels, lyricFontLevel, ::pickFont)
                                             }
                                             SettingsDivider()
                                             PrismSwitchRow("翻译与注音", subLyrics, {
@@ -4825,7 +5051,6 @@ class MainActivity : ComponentActivity() {
                                         var infoOpen by remember(url) { mutableStateOf(false) }
                                         val titleFocus = remember(url) { FocusRequester() }
                                         val updateFocus = remember(url) { FocusRequester() }
-                                        val infoFocus = remember(url) { FocusRequester() }
                                         val subscriptionUri = remember(url) { Uri.parse(url) }
                                         fun closeSubscriptionInfo() {
                                             infoOpen = false
@@ -4855,8 +5080,13 @@ class MainActivity : ComponentActivity() {
                                             } }, Modifier.focusRequester(updateFocus).focusProperties { left = titleFocus }.rememberFocus(bodyFocusMemory))
                                             SettingsButton("移除订阅", { removingSubscription = url }, Modifier.rememberFocus(bodyFocusMemory))
                                         }
-                                        if (infoOpen) PrismContextMenu("音源订阅", "${owned.size} 个音源", { closeSubscriptionInfo() }, infoFocus) {
-                                            SourceInfoDetails(listOf("订阅地址" to url), infoFocus, ::closeSubscriptionInfo)
+                                        val subscriptionAddressFocus = remember(url) { listOf(FocusRequester()) }
+                                        val subscriptionCloseFocus = remember(url) { FocusRequester() }
+                                        if (infoOpen) PrismContextMenu("音源订阅", "${owned.size} 个音源", { closeSubscriptionInfo() }, subscriptionAddressFocus.first()) {
+                                            SourceAddressList(listOf(SourceAddress("订阅地址", url)), subscriptionAddressFocus, subscriptionCloseFocus, subscriptionCloseFocus)
+                                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                                PrismAction("关闭", { closeSubscriptionInfo() }, Modifier.focusRequester(subscriptionCloseFocus), primary = true)
+                                            }
                                         }
                                         owned.forEach { plugin -> key(plugin.id) {
                                             SettingsDivider()
@@ -4896,17 +5126,10 @@ class MainActivity : ComponentActivity() {
                         position = positionMs,
                         duration = durationMs,
                         lyric = if (showMiniLyrics) lyrics.lastOrNull { it.timeMs <= positionMs - lyricCalibrationMs }?.text.orEmpty() else "",
-                        favorite = queue.getOrNull(queueIndex)?.let { song -> libraryState.favorites.any { it.key == song.key } } == true,
+                        showLyric = showMiniLyrics,
                         onOpen = { if (queue.getOrNull(queueIndex) == null) page = "search" else playerOpen = true },
                         onToggle = { togglePlayback() },
-                        onPrevious = { step(-1) },
-                        onNext = { step(1) },
-                        onFavorite = { toggleFavorite(queue.getOrNull(queueIndex)) },
-                        onQueue = { queueOpen = true },
                         openFocus = miniFocus,
-                        onLongPress = queue.getOrNull(queueIndex)?.let { current -> {
-                            menuReturnFocus = miniFocus; trackMenu = TrackMenuTarget(current)
-                        } },
                         /* After a search result plays, Up should reach the list you were
                            browsing. The text field is only the landing spot while the page
                            has no results to return to. */
@@ -4983,16 +5206,28 @@ class MainActivity : ComponentActivity() {
             AnimatedVisibility(visible = playerOpen, enter = fadeIn(tween(if (motionEnabled) 180 else 0)), exit = fadeOut(tween(if (motionEnabled) 120 else 0))) {
                 Box(Modifier.fillMaxSize()) {
                     val song = queue.getOrNull(queueIndex)
+                    /* The whole ladder the current source claims, plus the rungs this song has
+                       already refused. Together they let the quality sheet show what exists
+                       before the user spends a click finding out it does not. */
+                    val ladder = remember(song?.key, playbackSong()?.pluginId, state.plugins) {
+                        val target = playbackSong() ?: song
+                        val owner = state.plugins.firstOrNull { it.id == target?.pluginId }
+                        if (target == null || owner == null || target.pluginId == "local") emptyList()
+                        else qualityLadder(owner, target)
+                    }
                     /* 息屏渐隐期间与唤醒渐亮期间，播放器留在幕布下方；完全黑掉后才离场，
                        不留隐藏动画。 */
                     if (!playerScreenOff || !screenOffSettled) PrismBackground {
                         PrismPlayer(song, lyrics, lyricStatus, positionMs, durationMs, playing, playMode,
-                            song != null && libraryState.favorites.any { it.key == song.key }, quality, playingQuality,
+                            song != null && libraryState.favorites.any { it.key == song.key }, tierFor(song), playingQuality,
                             queueIndex, queue.size, playbackStatus,
                             streamFormat,
                             playbackSource = playbackSong(),
                             hasMv = song?.let { it.hasMv && state.plugins.firstOrNull { p -> p.id == it.pluginId }?.capabilities?.has("mvSource") == true } == true,
+                            mvResolving = mvResolving,
                             mvOpen = activeMv != null,
+                            overlayOpen = queueOpen || radioMenuOpen || phoneDialog || pendingSong != null ||
+                                trackMenu != null || subjectMenu != null || collectionMenu != null || updateDialogOpen,
                             readPosition = {
                                 if (recovery != null && resolving?.isActive == true) positionMs
                                 else controller?.currentPosition?.coerceAtLeast(0) ?: positionMs
@@ -5017,6 +5252,13 @@ class MainActivity : ComponentActivity() {
                                 updatePreference("mode", modes[(modes.indexOf(playMode) + 1) % modes.size].id)
                                 saveResume()
                             },
+                            /* The sheet's play-mode row is a stepper: left walks back through
+                               the modes instead of wrapping forward from the other side. */
+                            onModeStep = { dir ->
+                                val modes = PlaybackMode.entries
+                                updatePreference("mode", modes[(modes.indexOf(playMode) + dir + modes.size) % modes.size].id)
+                                saveResume()
+                            },
                             radioActive = ActiveQueue.radio,
                             radioLoading = radioLoading,
                             onRadioToggle = {
@@ -5036,15 +5278,8 @@ class MainActivity : ComponentActivity() {
                             /* A tier the plugin left unanswered is dropped, so the pill only cycles
                                through streams this song can actually play. */
                             tiers = availableTiers.filterNot { it in unsupportedTiers[playbackSong()?.key].orEmpty() },
-                            onSelectQuality = { tier ->
-                                if (tier != quality) {
-                                    quality = tier
-                                    getSharedPreferences("playback", MODE_PRIVATE).edit().putString("quality", tier).apply()
-                                    if (queue.getOrNull(queueIndex)?.pluginId != "local" && queue.isNotEmpty()) {
-                                        playAt(queueIndex, openPlayer = false, autoplay = controller?.playWhenReady == true, startAt = positionMs, sourceSong = playbackSong())
-                                    }
-                                }
-                            })
+                            ladder = ladder,
+                            onSelectQuality = { tier -> switchQuality(tier) })
                     }
                     /* 幕布：渐隐时盖住正在淡出的播放器；唤醒时播放器先回到幕布下，再渐亮出来。
                        幕布是屏幕自身状态的一部分，减少动效时直接到位。 */
@@ -5052,7 +5287,7 @@ class MainActivity : ComponentActivity() {
                     LaunchedEffect(playerScreenOff, screenOffSettled, motionEnabled) {
                         when {
                             playerScreenOff && !screenOffSettled -> {
-                                if (motionEnabled) curtain.animateTo(1f, tween(400)) else curtain.snapTo(1f)
+                                if (motionEnabled) curtain.animateTo(1f, tween(700)) else curtain.snapTo(1f)
                                 screenOffSettled = true
                             }
                             !playerScreenOff && curtain.value > 0f -> {
@@ -5129,7 +5364,7 @@ class MainActivity : ComponentActivity() {
                 })
             if (queueOpen) {
                 val favoriteKeys = remember(libraryState.favorites) { libraryState.favorites.map { it.key }.toSet() }
-                val currentQueueFocus = remember { FocusRequester() }
+                val currentQueueFocus = queuePlaybackFocus
                 val queueFocusIndex = queueIndex.coerceIn(0, (queue.size - 1).coerceAtLeast(0))
                 val queueListState = rememberLazyListState(initialFirstVisibleItemIndex = queueFocusIndex)
                 var panelVisible by remember { mutableStateOf(false) }
@@ -5146,7 +5381,7 @@ class MainActivity : ComponentActivity() {
                                    anything, and an empty queue leaves 关闭 as the only target. */
                                 if (queue.isNotEmpty()) currentQueueFocus.requestFocus() else queueCloseFocus.requestIfAttached()
                             }
-                            Column(Modifier.fillMaxWidth(.46f).fillMaxHeight().background(Brush.verticalGradient(listOf(c.panel.copy(alpha = .98f), c.background.copy(alpha = .98f)))).padding(horizontal = 24.dp, vertical = 28.dp)) {
+                            Column(Modifier.fillMaxWidth(.46f).fillMaxHeight().focusRequester(queueRootFocus).focusable().background(Brush.verticalGradient(listOf(c.panel.copy(alpha = .98f), c.background.copy(alpha = .98f)))).padding(horizontal = 24.dp, vertical = 28.dp)) {
                                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                     AuraMark(Modifier.size(34.dp))
                                     Spacer(Modifier.width(12.dp))
@@ -5168,7 +5403,7 @@ class MainActivity : ComponentActivity() {
                                             if (index == 0 && queueCloseFocus.attached) rowModifier.focusProperties { up = queueCloseFocus.requester } else rowModifier,
                                             /* Every song row in the app answers a long hold the same
                                                way; the queue is no exception. */
-                                            onLongPress = { menuReturnFocus = rowFocus; trackMenu = TrackMenuTarget(item, originFocus = "queue:${item.key}") },
+                                            onLongPress = { menuReturnFocus = rowFocus; trackMenu = TrackMenuTarget(item, list = "queue", originFocus = "queue:${item.key}") },
                                             favorite = item.key in favoriteKeys,
                                         ) { closeQueue(); playAt(index, openPlayer = false) }
                                     }
@@ -5225,28 +5460,12 @@ class MainActivity : ComponentActivity() {
                                detail or falls back to a search, so the glyph is never the whole
                                instruction. */
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
-                                /* Tapping a row plays from that row; the menu sits on the row so
-                                   whole-list actions are one step away instead of a scroll to the top. */
-                                val menuQueue: List<Song> = when {
-                                    target.list == "favorites" -> libraryState.favorites
-                                    target.list == "recent" -> libraryState.recent
-                                    target.list?.startsWith("playlist:") == true ->
-                                        libraryState.playlists.firstOrNull { "playlist:${it.id}" == target.list }?.songs.orEmpty()
-                                    else -> emptyList()
-                                }
                                 val current = queue.getOrNull(queueIndex)?.key == song.key && loadedKey == song.key &&
                                     playbackState != Player.STATE_IDLE && playbackState != Player.STATE_ENDED
                                 PrismIconAction("play", "播放", {
                                     trackMenu = null
                                     if (current) playerOpen = true
-                                    else {
-                                        val index = menuQueue.indexOfFirst { it.key == song.key }
-                                        if (index >= 0) playQueue(menuQueue, index)
-                                        else {
-                                            val queued = queue.indexOfFirst { it.key == song.key }
-                                            if (queued >= 0) playAt(queued) else playQueue(listOf(song))
-                                        }
-                                    }
+                                    else playSingle(song)
                                 }, Modifier.weight(1f, fill = false))
                                 PrismIconAction(if (saved) "heartFilled" else "heart", if (saved) "已收藏" else "收藏", {
                                     menuError = ""
@@ -5271,6 +5490,11 @@ class MainActivity : ComponentActivity() {
                                     PrismIconAction("trash", "删除记录", {
                                         trackMenu = null
                                         lifecycleScope.launch { try { library.removeRecent(song) } catch (e: Exception) { status = e.message ?: "删除失败" } }
+                                    }, Modifier.weight(1f, fill = false))
+                                if (target.list == "queue")
+                                    PrismIconAction("trash", "移出队列", {
+                                        trackMenu = null
+                                        removeQueueItem(queue.indexOfFirst { it.key == song.key })
                                     }, Modifier.weight(1f, fill = false))
                             }
                             if (menuError.isNotBlank()) Text(menuError, color = c.accent, fontSize = 12.sp)
@@ -5624,66 +5848,134 @@ class MainActivity : ComponentActivity() {
         if (infoOpen) PluginInfoDialog(plugin) { infoOpen = false; menuOpen = true }
     }
 
-    @Composable private fun PluginInfoDialog(plugin: Plugin, onDismiss: () -> Unit) {
-        val c = LocalPrismColors.current
-        val readFocus = remember { FocusRequester() }
-        val details = buildList {
-            plugin.metadata.optString("description").trim().takeIf { it.isNotBlank() }?.let { add("说明" to it) }
-            add("支持能力" to plugin.capabilities.labels.joinToString(" · ").ifBlank { "未识别到支持的能力" })
-            val updateUrl = plugin.updateUrl
-            if (plugin.url.isNotBlank() && plugin.url == updateUrl) add("插件／更新地址" to plugin.url)
+    private class SourceAddress(val label: String, val url: String)
+
+    private fun sourceAddresses(plugin: Plugin): List<SourceAddress> {
+        val update = plugin.updateUrl
+        return buildList {
+            if (plugin.url.isNotBlank() && plugin.url == update) add(SourceAddress("插件／更新地址", plugin.url))
             else {
-                if (plugin.url.isNotBlank()) add("插件地址" to plugin.url)
-                if (updateUrl.isNotBlank()) add("更新地址" to updateUrl)
+                if (plugin.url.isNotBlank()) add(SourceAddress("插件地址", plugin.url))
+                if (update.isNotBlank()) add(SourceAddress("更新地址", update))
             }
-            if (plugin.subscriptionManaged) add("所属订阅" to plugin.origin)
-        }
-        PrismContextMenu(plugin.displayName, "音源信息", onDismiss, readFocus) {
-            Row(Modifier.fillMaxWidth().background(c.foreground.copy(alpha = .04f), RoundedCornerShape(12.dp)).padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                PlatformIcon(plugin.platform, Modifier.size(38.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("版本 ${plugin.metadata.optString("version").ifBlank { "未提供" }}", color = c.foreground, fontSize = 15.sp)
-                    Text("作者 ${plugin.metadata.optString("author").ifBlank { "未提供" }}", color = c.muted, fontSize = 12.sp,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                Text(if (plugin.enabled) "已启用" else "已停用", color = if (plugin.enabled) c.accent else c.muted, fontSize = 12.sp)
-            }
-            SourceInfoDetails(details, readFocus, onDismiss)
+            if (plugin.subscriptionManaged) add(SourceAddress("订阅来源", plugin.origin))
         }
     }
 
-    @Composable private fun SourceInfoDetails(details: List<Pair<String, String>>, readFocus: FocusRequester, onDismiss: () -> Unit) {
+    /* 只有一层弹窗。地址是同一窗里的下页，来回靠底部那行切换：换页时焦点
+       留在这一行上（它没离开组合），所以换完不需要请求焦点——弹窗里内容一
+       换，旧焦点就没了，之后再 request 全部失效。 */
+    @Composable private fun PluginInfoDialog(plugin: Plugin, onDismiss: () -> Unit) {
         val c = LocalPrismColors.current
-        val closeFocus = remember { FocusRequester() }
-        val scroll = rememberScrollState()
-        val scope = rememberCoroutineScope()
-        val scrollStep = with(LocalDensity.current) { 96.dp.toPx() }
-        Column(Modifier.fillMaxWidth().heightIn(max = 220.dp).focusRequester(readFocus)
-            .auraFocus(RoundedCornerShape(8.dp), scale = 1f)
-            .onPreviewKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown) false
-                else when (event.key) {
-                    Key.DirectionDown -> {
-                        if (scroll.value < scroll.maxValue) scope.launch { scroll.scrollBy(scrollStep) }
-                        else closeFocus.requestFocus()
-                        true
+        val addresses = remember(plugin) { sourceAddresses(plugin) }
+        val sourceBytes = remember(plugin.source) { plugin.source.toByteArray(Charsets.UTF_8).size }
+        var open by remember(plugin.id) { mutableStateOf(false) }
+        val doorFocus = remember(plugin.id) { FocusRequester() }
+        val closeFocus = remember(plugin.id) { FocusRequester() }
+        val rowFocus = remember(plugin.id) { List(addresses.size) { FocusRequester() } }
+        /* 返回键先退回上页：焦点得先落到入口行（它不随换页离场），
+           否则旧焦点跟着地址行一起消失，之后谁也接不住。 */
+        PrismContextMenu(plugin.displayName, "音源信息",
+            { if (open) { doorFocus.requestFocus(); open = false } else onDismiss() },
+            if (addresses.isEmpty()) closeFocus else doorFocus) {
+            if (open) {
+                SourceAddressList(addresses, rowFocus, doorFocus, closeFocus)
+            } else {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    PlatformIcon(plugin.platform, Modifier.size(36.dp))
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("版本 ${plugin.metadata.optString("version").ifBlank { "未提供" }} · %.1f KiB".format(sourceBytes / 1024.0),
+                            color = c.foreground, fontSize = 15.sp, lineHeight = 20.sp)
+                        Text("作者 ${plugin.metadata.optString("author").ifBlank { "未提供" }}",
+                            color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    Key.DirectionUp -> { scope.launch { scroll.scrollBy(-scrollStep) }; true }
-                    else -> false
+                    Text(if (plugin.enabled) "已启用" else "已停用",
+                        color = if (plugin.enabled) c.accent else c.muted, fontSize = 12.sp)
                 }
-            }.focusable().verticalScroll(scroll).padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            details.forEachIndexed { index, (label, value) ->
-                if (index > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(c.line.copy(alpha = .4f)))
-                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(label, color = c.muted, fontSize = 12.sp, lineHeight = 16.sp)
-                    Text(value, color = c.foreground, fontSize = 14.sp, lineHeight = 20.sp)
+                plugin.metadata.optString("description").trim().takeIf { it.isNotBlank() }?.let { text ->
+                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("说明", color = c.muted, fontSize = 11.sp, letterSpacing = .6.sp)
+                        Text(text, color = c.foreground, fontSize = 14.sp, lineHeight = 21.sp,
+                            maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("支持能力", color = c.muted, fontSize = 11.sp, letterSpacing = .6.sp)
+                    Text(plugin.capabilities.labels.joinToString(" · ").ifBlank { "未识别到支持的能力" },
+                        color = c.foreground, fontSize = 14.sp, lineHeight = 21.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
             }
+            if (addresses.isNotEmpty()) {
+                Box(Modifier.fillMaxWidth().height(1.dp).background(c.foreground.copy(alpha = .09f)))
+                DoorRow(open, addresses.size, { open = !open }, doorFocus,
+                    Modifier.focusProperties {
+                        if (open) { up = rowFocus.last(); down = rowFocus.first() } else down = closeFocus
+                    })
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                PrismAction("关闭", onDismiss, Modifier.focusRequester(closeFocus)
+                    .focusProperties { up = doorFocus }, primary = true)
+            }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-            SettingsButton("关闭", onDismiss, Modifier.focusRequester(closeFocus).focusProperties { up = readFocus }, primary = true)
+    }
+
+    /* 下页入口。同一条槽位只换文案与图标，节点不离开组合，焦点才不会丢。 */
+    @Composable private fun DoorRow(
+        open: Boolean, count: Int, onToggle: () -> Unit,
+        focus: FocusRequester, modifier: Modifier = Modifier,
+    ) {
+        val c = LocalPrismColors.current
+        Row(modifier.fillMaxWidth().heightIn(min = 46.dp).focusRequester(focus).rowFocus()
+            .clickable { onToggle() }.padding(horizontal = 14.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Glyph(if (open) "back" else "link", Modifier.size(15.dp),
+                if (open) c.muted else c.accent.copy(alpha = .75f))
+            Spacer(Modifier.width(11.dp))
+            Text(if (open) "返回音源信息" else "查看地址", Modifier.weight(1f),
+                color = if (open) c.muted else c.foreground, fontSize = 14.sp, maxLines = 1)
+            if (!open) Text("$count 项", color = c.muted, fontSize = 12.sp)
+        }
+    }
+
+    /* 地址行：OK 复制，完整地址直接给这一行（最多两行），不另开面板。
+       行焦点由调用方持有，首行上接入口行、末行下接关闭按钮。 */
+    @Composable private fun SourceAddressList(
+        addresses: List<SourceAddress>, rowFocus: List<FocusRequester>,
+        before: FocusRequester, after: FocusRequester,
+    ) {
+        val c = LocalPrismColors.current
+        val context = LocalContext.current
+        var copied by remember(addresses) { mutableStateOf("") }
+        LaunchedEffect(copied) { if (copied.isNotBlank()) { delay(1600); copied = "" } }
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            addresses.forEachIndexed { index, address ->
+                Row(Modifier.fillMaxWidth()
+                    .focusRequester(rowFocus[index])
+                    .focusProperties {
+                        if (index == 0) up = before else up = rowFocus[index - 1]
+                        if (index == addresses.lastIndex) down = after else down = rowFocus[index + 1]
+                    }
+                    .rowFocus()
+                    .clickable {
+                        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText(address.label, address.url))
+                        copied = address.label
+                    }
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(address.label, color = c.muted, fontSize = 12.sp, lineHeight = 16.sp)
+                        Text(address.url, color = c.foreground, fontSize = 12.sp, lineHeight = 17.sp,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                    Box(Modifier.width(52.dp), contentAlignment = Alignment.CenterEnd) {
+                        Text(if (copied == address.label) "已复制" else "复制",
+                            color = if (copied == address.label) c.accent else c.muted.copy(alpha = .7f),
+                            fontSize = 12.sp, maxLines = 1)
+                    }
+                }
+            }
         }
     }
 
@@ -6148,16 +6440,25 @@ internal fun matchesSearchHistory(value: String, query: String): Boolean {
 @Composable private fun Input(value: String, onChange: (String) -> Unit, hint: String, modifier: Modifier = Modifier, secret: Boolean = false, keyboardType: KeyboardType = KeyboardType.Text, manualKeyboard: Boolean = false, onSubmit: (() -> Unit)? = null) {
     var focused by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(!manualKeyboard) }
+    var textFieldValue by remember { mutableStateOf(TextFieldValue(value, selection = TextRange(value.length))) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val c = LocalPrismColors.current
+    LaunchedEffect(value) {
+        if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, selection = TextRange(value.length))
+    }
     LaunchedEffect(editing) { if (manualKeyboard && editing) { withFrameNanos { }; keyboardController?.show() } }
     /* A read-only field can still be handed the IME the moment it gains focus, which is exactly
        when the remote is travelling through with direction keys. Keep it closed until OK asks. */
     LaunchedEffect(focused, editing) {
         if (manualKeyboard && focused && !editing) { withFrameNanos { }; keyboardController?.hide() }
     }
-    BasicTextField(value = value, onValueChange = onChange, singleLine = true, readOnly = manualKeyboard && !editing,
+    BasicTextField(value = textFieldValue, onValueChange = {
+        val previousText = textFieldValue.text
+        textFieldValue = it
+        if (it.text != previousText) onChange(it.text)
+    }, singleLine = true, readOnly = manualKeyboard && !editing,
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = {
             keyboardController?.hide()
@@ -6170,14 +6471,14 @@ internal fun matchesSearchHistory(value: String, query: String): Boolean {
         visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
         modifier = modifier.onPreviewKeyEvent { event ->
             val down = event.type == KeyEventType.KeyDown
-            if (down && event.key in setOf(Key.DirectionCenter, Key.Enter, Key.NumPadEnter)) {
-                if (manualKeyboard && !editing) { editing = true; true }
-                else if (manualKeyboard && editing) { editing = false; keyboardController?.hide(); true }
-                else false
+            if (editing && imeVisible) false
+            else if (down && manualKeyboard && event.key in setOf(Key.DirectionCenter, Key.Enter, Key.NumPadEnter)) {
+                textFieldValue = textFieldValue.copy(selection = TextRange(textFieldValue.text.length), composition = null)
+                editing = true
+                keyboardController?.show()
+                true
             }
-            /* A direction key must always leave the field, editing or not: once the IME has
-               been closed the field would otherwise keep eating the keys for a caret the user
-               is not even looking at, and the buttons below become unreachable. */
+            // 键盘收起后，方向键交回页面导航；键盘显示期间留给文字编辑。
             else if (down && event.key == Key.DirectionRight) {
                 if (manualKeyboard && editing) { editing = false; keyboardController?.hide() }
                 focusManager.moveFocus(FocusDirection.Right); true
