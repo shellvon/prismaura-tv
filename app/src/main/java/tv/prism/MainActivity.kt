@@ -6113,6 +6113,8 @@ class MainActivity : ComponentActivity() {
     @Composable private fun PluginInfoDialog(plugin: Plugin, onDismiss: () -> Unit) {
         val c = LocalPrismColors.current
         val addresses = remember(plugin) { sourceAddresses(plugin) }
+        /* 导入说明是可选的：插件没写就整块不出现，写了才占位。 */
+        val hints = remember(plugin) { importHints(plugin).take(2) }
         val sourceBytes = remember(plugin.source) { plugin.source.toByteArray(Charsets.UTF_8).size }
         var open by remember(plugin.id) { mutableStateOf(false) }
         val doorFocus = remember(plugin.id) { FocusRequester() }
@@ -6140,14 +6142,27 @@ class MainActivity : ComponentActivity() {
                 plugin.metadata.optString("description").trim().takeIf { it.isNotBlank() }?.let { text ->
                     Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         Text("说明", color = c.muted, fontSize = 11.sp, letterSpacing = .6.sp)
+                        /* 有导入说明时少给一行：弹窗不能因为多了一块而顶出屏幕。 */
                         Text(text, color = c.foreground, fontSize = 14.sp, lineHeight = 21.sp,
-                            maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            maxLines = if (hints.isEmpty()) 3 else 2, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Text("支持能力", color = c.muted, fontSize = 11.sp, letterSpacing = .6.sp)
                     Text(plugin.capabilities.labels.joinToString(" · ").ifBlank { "未识别到支持的能力" },
                         color = c.foreground, fontSize = 14.sp, lineHeight = 21.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+                if (hints.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("导入说明", color = c.muted, fontSize = 11.sp, letterSpacing = .6.sp)
+                        hints.forEach { line ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("·", color = c.accent.copy(alpha = .7f), fontSize = 12.sp, lineHeight = 17.sp)
+                                Text(line, Modifier.weight(1f), color = c.foreground, fontSize = 12.sp,
+                                    lineHeight = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
                 }
             }
             if (addresses.isNotEmpty()) {
