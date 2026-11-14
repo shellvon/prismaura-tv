@@ -26,7 +26,8 @@
 | cacheControl | ✅ | cache / no-cache / no-store，仅缓存解析结果 |
 | getMusicInfo(item) | ➖ | TV 暂不补全单曲详情，必要字段随搜索／歌单结果返回 |
 | getMusicComments(item) | ➖ | TV 暂不提供评论界面 |
-| hints / appVersion | ➖ | 不展示自定义导入提示，不按 MusicFree 版本号限制客户端 |
+| hints | ✅ | 导入分组展示在导入弹窗与音源信息；其它分组忽略 |
+| appVersion | ➖ | 不按 MusicFree 版本号限制客户端 |
 | webdav、任意 RN / Node 原生模块 | ❌ | 不在内置模块表中的 require 会报错 |
 | 加密 QRC、QRC XML 容器、KRC | ❌ | 插件需自行解密、提取或转换，返回下文支持的纯文本格式 |
 | MV 清晰度选择 | ❌ | supportedVideoQualities 仅记录元数据 |
@@ -44,6 +45,7 @@
 | `srcUrl` | string | 更新地址；相对路径按最初安装地址解析，缺省使用安装地址 |
 | `cacheControl` | `'cache' \| 'no-cache' \| 'no-store'` | 缺省／未知值按 no-cache 处理 |
 | `userVariables` | `{ key, title?, name?, hint? }[]` | 展示名称优先 name，其次 title，再次 key；hint 是输入提示 |
+| `hints` | `{ importMusicSheet?: string[], importMusicItem?: string[] }` | 纯文本提示；导入弹窗与音源信息展示导入分组，未声明时不显示 |
 
 用户变量通过 `env.getUserVariables()` 读取。配置字段含 password、cookie、token、secret 等敏感键名时界面会遮罩；遮罩不意味着变量已加密，见 [安全说明](../SECURITY.md)。
 

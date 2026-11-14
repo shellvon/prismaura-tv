@@ -220,6 +220,12 @@ export interface PrismPlugin {
   supportedVideoQualities?: string[];
   /** 插件配置字段。 */
   userVariables?: UserVariable[];
+  /** 导入提示：纯文本，按分组展示在导入弹窗与音源信息；未声明的分组不显示。 */
+  hints?: {
+    importMusicSheet?: string[];
+    importMusicItem?: string[];
+    [group: string]: string[] | undefined;
+  };
   /** Prism：收窄自动识别的能力，通常无需填写。 */
   capabilities?: CapabilityOverrides;
   /** 标准：query 为关键词，page 从 1 开始，type 决定返回的实体类型。 */
