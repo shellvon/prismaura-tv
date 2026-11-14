@@ -6,7 +6,7 @@ const path = require('node:path');
 
 function runtime(onRequest, onCookie = () => ({ok:true,value:true})) {
   const waiters = new Map();
-  const context = {console, setTimeout, clearTimeout, URL, URLSearchParams, TextEncoder, TextDecoder, atob,
+  const context = {console, setTimeout, clearTimeout, URL, URLSearchParams, TextEncoder, TextDecoder, atob, btoa,
     PrismBridge: {
       request(id, request) { onRequest(id, JSON.parse(request), context); },
       result(id, result) { waiters.get(id)?.(JSON.parse(result)); },
@@ -39,9 +39,16 @@ test('getMediaSource returns plugin headers and reports missing modules', async 
   assert.throws(() => r.context.PrismEngine.load(`require('missing-package'); module.exports={platform:'x'}`, {}), /不支持的模块/);
 });
 
+test('describe keeps standard import hints and drops non-string entries', async () => {
+  const r = runtime(() => assert.fail('unexpected HTTP'));
+  const meta = JSON.parse(r.context.PrismEngine.load(`module.exports={platform:'hinted',hints:{importMusicSheet:['a',42,'b'],importMusicItem:[],other:'x'},importMusicSheet(){return []}}`, {}));
+  assert.deepEqual(meta.hints, {importMusicSheet: ['a', 'b']});
+  assert.equal(meta.importSheet, true);
+});
+
 test('Optional extensions declare quality and resolve MV with headers', async () => {
   const r = runtime(() => assert.fail('unexpected HTTP'));
-  const meta = JSON.parse(r.context.PrismEngine.load(`const {Buffer}=require('buffer'); module.exports={platform:'bili',supportedQualities:['128k','flac'],getMvSource(song){return {url:'https://example.test/'+Buffer.from(song.mvId).toString('base64'),headers:{Referer:'https://video.example.test/'}}}}`, {}));
+  const meta = JSON.parse(r.context.PrismEngine.load(`module.exports={platform:'bili',supportedQualities:['128k','flac'],getMvSource(song){return {url:'https://example.test/'+btoa(song.mvId),headers:{Referer:'https://video.example.test/'}}}}`, {}));
   assert.equal(meta.mvSource, true);
   assert.deepEqual(meta.supportedQualities, ['128k','flac']);
   const result = await r.call('getMvSource', [{mvId:'BV1'}]);
@@ -215,4 +222,27 @@ test('hot search capability is advertised only when the plugin implements it', a
   assert.equal(disabled.hotSearch, false);
   const invalid = JSON.parse(r.context.PrismEngine.load(`module.exports={platform:'invalid',getHotSearch:true}`, {}));
   assert.equal(invalid.hotSearch, false);
+});
+
+test('plugin sandbox injects the MusicFree parameters, process included', async () => {
+  const r = runtime(() => assert.fail('unexpected HTTP'));
+  r.context.PrismEngine.load(`module.exports={platform:'env-fixture',search(){return {
+    platform: process.platform, version: process.version, os: env.os, app: env.appVersion,
+    cookie: process.env.userVariables.cookie, alias: typeof __musicfree_require, url: typeof URL,
+    buffer: typeof Buffer
+  }}}`, {cookie:'kept'}, '0.4.0');
+  const result = await r.call('search', ['hello', 1, 'music']);
+  assert.deepEqual(result.value, {platform:'android', version:'0.4.0', os:'android', app:'0.4.0',
+    cookie:'kept', alias:'function', url:'function', buffer:'undefined'});
+});
+
+test('process is also reachable as a global for pre-captured closures', async () => {
+  const r = runtime(() => assert.fail('unexpected HTTP'));
+  // Bundled plugins read process from a closure the parameter never reaches.
+  r.context.PrismEngine.load(`const platform = globalThis.process.platform;
+    const version = window.process.version;
+    module.exports={platform:'global-fixture',search(){return {platform, version}}}`,
+    {}, '0.4.0');
+  const result = await r.call('search', ['hello', 1, 'music']);
+  assert.deepEqual(result.value, {platform:'android', version:'0.4.0'});
 });

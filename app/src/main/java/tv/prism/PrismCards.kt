@@ -468,6 +468,8 @@ private val ColIndex = 34.dp
 private val ColCover = 38.dp
 private val ColGap = 10.dp
 private val ColSource = 58.dp
+/* 音质标签固定槽位：标签出现或消失都不挤窄标题列。 */
+private val ColQuality = 46.dp
 
 /**
  * The head of an artist/album/playlist page: the source's own image, the name, a short
@@ -559,13 +561,14 @@ fun PrismTrackHeader(modifier: Modifier = Modifier, managing: Boolean = false) {
         Text("标题", Modifier.weight(1.5f), color = c.muted, fontSize = 10.sp)
         Text("专辑", Modifier.weight(1f), color = c.muted, fontSize = 10.sp, maxLines = 1)
         Text("来源", Modifier.width(ColSource), color = c.muted, fontSize = 10.sp)
+        Spacer(Modifier.width(ColQuality))
     }
 }
 
 /** One row of a real table. `index` is the position in THIS list. */
 @Composable
 fun PrismTrackRow(song: Song, index: Int, onClick: () -> Unit, modifier: Modifier = Modifier, current: Boolean = false,
-                  qualityTag: String? = null, onFocus: () -> Unit = {}, onLongPress: (() -> Unit)? = null,
+                  qualityTag: String? = null, showMv: Boolean = true, onFocus: () -> Unit = {}, onLongPress: (() -> Unit)? = null,
                   selected: Boolean? = null) {
     val c = LocalPrismColors.current
     var focused by remember { mutableStateOf(false) }
@@ -600,7 +603,7 @@ fun PrismTrackRow(song: Song, index: Int, onClick: () -> Unit, modifier: Modifie
         Box(Modifier.width(ColSource), contentAlignment = Alignment.CenterStart) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 PlatformIcon(song.platform, Modifier.size(18.dp))
-                if (song.hasMv) {
+                if (showMv && song.hasMv) {
                     Spacer(Modifier.width(5.dp))
                     Row(Modifier.border(1.dp, c.accent.copy(alpha = .45f), RoundedCornerShape(3.dp))
                         .padding(horizontal = 3.dp, vertical = 1.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -612,10 +615,12 @@ fun PrismTrackRow(song: Song, index: Int, onClick: () -> Unit, modifier: Modifie
             }
         }
         if (qualityTag != null) {
-            Box(Modifier.border(1.dp, c.accent.copy(alpha = .42f), RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 2.dp)) {
-                Text(qualityTag, color = c.accent, fontSize = 9.sp, letterSpacing = .6.sp, maxLines = 1)
+            Box(Modifier.width(ColQuality), contentAlignment = Alignment.CenterEnd) {
+                Box(Modifier.border(1.dp, c.accent.copy(alpha = .42f), RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 2.dp)) {
+                    Text(qualityTag, color = c.accent, fontSize = 9.sp, letterSpacing = .6.sp, maxLines = 1)
+                }
             }
-        }
+        } else Spacer(Modifier.width(ColQuality))
     }
 }
 

@@ -17,6 +17,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -319,11 +320,25 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
                 drawLine(color, tip, Offset(tip.x - s * .13f, tip.y - s * .12f), w, StrokeCap.Round)
                 drawLine(color, tip, Offset(tip.x - s * .12f, tip.y + s * .12f), w, StrokeCap.Round)
             }
+            /* 链条：两节互扣的环节，斜 45°。之前是两段反向圆弧，缩到 18dp 就只剩
+               一个循环箭头——那是「回收」，不是「链接」。 */
             "link" -> {
-                drawArc(color, startAngle = 40f, sweepAngle = 200f, useCenter = false,
-                    topLeft = p(.24f, .24f), size = Size(s * .26f, s * .52f), style = Stroke(w, cap = StrokeCap.Round))
-                drawArc(color, startAngle = 220f, sweepAngle = 200f, useCenter = false,
-                    topLeft = p(.50f, .24f), size = Size(s * .26f, s * .52f), style = Stroke(w, cap = StrokeCap.Round))
+                rotate(-45f) {
+                    drawRoundRect(color, topLeft = p(.14f, .41f), size = Size(s * .44f, s * .18f),
+                        cornerRadius = CornerRadius(s * .09f), style = Stroke(w))
+                    drawRoundRect(color, topLeft = p(.44f, .41f), size = Size(s * .44f, s * .18f),
+                        cornerRadius = CornerRadius(s * .09f), style = Stroke(w))
+                }
+            }
+            /* 导入：托盘 + 落进去的箭头。动作是「把歌单收进来」，不是「连一个地址」。 */
+            "import" -> {
+                drawLine(color, p(.5f, .12f), p(.5f, .56f), w, StrokeCap.Round)
+                drawLine(color, p(.34f, .42f), p(.5f, .57f), w, StrokeCap.Round)
+                drawLine(color, p(.66f, .42f), p(.5f, .57f), w, StrokeCap.Round)
+                drawPath(path {
+                    moveTo(s * .20f, s * .56f); lineTo(s * .20f, s * .84f)
+                    lineTo(s * .80f, s * .84f); lineTo(s * .80f, s * .56f)
+                }, color, style = Stroke(w, cap = StrokeCap.Round, join = StrokeJoin.Round))
             }
             "remote" -> {
                 drawRoundRect(color, topLeft = p(.30f, .08f), size = Size(s * .40f, s * .84f),

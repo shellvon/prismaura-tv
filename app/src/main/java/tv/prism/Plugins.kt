@@ -329,9 +329,12 @@ class Plugins(private val context: Context, val client: PluginClient) {
         val state = mutable.value
         withContext(Dispatchers.IO) { write(state.copy(plugins = state.plugins.map { if (it.id == id) it.copy(variables = variables) else it })) }
     }
-    suspend fun setEnabled(id: String, enabled: Boolean) = mutex.withLock {
+    suspend fun setEnabled(id: String, enabled: Boolean) = setEnabled(listOf(id), enabled)
+    /* 整组开关写一次文件：逐个 setEnabled 会把 plugins.json 连写二十遍。 */
+    suspend fun setEnabled(ids: Collection<String>, enabled: Boolean) = mutex.withLock {
         val state = mutable.value
-        withContext(Dispatchers.IO) { write(state.copy(plugins = state.plugins.map { if (it.id == id) it.copy(enabled = enabled) else it })) }
+        val target = ids.toSet()
+        withContext(Dispatchers.IO) { write(state.copy(plugins = state.plugins.map { if (it.id in target) it.copy(enabled = enabled) else it })) }
     }
 
     /** Reset this plugin's saved parameters, cookies and resolved URLs, reporting each failed step. */

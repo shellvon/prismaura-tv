@@ -155,7 +155,7 @@ class PluginService : Service() {
                 val variables = if (method == "describe") "{}" else b.getString("variables") ?: "{}"
                 val args = b.getString("args") ?: "[]"
                 val id = JSONObject.quote(b.getString("id") ?: "")
-                val js = """(function(){try{var m=PrismEngine.load(${source.getOrThrow()},$variables);if(${JSONObject.quote(method)}==='describe'){PrismBridge.result($id,JSON.stringify({ok:true,value:JSON.parse(m)}));}else{PrismEngine.invoke($id,${JSONObject.quote(method)},$args);}}catch(e){PrismBridge.result($id,JSON.stringify({ok:false,error:String(e&&e.message||e)}));}})();"""
+                val js = """(function(){try{var m=PrismEngine.load(${source.getOrThrow()},$variables,${JSONObject.quote(BuildConfig.VERSION_NAME)});if(${JSONObject.quote(method)}==='describe'){PrismBridge.result($id,JSON.stringify({ok:true,value:JSON.parse(m)}));}else{PrismEngine.invoke($id,${JSONObject.quote(method)},$args);}}catch(e){PrismBridge.result($id,JSON.stringify({ok:false,error:String(e&&e.message||e)}));}})();"""
                 worker.current = msg
                 worker.web.evaluateJavascript(js, null)
             }

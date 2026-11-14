@@ -6,7 +6,6 @@ const modules = {
   qs: require('qs'),
   he: require('he'),
   cheerio: require('cheerio'),
-  buffer: require('buffer'),
 };
 let networkId = 0;
 const pending = new Map();
@@ -92,14 +91,25 @@ function prismFetch(input, init) {
 window.fetch = prismFetch;
 let plugin = null;
 window.PrismEngine = {
-  load(source, variables) {
+  load(source, variables, appVersion) {
     const module = { exports: {} };
-    const env = {getUserVariables: () => variables || {}};
+    const env = {
+      getUserVariables: () => variables || {},
+      get userVariables() { return variables || {}; },
+      appVersion: appVersion || '',
+      os: 'android',
+      lang: 'zh-CN',
+    };
+    /* MusicFree 第八形参 process。 */
+    const processShim = { platform: 'android', version: env.appVersion, env };
+    /* 打包器会把 process 提前捕进闭包，形参到不了那里，所以同一份 shim 再挂全局。 */
+    window.process = processShim;
     const requireModule = name => {
       if (!Object.prototype.hasOwnProperty.call(modules, name)) throw new Error('不支持的模块: ' + name);
       return modules[name];
     };
-    new Function('module', 'exports', 'require', 'env', source)(module, module.exports, requireModule, env);
+    new Function('require', '__musicfree_require', 'module', 'exports', 'console', 'env', 'URL', 'process', source)(
+      requireModule, requireModule, module, module.exports, window.console, env, window.URL, processShim);
     plugin = module.exports.default || module.exports;
     if (!plugin || typeof plugin !== 'object' || typeof plugin.platform !== 'string' || !plugin.platform.trim()) throw new Error('插件缺少 platform 名称');
     // Optional declarations can turn an empty/unsupported implementation off, never invent one.
@@ -123,6 +133,15 @@ window.PrismEngine = {
       search: typeof plugin.search === 'function', media: typeof plugin.getMediaSource === 'function',
       lyric: capability('lyric', 'getLyric'), importSheet: typeof plugin.importMusicSheet === 'function',
       importItem: typeof plugin.importMusicItem === 'function',
+      /* 标准 hints：{ importMusicSheet: [...], importMusicItem: [...] }，只留字符串。 */
+      hints: plugin.hints && typeof plugin.hints === 'object' ? Object.keys(plugin.hints).reduce((kept, key) => {
+        const value = plugin.hints[key];
+        if (Array.isArray(value)) {
+          const lines = value.filter(item => typeof item === 'string' && item.trim());
+          if (lines.length) kept[key] = lines;
+        }
+        return kept;
+      }, {}) : undefined,
       hotSearch: capability('hotSearch', 'getHotSearch'),
       /* Prism 扩展（非 MusicFree 标准）：扫码登录。两个方法齐全，电视端才显示「扫码登录」；
          缺少时配置页照常提供 Cookie 手填与扫码输入。

@@ -174,11 +174,24 @@ class MainActivity : ComponentActivity() {
     private var status by mutableStateOf("正在连接播放器…")
     private var playbackStatus by mutableStateOf("正在连接播放器…")
 
+    /* 持焦节点被换掉后按键会整页落空；记一次，由界面按当前页面补落焦。 */
+    private var focusRecovery by mutableStateOf(0)
+    /* 被吞掉的那次按键，落焦后重放一次。 */
+    private var replayKey by mutableStateOf<KeyEvent?>(null)
+    private var replaying = false
+    private val replayableKeys = setOf(
+        KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT,
+        KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
+    )
+
     private fun reportPlayback(message: String) {
         playbackStatus = message
         status = message
     }
     private var page by mutableStateOf("home")
+    /* 音源页是按订阅分组的长列表：二十多个音源、两个组时，折叠比多选更值。
+       状态挂在 Activity 上，离开设置页再回来不会自己展开。 */
+    private val collapsedSubscriptions = mutableStateMapOf<String, Boolean>()
     private var playerOpen by mutableStateOf(false)
     private var playerScreenOff by mutableStateOf(false)
     // Retain the player during the fade; remove it once the black curtain is opaque.
@@ -1619,7 +1632,7 @@ class MainActivity : ComponentActivity() {
                         lyricCalibrationMs = LyricCalibration.load(this@MainActivity, stream.song.key)
                         loadLyrics(stream.plugin, stream.song)
                         if (player.isPlaying) listener.onIsPlayingChanged(true)
-                        reportPlayback("正在播放：${original.title}" + if (stream.song.pluginId != original.pluginId) " · ${stream.song.sourceLabel}" else "")
+                        reportPlayback("正在播放：${original.title}" + if (stream.song.pluginId != original.pluginId) " · 已由${original.sourceLabel}切到${stream.song.sourceLabel}" else "")
                         lifecycleScope.launch { runCatching { library.record(original) } }
                         return@withTimeoutOrNull true
                     }
@@ -1706,6 +1719,15 @@ class MainActivity : ComponentActivity() {
         return capable.sortedBy { if (it.platform == target) 0 else 1 }
     }
 
+    /* 标准 hints：{ importMusicSheet: [...], importMusicItem: [...] }，展示当前选中音源的那一组。 */
+    private fun importHints(plugin: Plugin): List<String> {
+        val hints = plugin.metadata.optJSONObject("hints") ?: return emptyList()
+        return listOf("importMusicSheet", "importMusicItem")
+            .mapNotNull { key -> hints.optJSONArray(key) }
+            .flatMap { array -> (0 until array.length()).mapNotNull { i -> array.optString(i).takeIf { it.isNotBlank() } } }
+            .distinct()
+    }
+
     /* 标准协议的 importMusicSheet 只返回歌曲数组，没有歌单标题，所以留空时按音源名自动命名。 */
     private fun autoPlaylistName(plugin: Plugin, existing: Set<String>): String {
         val base = plugin.displayName.ifBlank { plugin.name }.take(56)
@@ -1722,10 +1744,10 @@ class MainActivity : ComponentActivity() {
         return match.value.trimEnd(')', '】', ']', '}', ',', '.', ';', ':', '!', '?')
     }
 
-    private fun importPlaylist(name: String, input: String) {
+    private fun importPlaylist(name: String, input: String, target: Plugin? = null) {
         val url = shareUrlOf(input)
         if (url.isBlank()) { status = "请填写歌单或单曲链接"; return }
-        val candidates = importCandidates(url)
+        val candidates = target?.let { listOf(it) } ?: importCandidates(url)
         if (candidates.isEmpty()) {
             status = "没有音源支持链接导入：请先启用支持歌单或单曲导入的音源"
             return
@@ -1734,7 +1756,7 @@ class MainActivity : ComponentActivity() {
             busy = true
             val reasons = mutableListOf<String>()
             try {
-                for (plugin in candidates) {
+                for ((position, plugin) in candidates.withIndex()) {
                     status = "正在用 ${plugin.displayName} 导入…"
                     var sheet: JSONArray? = null
                     var failure = ""
@@ -1742,9 +1764,11 @@ class MainActivity : ComponentActivity() {
                         if (plugin.metadata.optBoolean("importSheet")) add("importMusicSheet")
                         if (plugin.metadata.optBoolean("importItem")) add("importMusicItem")
                     }
+                    /* 点名的音源给足预算；自动模式下靠后的只试 20s。 */
+                    val budget = if (position == 0) 180_000L else 20_000L
                     for (method in methods) {
                         try {
-                            val imported = plugins.client.call(plugin.source, plugin.variables, method, JSONArray().put(url), plugin.id)
+                            val imported = plugins.client.call(plugin.source, plugin.variables, method, JSONArray().put(url), plugin.id, budget)
                             val tracks = if (method == "importMusicItem") (imported as? JSONObject)?.let { JSONArray().put(it) } else imported as? JSONArray
                             if (tracks != null && tracks.length() > 0) { sheet = tracks; break }
                             failure = "插件没有返回歌曲"
@@ -1771,8 +1795,12 @@ class MainActivity : ComponentActivity() {
                         if (songs.size > kept.size) "（歌单共 ${songs.size} 首，超出 5000 首上限的部分未导入）" else ""
                     return@launch
                 }
-                status = "链接导入失败：" + (reasons.firstOrNull() ?: "音源没有返回歌曲") +
-                    if (reasons.size > 1) "（已依次尝试 ${reasons.size} 个音源）" else ""
+                val detail = reasons.take(2).joinToString("；").ifBlank { "音源没有返回歌曲" }
+                status = "链接导入失败：$detail" + when {
+                    target != null -> "；可以换个音源再试"
+                    reasons.size > 2 -> "（共尝试 ${reasons.size} 个音源）"
+                    else -> ""
+                }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { status = "链接导入失败：${e.message}" }
             finally { busy = false }
@@ -2101,6 +2129,9 @@ class MainActivity : ComponentActivity() {
                         owner.requestFocus()
                     }
                 }
+                focusRecovery++
+                /* BACK／菜单不重放：换了上下文再做一次就串味了。 */
+                if (event.action == KeyEvent.ACTION_DOWN && !replaying && event.keyCode in replayableKeys) replayKey = KeyEvent(event)
             }
             android.util.Log.w("PrismFocus", "焦点暂不可用，忽略本次按键 ${event.keyCode}；恢复焦点=$noActiveFocus")
             true
@@ -2119,6 +2150,8 @@ class MainActivity : ComponentActivity() {
             "${it.id}:${it.enabled}:${it.source.hashCode()}:${it.metadata}:${it.variables}"
         }
         val activePlugins = state.plugins.filter { it.enabled }
+        /* 徽标只承诺能兑现的能力：有 mv 字段但没有 getMvSource 的插件不亮 MV。 */
+        val mvCapableIds = remember(state.plugins) { state.plugins.filter { it.capabilities.has("mvSource") }.mapTo(HashSet()) { it.id } }
         val recommendationSource = Discovery.select(activePlugins, recommendationPluginId) { it.recommendations }
         val chartSource = Discovery.select(activePlugins, chartPluginId) { it.charts }
         val artistSeeds = remember(libraryState, state.plugins) { Discovery.artists(libraryState, state.plugins) }
@@ -2610,6 +2643,8 @@ class MainActivity : ComponentActivity() {
            这里，而不是屏幕右上角那个按钮上。 */
         val libraryEmptyFocus = remember { FocusAnchor() }
         val libraryPlaylistListState = remember { LazyListState() }
+        /* 播放会把这首歌挪到「最近」第一条；那一行点名失败时，先滚回页首再落列表锚点。 */
+        val librarySongListState = remember(selectedList) { LazyListState() }
         val discoverEntryFocus = remember { FocusAnchor() }
         /* 推荐 shelf 的分类条与首卡各持一个锚点：页头 Down 逐层进入，
            卡片 Up 回分类条，而不是跳去导航。 */
@@ -2702,6 +2737,25 @@ class MainActivity : ComponentActivity() {
         }
         val pageEntryFocus = entryFocus(page)
         val contentMenuOpen = trackMenu != null || subjectMenu != null || collectionMenu != null || libraryListMenu
+        /* 界面侧补落焦：搜索页优先回结果首条，其余回页面入口；弹窗与播放页自己持有焦点。 */
+        LaunchedEffect(focusRecovery) {
+            if (focusRecovery == 0) return@LaunchedEffect
+            if (playerOpen || queueOpen || contentMenuOpen || importDialog || activeMv != null) return@LaunchedEffect
+            val target = if (page == "search" && !searchSuggestionsVisible && searchResultsFocus.attached) searchResultsFocus
+                else entryFocus(page)
+            repeat(6) {
+                withFrameNanos { }
+                if (target?.requestIfAttached() == true) {
+                    replayKey?.let { key ->
+                        replayKey = null
+                        replaying = true
+                        try { dispatchKeyEvent(KeyEvent(key)) } finally { replaying = false }
+                    }
+                    return@LaunchedEffect
+                }
+            }
+            replayKey = null
+        }
         LaunchedEffect(contentMenuOpen) {
             if (contentMenuOpen) {
                 menuWasOpen = true; menuPage = page; menuBrowse = browseItem; menuPlayer = playerOpen
@@ -2758,27 +2812,16 @@ class MainActivity : ComponentActivity() {
         }
         /* The bar stays put. Fading it after first use left a black strip where the menu had
            been, which reads as a rendering bug rather than as focus economy. */
-        /* Quality is resolved one track at a time and only on detail pages: on a list page this
-           would mean a network round-trip per row before anything useful is on screen. The empty
-           string records "asked, nothing to show" so a failed lookup is not retried on every focus. */
-        val qualityTags = remember { mutableStateMapOf<String, String>() }
-        val qualityPending = remember { mutableSetOf<String>() }
-        fun resolveQuality(song: Song) {
-            if (qualityTags.containsKey(song.key) || !qualityPending.add(song.key)) return
-            val plugin = state.plugins.firstOrNull { it.id == song.pluginId }
-            if (plugin == null) { qualityPending.remove(song.key); return }
-            lifecycleScope.launch {
-                val qualities = song.data.optJSONObject("qualities")
-                val tag = when {
-                    qualities?.has("hires") == true -> "Hi-Res"
-                    qualities?.has("flac24bit") == true -> "24-bit"
-                    qualities?.has("flac") == true -> "无损"
-                    /* Standard-tier plugins say super instead of naming a codec. */
-                    qualities?.has("super") == true -> "无损"
-                    else -> null
-                }
-                qualityTags[song.key] = tag.orEmpty()
-                qualityPending.remove(song.key)
+        /* 标签首帧算出并占固定槽位：聚焦后才出现会把整行重排。 */
+        fun qualityTagOf(song: Song): String? {
+            val qualities = song.data.optJSONObject("qualities") ?: return null
+            return when {
+                qualities.has("hires") -> "Hi-Res"
+                qualities.has("flac24bit") -> "24-bit"
+                qualities.has("flac") -> "无损"
+                /* Standard-tier plugins say super instead of naming a codec. */
+                qualities.has("super") -> "无损"
+                else -> null
             }
         }
         /* Leaving the player through a subject link lands on a detail page, not on the mini
@@ -2876,6 +2919,30 @@ class MainActivity : ComponentActivity() {
             val plugin = state.plugins.firstOrNull { it.id == target.pluginId } ?: return@LaunchedEffect
             availableTiers = qualityOptions(plugin, target)
         }
+        /* 关闭播放页后回到离开的那一行；点不到（那首歌已被挪走）就滚回页首用列表锚点。 */
+        suspend fun restorePlayerReturnFocus(): Boolean {
+            fun tryRequest(requester: FocusRequester?): Boolean =
+                requester != null && runCatching { requester.requestFocus(); true }.getOrDefault(false)
+            val remembered = when (page) {
+                "search" -> searchFocusMemory.value?.first
+                "library" -> bodyFocusMemory.value
+                "discover" -> detailFocusMemory.value?.first ?: discoverFocusMemory.value?.first
+                else -> null
+            }
+            repeat(3) { withFrameNanos { }; if (tryRequest(remembered)) return true }
+            when (page) {
+                "search" -> {
+                    runCatching { searchListState.scrollToItem(0) }
+                    repeat(4) { withFrameNanos { }; if (searchResultsFocus.requestIfAttached()) return true }
+                }
+                "library" -> {
+                    runCatching { librarySongListState.scrollToItem(0) }
+                    repeat(4) { withFrameNanos { }; if (libraryContentFocus.requestIfAttached()) return true }
+                }
+                "discover" -> repeat(4) { withFrameNanos { }; if (discoverEntryFocus.requestIfAttached()) return true }
+            }
+            return false
+        }
         LaunchedEffect(playerOpen) {
             if (!playerOpen) {
                 playerScreenOff = false
@@ -2884,7 +2951,8 @@ class MainActivity : ComponentActivity() {
             if (playerOpen) playerWasOpen = true
             else if (playerWasOpen) {
                 withFrameNanos { }
-                if (!playerOpen && !suppressMiniReturn) miniFocus.requestFocus()
+                val restored = !suppressMiniReturn && restorePlayerReturnFocus()
+                if (!restored) miniFocus.requestFocus()
                 suppressMiniReturn = false
                 playerWasOpen = false
             }
@@ -3600,11 +3668,10 @@ class MainActivity : ComponentActivity() {
                                                             } else Modifier
                                                     ),
                                                     current = queue.getOrNull(queueIndex)?.key == song.key,
-                                                    qualityTag = qualityTags[song.key]?.takeIf { it.isNotBlank() },
+                                                    qualityTag = qualityTagOf(song), showMv = song.pluginId in mvCapableIds,
                                                     /* Reaching the end also requests the next page. */
                                                     onFocus = {
                                                         detailFocusMemory.value = rowFocus to (detailSongRowOffset() + index)
-                                                        resolveQuality(song)
                                                         if (index == browseSongs.lastIndex && browseMore && !browseLoading) loadBrowse(true)
                                                     },
                                                     onLongPress = { trackMenu = TrackMenuTarget(song, originFocus = "song:${song.key}") })
@@ -3628,7 +3695,7 @@ class MainActivity : ComponentActivity() {
                                             itemsIndexed(chartSongs) { index, song ->
                                             val rowFocus = if (index == 0) discoverEntryFocus.requester else trackFocus(song.key)
                                             detailCardFocus["song:${song.key}"] = rowFocus
-                                            PrismTrackRow(song, index, { playSingle(song) }, modifier = if (index == 0) Modifier.focusAnchor(discoverEntryFocus).focusProperties { if (detailHeaderFocus.attached) up = detailHeaderFocus.requester } else Modifier.focusRequester(rowFocus), current = queue.getOrNull(queueIndex)?.key == song.key, qualityTag = qualityTags[song.key]?.takeIf { it.isNotBlank() }, onFocus = { detailFocusMemory.value = rowFocus to index; resolveQuality(song) }, onLongPress = { trackMenu = TrackMenuTarget(song, originFocus = "song:${song.key}") })
+                                            PrismTrackRow(song, index, { playSingle(song) }, modifier = if (index == 0) Modifier.focusAnchor(discoverEntryFocus).focusProperties { if (detailHeaderFocus.attached) up = detailHeaderFocus.requester } else Modifier.focusRequester(rowFocus), current = queue.getOrNull(queueIndex)?.key == song.key, qualityTag = qualityTagOf(song), showMv = song.pluginId in mvCapableIds, onFocus = { detailFocusMemory.value = rowFocus to index }, onLongPress = { trackMenu = TrackMenuTarget(song, originFocus = "song:${song.key}") })
                                             }
                                         }
                                     }
@@ -3892,16 +3959,25 @@ class MainActivity : ComponentActivity() {
                                 }
                                 val suggestionRows = pinnedSuggestions ?: availableSuggestions
                                 val suggestionsVisible = searchSuggestionsVisible
-                                val searchContentFocus = if (suggestionsVisible) firstSuggestionFocus else searchResultsFocus
+                                /* 下键总要落到真实节点：联想与结果都可能为空，逐个退让到迷你条。 */
+                                val searchContentFocus = when {
+                                    suggestionsVisible && firstSuggestionFocus.attached -> firstSuggestionFocus
+                                    searchResultsFocus.attached -> searchResultsFocus
+                                    searchMoreFocus.attached -> searchMoreFocus
+                                    firstSuggestionFocus.attached -> firstSuggestionFocus
+                                    else -> searchResultsFocus
+                                }
                                 LaunchedEffect(focusSearchResults, busy, results.isNotEmpty(), entities.isNotEmpty(), hasMore, navBarFocused, searchFiltersOpen) {
                                     if (!focusSearchResults || navBarFocused || playerOpen || searchFiltersOpen) return@LaunchedEffect
                                     if (results.isEmpty() && entities.isEmpty() && busy) return@LaunchedEffect
                                     if (results.isNotEmpty() || entities.isNotEmpty() || hasMore) {
                                         searchListState.scrollToItem(0)
-                                        repeat(4) {
+                                        /* 首条可能同帧还没挂上；多等几帧，失败退回输入框。 */
+                                        repeat(12) {
                                             withFrameNanos { }
                                             if (searchResultsFocus.requestIfAttached()) { focusSearchResults = false; return@LaunchedEffect }
                                         }
+                                        searchInputFocus.requestIfAttached()
                                     } else {
                                         withFrameNanos { }; searchInputFocus.requestIfAttached()
                                     }
@@ -3928,9 +4004,13 @@ class MainActivity : ComponentActivity() {
                                     if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown && !target.attached) {
                                         focusScope.coroutineContext.cancelChildren()
                                         focusScope.launch {
-                                            if (!target.requester.requestAfterScroll {
+                                            val reached = target.requester.requestAfterScroll {
                                                 if (!suggestionsVisible && (results.isNotEmpty() || entities.isNotEmpty())) searchListState.scrollToItem(0)
-                                            }) searchInputFocus.requestIfAttached()
+                                            }
+                                            /* 迷你条是这一屏最后的落点，它总在。 */
+                                            if (!reached && !runCatching { miniFocus.requestFocus(); true }.getOrDefault(false)) {
+                                                searchInputFocus.requestIfAttached()
+                                            }
                                         }
                                         true
                                     } else false
@@ -3968,9 +4048,12 @@ class MainActivity : ComponentActivity() {
                                                onto the mini player, which is hard to climb back
                                                from. Keep the remote in the field until a list
                                                exists. */
-                                            chipRequester(searchType)?.let { down = it }
+                                            /* 下键直达联想／结果；类型条从内容区按上回去。 */
+                                            if (searchContentFocus.attached) down = searchContentFocus.requester
+                                            else chipRequester(searchType)?.let { down = it }
                                             up = searchFocus
-                                        }, manualKeyboard = true, onSubmit = { if (!busy && keyword.isNotBlank()) search(keyword) })
+                                        }, manualKeyboard = true, onSubmit = { if (!busy && keyword.isNotBlank()) search(keyword) },
+                                        downTarget = if (searchContentFocus.attached) searchContentFocus else chipAnchor(searchType))
                                     AuraIconButton("search", if (busy) "搜索中" else "搜索", {
                                         /* Do not clearFocus here: this button already holds focus, and
                                            clearing it leaves the whole screen without a focus target.
@@ -4234,11 +4317,9 @@ class MainActivity : ComponentActivity() {
                                            wipe the songs you were listening to. */
                                         PrismTrackRow(song, index, { playSingle(song) },
                                             current = queue.getOrNull(queueIndex)?.key == song.key,
+                                            showMv = song.pluginId in mvCapableIds,
                                             onLongPress = { trackMenu = TrackMenuTarget(song, originFocus = "song:${song.key}") },
-                                            /* 只有首行按上回分类 tab；其余行按行号上下点名，
-                                               一路走回第一行，再按上才离开列表。以前每一行
-                                               都被绑在分类 tab 上，进列表后按上就只剩「回页头」
-                                               一条路。 */
+                                            /* 首行按上回分类 tab；其余行按行号上下点名，回到第一行再按上才离开列表。 */
                                             modifier = (if (index == 0) Modifier.focusAnchor(searchResultsFocus)
                                                 else Modifier.focusRequester(rowFocus))
                                                 .then(searchRowLayout).keepFocusVisible()
@@ -4665,7 +4746,7 @@ class MainActivity : ComponentActivity() {
                                         if (selectedPlaylist == null) "去发现" else null,
                                         { page = "discover" }, emptyActionEdges, centered = true,
                                     )
-                                } else LazyColumn(Modifier.weight(1f).padding(top = 4.dp, bottom = 10.dp)) {
+                                } else LazyColumn(Modifier.weight(1f).padding(top = 4.dp, bottom = 10.dp), state = librarySongListState) {
                                     itemsIndexed(songs, key = { _, song -> song.key }) { index, song ->
                                         val rowFocus = if (index == 0) libraryContentFocus.requester else trackFocus(song.key)
                                         detailCardFocus["song:${song.key}"] = rowFocus
@@ -4676,6 +4757,7 @@ class MainActivity : ComponentActivity() {
                                                 /* 迷你条按上回到离开时的那一行，而不是页首 tab。 */
                                                 .onFocusChanged { if (it.isFocused) bodyFocusMemory.value = rowFocus },
                                             current = queue.getOrNull(queueIndex)?.key == song.key,
+                                            showMv = song.pluginId in mvCapableIds,
                                             onLongPress = rowMenu,
                                             selected = if (libraryManage) song.key in librarySelected else null)
                                     }
@@ -5051,28 +5133,35 @@ class MainActivity : ComponentActivity() {
                                     val firstRowEdge = edgeToRail.rememberFocus(bodyFocusMemory)
                                     var firstRow = true
                                     subscriptionGroups.forEach { (url, owned) ->
+                                        val expanded = collapsedSubscriptions[url] != true
+                                        val enabledCount = owned.count { it.enabled }
+                                        val allEnabled = owned.isNotEmpty() && enabledCount == owned.size
                                         var infoOpen by remember(url) { mutableStateOf(false) }
+                                        var groupMenu by remember(url) { mutableStateOf(false) }
                                         val titleFocus = remember(url) { FocusRequester() }
                                         val updateFocus = remember(url) { FocusRequester() }
+                                        val moreFocus = remember(url) { FocusRequester() }
                                         val subscriptionUri = remember(url) { Uri.parse(url) }
-                                        fun closeSubscriptionInfo() {
-                                            infoOpen = false
-                                            pageScope.launch { withFrameNanos { }; titleFocus.requestFocus() }
+                                        val groupTitle = subscriptionUri.host?.let { "订阅 · $it" } ?: "音源订阅"
+                                        fun backToHeader() {
+                                            pageScope.launch { withFrameNanos { }; runCatching { moreFocus.requestFocus() } }
                                         }
                                         if (!firstRow) SettingsDivider()
                                         Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Column(Modifier.weight(1f).focusRequester(titleFocus).then(edgeToRail).rememberFocus(bodyFocusMemory)
+                                            Row(Modifier.weight(1f).focusRequester(titleFocus).then(edgeToRail).rememberFocus(bodyFocusMemory)
                                                 .focusProperties { right = updateFocus }
                                                 .auraFocus(RoundedCornerShape(8.dp), 1f).clip(RoundedCornerShape(8.dp))
-                                                .clickable { infoOpen = true }.padding(6.dp)
-                                                .semantics { contentDescription = "查看订阅信息" }) {
-                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                    Text(subscriptionUri.host?.let { "订阅 · $it" } ?: "音源订阅", modifier = Modifier.weight(1f, fill = false), color = c.foreground,
-                                                        fontSize = 15.sp, lineHeight = 21.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                                    Glyph("info", Modifier.size(14.dp), c.muted)
+                                                .tvClickable({ collapsedSubscriptions[url] = expanded }).padding(6.dp)
+                                                .semantics { contentDescription = if (expanded) "折叠此订阅" else "展开此订阅" },
+                                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                Glyph(if (expanded) "chev" else "chevR", Modifier.size(12.dp), c.muted)
+                                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                                    Text(groupTitle, color = c.foreground, fontSize = 15.sp, lineHeight = 21.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                    Text(listOfNotNull(
+                                                        "${owned.size} 个音源 · 已启用 $enabledCount",
+                                                        subscriptionUri.lastPathSegment?.takeIf { it.isNotBlank() },
+                                                    ).joinToString(" · "), color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                                 }
-                                                Text(listOfNotNull("${owned.size} 个音源", subscriptionUri.lastPathSegment?.takeIf { it.isNotBlank() }).joinToString(" · "),
-                                                    color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                             }
                                             SettingsButton("更新", { if (!busy) lifecycleScope.launch {
                                                 busy = true
@@ -5081,17 +5170,35 @@ class MainActivity : ComponentActivity() {
                                                 catch (e: Exception) { status = "更新失败：${e.message}" }
                                                 finally { busy = false }
                                             } }, Modifier.focusRequester(updateFocus).focusProperties { left = titleFocus }.rememberFocus(bodyFocusMemory))
-                                            SettingsButton("移除订阅", { removingSubscription = url }, Modifier.rememberFocus(bodyFocusMemory))
+                                            SettingsButton("更多", { groupMenu = true }, Modifier.focusRequester(moreFocus)
+                                                .focusProperties { left = updateFocus }.rememberFocus(bodyFocusMemory))
                                         }
-                                        val subscriptionAddressFocus = remember(url) { listOf(FocusRequester()) }
-                                        val subscriptionCloseFocus = remember(url) { FocusRequester() }
-                                        if (infoOpen) PrismContextMenu("音源订阅", "${owned.size} 个音源", { closeSubscriptionInfo() }, subscriptionAddressFocus.first()) {
-                                            SourceAddressList(listOf(SourceAddress("订阅地址", url)), subscriptionAddressFocus, subscriptionCloseFocus, subscriptionCloseFocus)
-                                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                                PrismAction("关闭", { closeSubscriptionInfo() }, Modifier.focusRequester(subscriptionCloseFocus), primary = true)
+                                        if (groupMenu) PrismContextMenu(groupTitle, "${owned.size} 个音源 · 已启用 $enabledCount", {
+                                            groupMenu = false; backToHeader()
+                                        }, moreFocus, width = menuWidth(3)) {
+                                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
+                                                PrismIconAction(if (allEnabled) "close" else "check",
+                                                    if (allEnabled) "全部停用" else "全部启用", {
+                                                        if (!busy) lifecycleScope.launch {
+                                                            try { plugins.setEnabled(owned.map { it.id }, !allEnabled); status = if (allEnabled) "已停用 ${owned.size} 个音源" else "已启用 ${owned.size} 个音源" }
+                                                            catch (e: Exception) { status = e.message ?: "操作失败" }
+                                                            finally { groupMenu = false; backToHeader() }
+                                                        }
+                                                    }, Modifier.weight(1f, fill = false).focusRequester(moreFocus))
+                                                PrismIconAction("info", "订阅地址", { groupMenu = false; infoOpen = true }, Modifier.weight(1f, fill = false))
+                                                PrismIconAction("trash", "移除订阅", { groupMenu = false; removingSubscription = url }, Modifier.weight(1f, fill = false))
                                             }
                                         }
-                                        owned.forEach { plugin -> key(plugin.id) {
+                                        val subscriptionCloseFocus = remember(url) { FocusRequester() }
+                                        if (infoOpen) PrismContextMenu("音源订阅", "订阅地址", {
+                                            infoOpen = false; backToHeader()
+                                        }, subscriptionCloseFocus) {
+                                            SourceAddressList(listOf(SourceAddress("订阅地址", url)))
+                                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                                PrismAction("关闭", { infoOpen = false; backToHeader() }, Modifier.focusRequester(subscriptionCloseFocus), primary = true)
+                                            }
+                                        }
+                                        if (expanded) owned.forEach { plugin -> key(plugin.id) {
                                             SettingsDivider()
                                             Box(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) { PluginSourceRow(plugin, owned = true, onConfigure = { configured = plugin.id }, onRemoved = ::sourceRemoved,
                                                 configureFocus = sourceConfigFocus.getOrPut(plugin.id) { FocusAnchor() },
@@ -5226,7 +5333,7 @@ class MainActivity : ComponentActivity() {
                             queueIndex, queue.size, playbackStatus,
                             streamFormat,
                             playbackSource = playbackSong(),
-                            hasMv = song?.let { it.hasMv && state.plugins.firstOrNull { p -> p.id == it.pluginId }?.capabilities?.has("mvSource") == true } == true,
+                            hasMv = song != null && song.hasMv && song.pluginId in mvCapableIds,
                             mvResolving = mvResolving,
                             mvOpen = activeMv != null,
                             overlayOpen = queueOpen || radioMenuOpen || phoneDialog || pendingSong != null ||
@@ -5510,8 +5617,10 @@ class MainActivity : ComponentActivity() {
                 var menuError by remember(subject.key) { mutableStateOf("") }
                 val saved = libraryState.subjects.any { it.key == subject.key }
                 val plugin = activePlugins.firstOrNull { it.id == subject.pluginId }
+                val subjectActions = (if (plugin != null) 1 else 0) + (if (subject.kind != "chart") 1 else 0) +
+                    (if (subject.kind == "chart" && plugin != null) 1 else 0)
                 PrismContextMenu(subject.title, if (subject.kind == "chart") "榜单" else subject.kindLabel,
-                    { subjectMenu = null }, initialFocus = firstFocus) {
+                    { subjectMenu = null }, initialFocus = firstFocus, width = menuWidth(subjectActions)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
                         val detailLabel = when (subject.kind) {
                             "artist" -> "歌手详情"
@@ -5552,7 +5661,7 @@ class MainActivity : ComponentActivity() {
                 val firstFocus = remember { FocusRequester() }
                 LaunchedEffect(confirming) { withFrameNanos { }; runCatching { firstFocus.requestFocus() } }
                 val verb = if (target.playlistId != null) "删除歌单" else "取消专辑收藏"
-                PrismContextMenu(target.title, "本机 · ${target.songs.size} 首", { if (!removing) collectionMenu = null }, initialFocus = firstFocus) {
+                PrismContextMenu(target.title, "本机 · ${target.songs.size} 首", { if (!removing) collectionMenu = null }, initialFocus = firstFocus, width = menuWidth(2)) {
                     if (confirming) Text(if (target.playlistId != null) "删除本机歌单？此操作无法撤销。" else "取消这张专辑中 ${target.songs.size} 首歌曲的收藏？", color = c.foreground)
                     if (error.isNotBlank()) Text(error, color = c.muted)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
@@ -5601,15 +5710,17 @@ class MainActivity : ComponentActivity() {
                     else -> "收藏的歌曲"
                 }
                 val firstFocus = remember { FocusRequester() }
-                PrismContextMenu(menuTitle, "长按确定键打开菜单", { libraryListMenu = false }, initialFocus = firstFocus) {
+                val menuActions = (if (menuSongs.isNotEmpty()) 1 else 0) + (if (showingPlaylists) 1 else 0) + (if (menuManageable) 1 else 0)
+                PrismContextMenu(menuTitle, "", { libraryListMenu = false }, firstFocus, width = menuWidth(menuActions)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
                         var needsFocus = true
                         if (menuSongs.isNotEmpty()) {
-                            PrismIconAction("play", "播放", { libraryListMenu = false; playQueue(menuSongs) }, Modifier.weight(1f, fill = false).focusRequester(firstFocus))
+                            PrismIconAction("play", "播放", { libraryListMenu = false; playQueue(menuSongs) },
+                                Modifier.weight(1f, fill = false).focusRequester(firstFocus))
                             needsFocus = false
                         }
                         if (showingPlaylists) {
-                            PrismIconAction("link", "导入歌单", { libraryListMenu = false; importDialog = true },
+                            PrismIconAction("import", "导入歌单", { libraryListMenu = false; importDialog = true },
                                 Modifier.weight(1f, fill = false).then(if (needsFocus) Modifier.focusRequester(firstFocus) else Modifier))
                             needsFocus = false
                         }
@@ -5673,41 +5784,122 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (importDialog) {
-                val firstFocus = remember { FocusRequester() }
+                val urlFocus = remember { FocusRequester() }
+                val doorFocus = remember { FocusRequester() }
                 val nameFocus = remember { FocusRequester() }
                 val primaryFocus = remember { FocusRequester() }
-                Dialog(onDismissRequest = { importDialog = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-                    LaunchedEffect(Unit) {
-                        repeat(2) { withFrameNanos { } }
-                        firstFocus.requestFocus()
-                    }
+                val firstRowFocus = remember { FocusRequester() }
+                var picker by remember { mutableStateOf(false) }
+                var targetId by remember { mutableStateOf<String?>(null) }
+                val listState = rememberLazyListState()
+                val scrollScope = rememberCoroutineScope()
+                /* 链接先认平台，平台再给提示：认不出来就不猜，免得把别家的说明挂在你的链接上。
+                   同平台常有多个源，优先用写了导入说明的那一个——否则同一首链接的提示会时有时无。 */
+                val capable = plugins.state.value.plugins.filter { it.enabled && (it.metadata.optBoolean("importSheet") || it.metadata.optBoolean("importItem")) }
+                val detectedPlatform = MusicPlatform.identify(shareUrlOf(importUrl))
+                val samePlatform = capable.filter { it.platform == detectedPlatform }
+                val detected = if (detectedPlatform == MusicPlatform.OTHER) null
+                    else samePlatform.firstOrNull { importHints(it).isNotEmpty() } ?: samePlatform.firstOrNull()
+                val chosen = targetId?.let { id -> capable.firstOrNull { it.id == id } }
+                /* 默认跟随识别结果；用户点名之后才覆盖。点名不等于必须先选，只是「我就用这一个」。 */
+                val effective = chosen ?: detected
+                val hints = effective?.let { importHints(it) }.orEmpty()
+                /* 换页前先把焦点交给入口行：它不随换页离场，否则新页上再 request 全部失效。 */
+                fun leavePicker() { doorFocus.requestFocus(); picker = false }
+                Dialog(onDismissRequest = { if (picker) leavePicker() else importDialog = false },
+                    properties = DialogProperties(usePlatformDefaultWidth = false)) {
+                    LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; urlFocus.requestFocus() }
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(Modifier.width(620.dp).focusGroup().clip(androidx.compose.foundation.shape.RoundedCornerShape(24.dp))
+                        Column(Modifier.width(620.dp).focusGroup().clip(RoundedCornerShape(24.dp))
                             .background(Brush.verticalGradient(listOf(c.panel, c.background.copy(alpha = .985f))))
-                            .border(1.dp, c.line.copy(alpha = .75f), androidx.compose.foundation.shape.RoundedCornerShape(24.dp))
-                            .padding(horizontal = 30.dp, vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                            Text("导入歌单或单曲", color = c.foreground, fontSize = 22.sp)
-                            /* 两个输入框和主按钮显式连成竖链：几何搜索在三颗并排按钮里会挑中
-                               最右边那颗，Down 从名称框直接落到「取消」，主按钮永远够不到。 */
-                            Input(importUrl, { importUrl = it }, "歌单、单曲链接或编号",
-                                Modifier.fillMaxWidth().focusRequester(firstFocus).focusProperties { down = nameFocus },
-                                keyboardType = KeyboardType.Uri, manualKeyboard = true, onSubmit = { nameFocus.requestFocus() })
-                            Input(importName, { importName = it }, "歌单名称（选填）",
-                                Modifier.fillMaxWidth().focusRequester(nameFocus).focusProperties { up = firstFocus; down = primaryFocus },
-                                manualKeyboard = true, onSubmit = { primaryFocus.requestFocus() })
-                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                PrismAction(if (busy) "导入中…" else "开始导入", {
-                                    if (!busy) {
-                                        val url = importUrl
-                                        importDialog = false
-                                        importPlaylist(importName, url)
-                                    }
-                                }, Modifier.focusRequester(primaryFocus).focusProperties { up = nameFocus }, primary = true)
-                                PrismAction("用手机填写", { importDialog = false; openPhoneHub("import-sheet") }, Modifier.focusProperties { up = nameFocus })
-                                PrismAction("取消", { importDialog = false }, Modifier.focusProperties { up = nameFocus })
+                            .border(1.dp, c.line.copy(alpha = .75f), RoundedCornerShape(24.dp))
+                            .padding(horizontal = 28.dp, vertical = 22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text("导入歌单或单曲", color = c.foreground, fontSize = 22.sp)
+                                Text(if (picker) "按确定选中的音源会记住，直到关掉这个弹窗" else "粘贴分享链接，自动识别音源",
+                                    color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 2)
                             }
-                            Text("导入后保存在「我的 → 歌单」。私有歌单请先登录对应音源。",
-                                color = c.muted, fontSize = 11.sp)
+                            ImportDoorRow(picker, effective, chosen != null, capable.size, doorFocus,
+                                onOpen = { if (picker) leavePicker() else if (capable.isNotEmpty()) picker = true })
+                            if (!picker) {
+                                Input(importUrl, { importUrl = it }, "歌单、单曲链接或编号",
+                                    Modifier.fillMaxWidth().focusRequester(urlFocus).focusProperties { down = nameFocus },
+                                    keyboardType = KeyboardType.Uri, manualKeyboard = true, onSubmit = { nameFocus.requestFocus() })
+                                /* 说明固定两行高：输入时识别结果会变，行数跳动会把整个弹窗上下推。 */
+                                Column(Modifier.fillMaxWidth().height(36.dp).padding(horizontal = 14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    if (hints.isNotEmpty()) hints.take(2).forEach { line ->
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            Text("·", color = c.accent.copy(alpha = .7f), fontSize = 11.sp, lineHeight = 16.sp)
+                                            Text(line, Modifier.weight(1f), color = c.muted, fontSize = 11.sp,
+                                                lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
+                                    } else Text(
+                                        if (capable.isEmpty()) "还没有支持链接导入的音源，请先添加音源"
+                                        else "自动 · 将按顺序尝试 ${capable.size} 个音源",
+                                        color = c.muted, fontSize = 11.sp, lineHeight = 16.sp,
+                                    )
+                                }
+                                Input(importName, { importName = it }, "歌单名称（选填）",
+                                    Modifier.fillMaxWidth().focusRequester(nameFocus).focusProperties { up = urlFocus; down = primaryFocus },
+                                    manualKeyboard = true, onSubmit = { primaryFocus.requestFocus() })
+                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    PrismAction(if (busy) "导入中…" else "开始导入", {
+                                        if (!busy) {
+                                            val url = importUrl
+                                            importDialog = false
+                                            importPlaylist(importName, url, chosen)
+                                        }
+                                    }, Modifier.focusRequester(primaryFocus).focusProperties { up = nameFocus }, primary = true)
+                                    PrismAction("用手机填写", { importDialog = false; openPhoneHub("import-sheet") }, Modifier.focusProperties { up = nameFocus })
+                                    PrismAction("取消", { importDialog = false }, Modifier.focusProperties { up = nameFocus })
+                                }
+                                Text("导入后保存在「我的 → 歌单」。私有歌单请先登录对应音源。",
+                                    color = c.muted, fontSize = 11.sp, lineHeight = 16.sp)
+                            } else {
+                                var focusRow by remember { mutableStateOf(0) }
+                                /* 只在落点看不见时才滚：每按一下都把它顶到最上面，整列会在遥控器底下滑动。 */
+                                fun reveal(index: Int) {
+                                    val range = listState.layoutInfo.visibleItemsInfo
+                                    if (range.isEmpty() || index < range.first().index || index > range.last().index) {
+                                        scrollScope.launch { listState.animateScrollToItem(index) }
+                                    }
+                                }
+                                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 260.dp), state = listState,
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    item {
+                                        ImportOptionRow(selected = chosen == null, title = "自动", meta = "依次尝试全部",
+                                            modifier = Modifier.focusRequester(firstRowFocus),
+                                            onClick = { targetId = null; leavePicker() },
+                                            onFocus = { focusRow = 0; reveal(0) })
+                                    }
+                                    itemsIndexed(capable) { index, plugin ->
+                                        ImportOptionRow(selected = chosen?.id == plugin.id, title = plugin.displayName,
+                                            platform = plugin.platform,
+                                            meta = when {
+                                                detected?.id == plugin.id -> "已识别"
+                                                plugin.subscriptionManaged -> ""
+                                                else -> "单独添加"
+                                            },
+                                            onClick = { targetId = plugin.id; leavePicker() },
+                                            onFocus = { focusRow = index + 1; reveal(index + 1) })
+                                    }
+                                }
+                                /* 说明只在焦点那一行，固定两行高：文字长短不再决定行高。 */
+                                Column(Modifier.fillMaxWidth().height(36.dp).padding(horizontal = 12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    val rowHints = if (focusRow == 0) listOf("从第一个可用音源开始，读到歌单就停")
+                                        else capable.getOrNull(focusRow - 1)?.let { importHints(it) }.orEmpty()
+                                    if (rowHints.isEmpty()) Text("这个音源没有可用的导入说明", color = c.muted, fontSize = 11.sp, lineHeight = 16.sp)
+                                    else rowHints.take(2).forEach { line ->
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            Text("·", color = c.accent.copy(alpha = .7f), fontSize = 11.sp, lineHeight = 16.sp)
+                                            Text(line, Modifier.weight(1f), color = c.muted, fontSize = 11.sp,
+                                                lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -5767,6 +5959,55 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /* 入口行兼返回行：同一条槽位只换文案，节点不离开组合，换页时焦点才留得住。 */
+    @Composable private fun ImportDoorRow(
+        picker: Boolean, plugin: Plugin?, explicit: Boolean, count: Int,
+        focus: FocusRequester, onOpen: () -> Unit,
+    ) {
+        val c = LocalPrismColors.current
+        Row(Modifier.fillMaxWidth().heightIn(min = 54.dp).focusRequester(focus).rowFocus().tvClickable(onOpen)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .semantics { contentDescription = if (picker) "返回导入" else "选择导入音源" },
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (picker) {
+                Glyph("back", Modifier.size(14.dp), c.muted)
+                Text("返回导入", Modifier.weight(1f), color = c.foreground, fontSize = 14.sp, maxLines = 1)
+                Text("$count 个音源", color = c.muted, fontSize = 11.sp, maxLines = 1)
+            } else {
+                if (plugin != null) PlatformIcon(plugin.platform, Modifier.size(26.dp))
+                else Box(Modifier.size(26.dp), contentAlignment = Alignment.Center) { Glyph("layers", Modifier.size(19.dp), c.muted) }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(when { plugin == null -> "导入音源"; explicit -> "指定音源"; else -> "识别为" },
+                        color = c.muted, fontSize = 11.sp, lineHeight = 15.sp)
+                    Text(plugin?.displayName ?: "自动 · 依次尝试 $count 个",
+                        color = c.foreground, fontSize = 15.sp, lineHeight = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Text("更换 ›", color = c.muted, fontSize = 12.sp, maxLines = 1)
+            }
+        }
+    }
+
+    /* 音源列表的一行：图标 + 名称 + 标记 + 选中勾。行高固定，说明放到列表下方单独一栏。 */
+    @Composable private fun ImportOptionRow(
+        selected: Boolean, title: String, meta: String,
+        onClick: () -> Unit, onFocus: () -> Unit,
+        modifier: Modifier = Modifier, platform: MusicPlatform? = null,
+    ) {
+        val c = LocalPrismColors.current
+        Row(modifier.fillMaxWidth().height(52.dp).rowFocus()
+            .onFocusChanged { if (it.isFocused) onFocus() }
+            .tvClickable(onClick).padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (platform != null) PlatformIcon(platform, Modifier.size(24.dp))
+            else Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) { Glyph("layers", Modifier.size(18.dp), c.muted) }
+            Text(title, Modifier.weight(1f), color = c.foreground, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (meta.isNotBlank()) Text(meta, color = c.muted, fontSize = 11.sp, maxLines = 1)
+            Box(Modifier.size(14.dp), contentAlignment = Alignment.Center) {
+                if (selected) Glyph("check", Modifier.size(13.dp), c.accent)
+            }
+        }
+    }
+
     @Composable private fun PluginSourceRow(plugin: Plugin, owned: Boolean, onConfigure: () -> Unit, onRemoved: () -> Unit, configureFocus: FocusAnchor, edge: Modifier = Modifier) {
         val c = LocalPrismColors.current
         var menuOpen by remember(plugin.id) { mutableStateOf(false) }
@@ -5816,21 +6057,22 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (menuOpen) key(confirmRemoval) {
+            val actions = if (confirmRemoval) 2
+                else 1 + (if (plugin.enabled && plugin.capabilities.has("search")) 1 else 0) +
+                    (if (plugin.updateUrl.isNotBlank()) 1 else 0) + (if (!owned) 1 else 0)
             PrismContextMenu(if (confirmRemoval) "移除 ${plugin.displayName}？" else plugin.displayName,
                 if (confirmRemoval) "本机歌单和收藏会保留" else listOfNotNull(
                     plugin.metadata.optString("version").takeIf { it.isNotBlank() }?.let { "v$it" },
                     plugin.metadata.optString("author").takeIf { it.isNotBlank() },
-                ).joinToString(" · ").ifBlank { "未提供版本与作者" }, { closeMenu() }, menuFocus) {
-                if (confirmRemoval) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
+                ).joinToString(" · ").ifBlank { "未提供版本与作者" }, { closeMenu() }, menuFocus, width = menuWidth(actions)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
+                    if (confirmRemoval) {
                         PrismIconAction("close", "取消", { closeMenu() }, Modifier.weight(1f, fill = false).focusRequester(menuFocus))
                         PrismIconAction("trash", "移除音源", {
                             menuOpen = false
                             lifecycleScope.launch { try { plugins.remove(plugin.id); status = "已移除音源"; onRemoved() } catch (e: Exception) { status = e.message ?: "移除失败" } }
                         }, Modifier.weight(1f, fill = false))
-                    }
-                } else {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
+                    } else {
                         PrismIconAction("info", "音源信息", { menuOpen = false; infoOpen = true }, Modifier.weight(1f, fill = false).focusRequester(menuFocus))
                         if (plugin.enabled && plugin.capabilities.has("search")) PrismIconAction("search", "搜索此音源", {
                             menuOpen = false; selectedPlugin = plugin.id; searchSources = setOf(plugin.id); page = "search"
@@ -5875,14 +6117,13 @@ class MainActivity : ComponentActivity() {
         var open by remember(plugin.id) { mutableStateOf(false) }
         val doorFocus = remember(plugin.id) { FocusRequester() }
         val closeFocus = remember(plugin.id) { FocusRequester() }
-        val rowFocus = remember(plugin.id) { List(addresses.size) { FocusRequester() } }
         /* 返回键先退回上页：焦点得先落到入口行（它不随换页离场），
            否则旧焦点跟着地址行一起消失，之后谁也接不住。 */
         PrismContextMenu(plugin.displayName, "音源信息",
             { if (open) { doorFocus.requestFocus(); open = false } else onDismiss() },
             if (addresses.isEmpty()) closeFocus else doorFocus) {
             if (open) {
-                SourceAddressList(addresses, rowFocus, doorFocus, closeFocus)
+                SourceAddressList(addresses)
             } else {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     PlatformIcon(plugin.platform, Modifier.size(36.dp))
@@ -5912,9 +6153,7 @@ class MainActivity : ComponentActivity() {
             if (addresses.isNotEmpty()) {
                 Box(Modifier.fillMaxWidth().height(1.dp).background(c.foreground.copy(alpha = .09f)))
                 DoorRow(open, addresses.size, { open = !open }, doorFocus,
-                    Modifier.focusProperties {
-                        if (open) { up = rowFocus.last(); down = rowFocus.first() } else down = closeFocus
-                    })
+                    Modifier.focusProperties { up = closeFocus; down = closeFocus })
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 PrismAction("关闭", onDismiss, Modifier.focusRequester(closeFocus)
@@ -5941,42 +6180,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /* 地址行：OK 复制，完整地址直接给这一行（最多两行），不另开面板。
-       行焦点由调用方持有，首行上接入口行、末行下接关闭按钮。 */
-    @Composable private fun SourceAddressList(
-        addresses: List<SourceAddress>, rowFocus: List<FocusRequester>,
-        before: FocusRequester, after: FocusRequester,
-    ) {
+    /* 地址只读：电视上没有粘贴的地方。 */
+    @Composable private fun SourceAddressList(addresses: List<SourceAddress>) {
         val c = LocalPrismColors.current
-        val context = LocalContext.current
-        var copied by remember(addresses) { mutableStateOf("") }
-        LaunchedEffect(copied) { if (copied.isNotBlank()) { delay(1600); copied = "" } }
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            addresses.forEachIndexed { index, address ->
-                Row(Modifier.fillMaxWidth()
-                    .focusRequester(rowFocus[index])
-                    .focusProperties {
-                        if (index == 0) up = before else up = rowFocus[index - 1]
-                        if (index == addresses.lastIndex) down = after else down = rowFocus[index + 1]
-                    }
-                    .rowFocus()
-                    .clickable {
-                        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText(address.label, address.url))
-                        copied = address.label
-                    }
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text(address.label, color = c.muted, fontSize = 12.sp, lineHeight = 16.sp)
-                        Text(address.url, color = c.foreground, fontSize = 12.sp, lineHeight = 17.sp,
-                            maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    }
-                    Box(Modifier.width(52.dp), contentAlignment = Alignment.CenterEnd) {
-                        Text(if (copied == address.label) "已复制" else "复制",
-                            color = if (copied == address.label) c.accent else c.muted.copy(alpha = .7f),
-                            fontSize = 12.sp, maxLines = 1)
-                    }
+            addresses.forEach { address ->
+                Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(address.label, color = c.muted, fontSize = 12.sp, lineHeight = 16.sp)
+                    Text(address.url, color = c.foreground, fontSize = 12.sp, lineHeight = 17.sp,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -6440,7 +6653,7 @@ internal fun matchesSearchHistory(value: String, query: String): Boolean {
     }.getOrDefault(false)
 }
 
-@Composable private fun Input(value: String, onChange: (String) -> Unit, hint: String, modifier: Modifier = Modifier, secret: Boolean = false, keyboardType: KeyboardType = KeyboardType.Text, manualKeyboard: Boolean = false, onSubmit: (() -> Unit)? = null) {
+@Composable private fun Input(value: String, onChange: (String) -> Unit, hint: String, modifier: Modifier = Modifier, secret: Boolean = false, keyboardType: KeyboardType = KeyboardType.Text, manualKeyboard: Boolean = false, onSubmit: (() -> Unit)? = null, downTarget: FocusAnchor? = null) {
     var focused by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(!manualKeyboard) }
     var textFieldValue by remember { mutableStateOf(TextFieldValue(value, selection = TextRange(value.length))) }
@@ -6495,7 +6708,9 @@ internal fun matchesSearchHistory(value: String, query: String): Boolean {
                to move to, so Down always leaves — closing the IME first if it is still up. */
             else if (down && event.key == Key.DirectionDown) {
                 if (manualKeyboard && editing) { editing = false; keyboardController?.hide() }
-                focusManager.moveFocus(FocusDirection.Down); true
+                /* 页面点名了落点就照点名走，几何搜索只认正下方最近的控件。 */
+                if (!downTarget.requestIfAttached()) focusManager.moveFocus(FocusDirection.Down)
+                true
             }
             /* Up is eaten the same way (caret line movement), which would make the nav bar
                unreachable from the field. Single line, so there is nowhere to move to. */

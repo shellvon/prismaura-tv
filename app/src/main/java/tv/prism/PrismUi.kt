@@ -407,17 +407,22 @@ internal fun PrismConfirmDialog(
     }
 }
 
+/* 动作卡片固定 112dp，弹窗按动作数收窄：一个动作的菜单不该是半屏空白。 */
+internal fun menuWidth(actions: Int): Dp = (actions * 112 + (actions - 1) * 12 + 52).dp.coerceIn(360.dp, 620.dp)
+
+/* subtitle 为空时整行不画：只有一个动作的菜单，标题下面再补一句说明只会把弹窗撑高。 */
 @Composable
-fun PrismContextMenu(title: String, subtitle: String, onDismiss: () -> Unit, initialFocus: FocusRequester? = null, content: @Composable ColumnScope.() -> Unit) {
+fun PrismContextMenu(title: String, subtitle: String, onDismiss: () -> Unit, initialFocus: FocusRequester? = null,
+                     width: Dp = 520.dp, content: @Composable ColumnScope.() -> Unit) {
     val c = LocalPrismColors.current
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         LaunchedEffect(initialFocus) { repeat(2) { withFrameNanos { } }; initialFocus?.requestFocus() }
-        Column(Modifier.width(560.dp).clip(RoundedCornerShape(24.dp)).background(c.panel)
-            .border(1.dp, c.line, RoundedCornerShape(24.dp)).padding(26.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Column(Modifier.width(width).clip(RoundedCornerShape(24.dp)).background(c.panel)
+            .border(1.dp, c.line, RoundedCornerShape(24.dp)).padding(26.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(title, color = c.foreground, fontSize = 22.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(subtitle, color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (subtitle.isNotBlank()) Text(subtitle, color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 AuraIconButton("close", "关闭", onDismiss, Modifier.size(38.dp))
             }

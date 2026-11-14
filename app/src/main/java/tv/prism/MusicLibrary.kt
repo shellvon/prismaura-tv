@@ -27,8 +27,17 @@ data class Song(val pluginId: String, val data: JSONObject, val sourceName: Stri
     val artist get() = data.optString("artist").ifBlank { "未知歌手" }
     /* MusicFree's field is artwork, but a few plugins only fill coverImg. */
     val artwork get() = data.optString("artwork").ifBlank { data.optString("coverImg") }
-    /** Prism MV contract: mvId is the sole marker; getMvSource resolves it. */
-    val mvId get() = (data.opt("mvId") as? String)?.trim().orEmpty()
+    /* Prism MV contract: mvId / mv / mvVid marks a track, getMvSource resolves it. Numeric ids count; "0" doesn't. */
+    val mvId get() = sequenceOf("mvId", "mv", "mvVid")
+        .mapNotNull { key ->
+            when (val raw = data.opt(key)) {
+                is String -> raw.trim()
+                is Number -> raw.toString()
+                else -> null
+            }
+        }
+        .firstOrNull { it.isNotBlank() && it != "0" }
+        .orEmpty()
     val hasMv get() = mvId.isNotBlank()
     val album get() = data.optString("album")
     /* Prism extension, not part of MusicFree: sources that expose a platform pay flag may mark
