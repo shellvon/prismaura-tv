@@ -26,14 +26,15 @@ object PluginWorkers {
     private const val KEY = "workers"
 
     /* Sandbox count trades memory for search latency: every worker is another WebView frame
-       and another in-flight call. Small boxes get one or two; a 4-core TV with a normal heap
-       is the point where three no longer costs anything noticeable. */
+       and another in-flight call. A renderer costs 80–170MB, so a TV that looks roomy on paper
+       still loses one to the low-memory killer — and a killed renderer is far more expensive
+       than waiting a little longer for the second source. */
     fun automatic(context: Context): Int {
         val memoryClass = (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).memoryClass
         val cores = Runtime.getRuntime().availableProcessors()
         return when {
-            cores >= 6 && memoryClass >= 256 -> 4
-            cores >= 4 && memoryClass >= 192 -> 3
+            cores >= 8 && memoryClass >= 384 -> 4
+            cores >= 6 && memoryClass >= 256 -> 3
             cores >= 2 && memoryClass >= 128 -> 2
             else -> 1
         }
@@ -161,6 +162,10 @@ class PluginClient(private val context: Context) {
             })
             val raw = withTimeout(timeoutMs) { result.await() }
             val response = JSONObject(raw)
+            /* 错误报文一律原样透出。它多半是 V8 的原话（"Invalid or unexpected token"），
+               看着不友好，但只有它能让用户和我们据此查问题：改写成「可能语法太新」之类的
+               推断句，会把「到底是哪种失败」这条线索一起抹掉，而插件报错的原因太多
+               （语法、下了一半、代理塞了 HTML、编码不对……），猜错的代价比原文更高。 */
             if (!response.optBoolean("ok")) error(response.optString("error", "插件执行失败"))
             if (response.isNull("value")) null else response.get("value")
         } catch (e: TimeoutCancellationException) {

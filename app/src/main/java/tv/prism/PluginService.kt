@@ -3,8 +3,10 @@ package tv.prism
 import android.app.Service
 import android.content.Intent
 import android.os.*
+import androidx.annotation.RequiresApi
 import android.util.LruCache
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -96,37 +98,77 @@ class PluginService : Service() {
             settings.blockNetworkLoads = true
             settings.domStorageEnabled = false
             addJavascriptInterface(Bridge(worker), "PrismBridge")
-            webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = true
-                override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse {
-                    val path = request.url.toString()
-                    val asset = when (path) {
-                        HOST -> "plugin-host.html"
-                        "https://prism.invalid/plugin-runtime.js" -> "plugin-runtime.js"
-                        else -> null
-                    }
-                    return if (asset != null) WebResourceResponse(if (asset.endsWith(".js")) "text/javascript" else "text/html", "UTF-8", assets.open(asset))
-                    else WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
-                }
-                override fun onPageFinished(view: WebView, url: String) {
-                    view.evaluateJavascript("typeof PrismEngine === 'object' && typeof PrismEngine.load === 'function'") { initialized ->
-                        if (initialized == "true") {
-                            worker.ready = true
-                            dispatch()
-                        } else {
-                            // A missing/old WebView must give a useful error rather than a 35s timeout.
-                            val error = JSONObject().put("ok", false).put("error", "插件运行环境无法启动，请更新 Android System WebView 后重试").toString()
-                            while (queue.isNotEmpty()) reply(queue.removeFirst(), error)
-                            workers.remove(worker)
-                            worker.web.destroy()
-                        }
-                    }
-                }
-            }
+            webViewClient = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) RecoveringClient(worker) else WorkClient(worker)
         }
         worker.web = web
         workers += worker
-        web.loadUrl(HOST)
+        loadSandbox(worker)
+    }
+
+    /* The renderer is a separate process, and a TV kills it under memory pressure. Nothing in a
+       dead WebView ever completes, so a call would sit until the 35s budget and the worker would
+       keep advertising itself as ready. Recycle instead, and let the host see a retryable error. */
+    private fun loadSandbox(worker: Worker) {
+        worker.ready = false
+        worker.web.stopLoading()
+        worker.web.loadUrl(HOST)
+        armWatchdog(worker)
+    }
+
+    private fun armWatchdog(worker: Worker) {
+        main.postDelayed({
+            if (workers.contains(worker) && !worker.ready) recycle(worker, "插件沙箱未能启动，已重试")
+        }, SANDBOX_STARTUP_TIMEOUT)
+    }
+
+    /** Drop one sandbox, fail whatever it was running, and let dispatch() build a fresh one. */
+    private fun recycle(worker: Worker, message: String) {
+        if (!workers.remove(worker)) return
+        worker.ready = false
+        val stranded = listOfNotNull(worker.current, worker.preparing)
+        worker.current = null
+        worker.preparing = null
+        runCatching { worker.web.destroy() }
+        val error = JSONObject().put("ok", false).put("error", message).toString()
+        stranded.forEach { reply(it, error) }
+        dispatch()
+    }
+
+    private open inner class WorkClient(protected val worker: Worker) : WebViewClient() {
+        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = true
+        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse {
+            val path = request.url.toString()
+            val asset = when (path) {
+                HOST -> "plugin-host.html"
+                "https://prism.invalid/plugin-runtime.js" -> "plugin-runtime.js"
+                else -> null
+            }
+            return if (asset != null) WebResourceResponse(if (asset.endsWith(".js")) "text/javascript" else "text/html", "UTF-8", assets.open(asset))
+            else WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
+        }
+
+        override fun onPageFinished(view: WebView, url: String) {
+            view.evaluateJavascript("typeof PrismEngine === 'object' && typeof PrismEngine.load === 'function'") { initialized ->
+                if (!workers.contains(worker)) return@evaluateJavascript
+                if (initialized == "true") {
+                    worker.ready = true
+                    dispatch()
+                } else {
+                    // A missing/old WebView must give a useful error rather than a 35s timeout.
+                    recycle(worker, "插件运行环境无法启动，请更新 Android System WebView 后重试")
+                    val error = JSONObject().put("ok", false).put("error", "插件运行环境无法启动，请更新 Android System WebView 后重试").toString()
+                    while (queue.isNotEmpty()) reply(queue.removeFirst(), error)
+                }
+            }
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.O)
+    private inner class RecoveringClient(worker: Worker) : WorkClient(worker) {
+        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+            recycle(worker, "插件沙箱被系统回收，正在重建，请重试")
+            return true
+        }
     }
 
     private fun start(worker: Worker, msg: Message) {
@@ -196,9 +238,8 @@ class PluginService : Service() {
         val worker = workers.firstOrNull { (it.current ?: it.preparing)?.data?.getString("id") == id } ?: return
         worker.current = null
         worker.preparing = null
-        worker.ready = false
-        worker.web.stopLoading()
-        worker.web.loadUrl(HOST)
+        loadSandbox(worker)
+        dispatch()
     }
 
     private inner class Bridge(private val worker: Worker) {
@@ -350,5 +391,7 @@ class PluginService : Service() {
         private const val MAX_BODY = 4 * 1024 * 1024
         private const val MAX_WORKERS = 4
         private const val HOST = "https://prism.invalid/plugin-host.html"
+        /* Generous: this only fires when the sandbox never reached onPageFinished at all. */
+        private const val SANDBOX_STARTUP_TIMEOUT = 10_000L
     }
 }

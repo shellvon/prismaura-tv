@@ -54,15 +54,40 @@ fun PrismIntro(motion: Boolean, modifier: Modifier = Modifier, onDone: () -> Uni
         if (!motion) {
             t.snapTo(.86f)
             delay(700)
+            onDone()
+            return@LaunchedEffect
         }
-        val from = if (motion) LAUNCH_FRAME else .86f
-        val span = if (motion) 900f else 200f
-        val start = withFrameNanos { it }
-        while (true) {
-            val now = withFrameNanos { it }
-            val k = ((now - start) / 1_000_000.0).toFloat().div(span).coerceIn(0f, 1f)
-            t.snapTo(from + (1f - from) * k)
-            if (k >= 1f) break
+        /* 先量这台设备画一帧要多久，再决定怎么演。
+           电视冷启动的头几帧要 300–600ms（整屏合成 + 首页首次组合），而揭示段落按时间算只有
+           900ms —— 于是整段动画只落在 1–2 帧上：用户看到的是「三角形（静态启动图）→ 一帧
+           已经在淡出的成品 logo → 首页」，也就是「突然一个一闪而过动画」，还夹着一次亮度跳变。
+           所以先花两帧做一次测量：这两帧画面几乎不动（.30 与 .31），看不出停顿。
+           实测间隔 > 120ms 就不演连续动画，改成分镜：三角（停留）→ 完整 logo（停留）→ 淡出。
+           一帧一个确定画面，慢但读得懂；快设备仍然走原来的 900ms 平滑揭示。 */
+        val first = withFrameNanos { it }
+        t.snapTo(LAUNCH_FRAME + .01f)
+        val second = withFrameNanos { it }
+        t.snapTo(LAUNCH_FRAME)
+        if ((second - first) / 1_000_000.0 > 120) {
+            delay(180)
+            t.snapTo(.86f)
+            delay(300)
+            var out = 0f
+            while (true) {
+                out = (out + .5f).coerceAtMost(1f)
+                t.snapTo(.86f + .14f * out)
+                if (out >= 1f) break
+                withFrameNanos { it }
+            }
+        } else {
+            val span = 900f
+            val start = withFrameNanos { it }
+            while (true) {
+                val now = withFrameNanos { it }
+                val k = ((now - start) / 1_000_000.0).toFloat().div(span).coerceIn(0f, 1f)
+                t.snapTo(LAUNCH_FRAME + (1f - LAUNCH_FRAME) * k)
+                if (k >= 1f) break
+            }
         }
         onDone()
     }

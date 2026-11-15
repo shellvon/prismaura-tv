@@ -1,11 +1,5 @@
 package tv.prism
 
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -32,6 +26,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
@@ -65,23 +61,51 @@ val LocalAuraMotion = staticCompositionLocalOf { true }
 
 /* The marker for the track that is actually playing. Equalizer bars rather than a static
    note: the list already has one row highlighted, and this says the highlight is live. */
+private const val BARS_FPS = 30L
+
 @Composable
 fun NowPlayingBars(color: Color, modifier: Modifier = Modifier, height: Dp = 14.dp, barWidth: Dp = 3.dp, active: Boolean = true) {
-    Box(modifier.height(height), contentAlignment = Alignment.BottomStart) {
-        val fractions = if (LocalAuraMotion.current && active) {
-            val transition = rememberInfiniteTransition(label = "now playing")
-            listOf(380, 520, 310).map { duration ->
-                transition.animateFloat(
-                    initialValue = .25f, targetValue = 1f,
-                    animationSpec = infiniteRepeatable(tween(duration, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-                    label = "bar",
-                )
-            }.map { it.value }
-        } else listOf(.55f, 1f, .35f)
-        Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.Bottom) {
-            fractions.forEach { fraction ->
-                Box(Modifier.width(barWidth).height(height * fraction).clip(RoundedCornerShape(1.dp)).background(color))
+    /* 柱子是「还在放」的记号，不是可视化器，但它必须真的在动，否则看起来像卡住了。
+       上一版把它降到 8 帧/秒步进，节奏一顿一顿，反而更像掉帧——这是用户直接反馈的问题。
+       这一版换了两处做法：
+       1) 柱子画一次就不动，动画只改 RenderNode 的 transform（scaleY，原点在底边）。
+          改层属性不重画、不重组、不重排，只是让 GPU 挪一下已画好的像素。
+       2) 用帧时钟按 BARS_FPS 步进，曲线用余弦，所以在任何帧率下看上去都在连续呼吸，
+          而不是「跳一格、停一下」。 */
+    val moving = LocalAuraMotion.current && active
+    val idle = floatArrayOf(.55f, 1f, .35f)
+    val levels = remember { List(3) { mutableFloatStateOf(idle[it]) } }
+    LaunchedEffect(moving) {
+        if (!moving) return@LaunchedEffect
+        val stepNanos = 1_000_000_000L / BARS_FPS
+        val periods = longArrayOf(820, 1240, 660)
+        val phase = doubleArrayOf(.10, .55, .82)
+        var last = Long.MIN_VALUE
+        while (true) {
+            withFrameNanos { now ->
+                if (now - last >= stepNanos) {
+                    last = now
+                    for (i in 0 until 3) {
+                        val seconds = now / 1_000_000_000.0
+                        val t = (seconds / (periods[i] / 1000.0) + phase[i]) % 1.0
+                        levels[i].floatValue = (.26 + .74 * (1 - cos(2 * PI * t)) / 2).toFloat()
+                    }
+                }
             }
+        }
+    }
+    Row(
+        modifier.height(height).width(barWidth * 3 + 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        for (i in 0 until 3) {
+            Box(Modifier.width(barWidth).fillMaxHeight()
+                .graphicsLayer {
+                    scaleY = if (moving) levels[i].floatValue else idle[i]
+                    transformOrigin = TransformOrigin(.5f, 1f)
+                }
+                .clip(RoundedCornerShape(1.dp)).background(color))
         }
     }
 }
@@ -321,7 +345,7 @@ fun prismColors(theme: String): PrismColors = when (theme) {
             }
         }
     }
-    Canvas(modifier) {
+    Canvas(modifier.graphicsLayer()) {
         val r = size.minDimension * .49f
         drawCircle(Brush.radialGradient(listOf(Color.Transparent, c.glow.copy(alpha = .18f), Color.Transparent), center = center, radius = r), radius = r)
         rotate(phase.floatValue) {
