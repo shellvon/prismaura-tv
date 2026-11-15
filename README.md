@@ -151,6 +151,13 @@ PrismAura 不附带音源。在「设置 → 音源」添加自己信任的插�
 </details>
 
 <details>
+<summary>导入音源时报 Invalid or unexpected token？</summary>
+
+设备 WebView 太老，认不出插件里的新语法（如 BigInt、`?.`），与网络或订阅无关。可换其它版本的插件或音源；插件作者见 [语法与引擎版本](docs/PLUGIN_API.md#语法与引擎版本)。
+
+</details>
+
+<details>
 <summary>更新需要卸载旧版本吗？</summary>
 
 不需要。使用相同包名、相同签名且版本更高的安装包覆盖升级，可以保留现有应用数据；也可在「设置 → 关于」检查更新。自行构建时需要沿用原签名，见 [签名与覆盖更新](docs/DEVELOPMENT.md#签名与覆盖更新)。

@@ -264,3 +264,7 @@ loginMethods 有多项时显示方式选择；有一项时直接传其 key，未
 | 运行时 JS 目标 | Chrome 66；插件源码由设备原生 JS 引擎直接解析 |
 
 `describe`、能力位（如 importItem、loginQr、hotSearch）和 PrismBridge 是宿主内部机制，不是插件应该自行调用的 API。运行环境复用且不提供恶意代码强隔离；只加载可信插件。参见 [安全说明](../SECURITY.md)。
+
+### 语法与引擎版本
+
+插件源码由设备 WebView 原样解析，不做转译。电视的 WebView 普遍较老（如 Android 9 自带 Chrome 66），BigInt 字面量（`1n`）、`?.`、`??` 等新语法会直接解析失败，导致整份插件无法加载。写插件请按 Chrome 66 兜底，避免新语法与新 API。实例：[migu-source 歌词解密用了 BigInt，在 WebView 66 上加载失败](https://github.com/hebijunge/musicfree-plugins/issues/5)。
