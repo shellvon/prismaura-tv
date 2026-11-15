@@ -398,6 +398,9 @@ fun PrismPlayer(
     onAlbum: (() -> Unit)? = null,
     tiers: List<String> = emptyList(),
     ladder: List<String> = emptyList(),
+    qualityEnabled: Boolean = true,
+    qualitySwitching: String = "",
+    qualityNotice: String = "",
     onSelectQuality: (String) -> Unit = {},
     lyricFontLevel: String = "标准",
     onLyricFontLevel: (String) -> Unit = {},
@@ -877,6 +880,7 @@ fun PrismPlayer(
                 sourceLabel = sourceSong?.sourceLabel.orEmpty(), stream = stream, playingTier = playingTier,
                 platform = sourceSong?.platform,
                 ladder = ladder, tiers = tiers,
+                qualityEnabled = qualityEnabled, qualitySwitching = qualitySwitching, qualityNotice = qualityNotice,
                 playMode = playMode, radioActive = radioActive, radioLoading = radioLoading,
                 canArtist = artistName != null && onArtist != null, canAlbum = albumName != null && onAlbum != null,
                 fontLevel = lyricFontLevel, subLyrics = subLyrics, offsetMs = lyricOffsetMs,
@@ -1242,8 +1246,15 @@ private fun Immersion(
 private enum class RowKind { Step, Open, Toggle }
 
 private data class MenuEntry(
+    /* 行的身份。列表按能力增减行，位置不再稳定，按键只能按身份分发。 */
+    val id: String,
     val label: String, val value: String, val dim: Boolean, val kind: RowKind,
     val on: Boolean = false, val icon: String = "",
+    /* 步进行在两端是走不动的。箭头按方向单独画：没有下一档就不画那个箭头，
+       比「画着箭头但按了没反应」诚实。 */
+    val canUp: Boolean = true, val canDown: Boolean = true,
+    /* 这一行为什么不能动。放在行尾当理由，不靠用户猜。 */
+    val note: String = "",
 )
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1252,6 +1263,7 @@ private fun PlayerMenu(
     artistName: String?, albumName: String?, sourceLabel: String, stream: String, playingTier: String,
     platform: MusicPlatform?,
     ladder: List<String>, tiers: List<String>,
+    qualityEnabled: Boolean, qualitySwitching: String, qualityNotice: String,
     playMode: PlaybackMode, radioActive: Boolean, radioLoading: Boolean,
     canArtist: Boolean, canAlbum: Boolean,
     fontLevel: String, subLyrics: Boolean, offsetMs: Long, canCalibrate: Boolean,
@@ -1287,25 +1299,51 @@ private fun PlayerMenu(
         revealRow.bringIntoView()
     }
 
-    // Exclude tiers already found unavailable for this song.
+    /* Exclude tiers already found unavailable for this song. 被过滤掉的那一档不再出现在
+       步进里 —— 能滚到的每一档都真的能播，比「滚过去才发现不支持」少一次失望。 */
     val rungs = ladder.ifEmpty { tiers }
-    val usable = rungs.filter { tiers.isEmpty() || it in tiers }
+    val usable = if (qualityEnabled) rungs.filter { tiers.isEmpty() || it in tiers } else emptyList()
     val current = playingTier.ifBlank { usable.lastOrNull().orEmpty() }
+    val at = usable.indexOfFirst { it == current }
+    /* 当前播放的档位可能不在这首歌的可用列表里（音源回退过一档）。那时两个方向都还能换，
+       取那一侧最近的一档；否则按位置判断两端。 */
+    val canUp = if (at < 0) usable.isNotEmpty() else at < usable.lastIndex
+    val canDown = if (at < 0) usable.isNotEmpty() else at > 0
+    /* 取流途中把箭头收掉：这一段按键确实不生效，画着箭头等于承诺下一次按下会动。
+       行本身不压灰 —— 「切换中…」要是灰色的，看起来像失败了。 */
+    val stepping = qualitySwitching.isNotBlank()
+    val qualityNote = when {
+        stepping -> tierLabel(qualitySwitching)
+        !qualityEnabled -> "本地文件"
+        usable.isEmpty() -> "本音源未提供音质"
+        usable.size < 2 -> "仅此一档"
+        else -> ""
+    }
+    val qualityValue = when {
+        stepping -> "切换中…"
+        current.isBlank() -> "—"
+        else -> tierLabel(current)
+    }
 
-    val level1 = listOf(
-        MenuEntry("音频质量", tierLabel(current), usable.size < 2, RowKind.Step, icon = "fader"),
-        MenuEntry("查看歌手", "", !canArtist, RowKind.Open, icon = "mic"),
-        MenuEntry("查看专辑", "", !canAlbum, RowKind.Open, icon = "album"),
-        MenuEntry("歌词", fontLevel, false, RowKind.Open, icon = "lyric"),
+    /* 拿不到的歌手/专辑直接不出这一行：一行灰字既没有信息量，也挡着下面的入口。
+       头部本来就在显示歌手和专辑名，删掉这两行不丢信息。 */
+    val level1 = buildList {
+        add(MenuEntry("quality", "音频质量", qualityValue, !stepping && !canUp && !canDown, RowKind.Step,
+            icon = "fader", canUp = canUp && !stepping, canDown = canDown && !stepping, note = qualityNote))
+        if (canArtist) add(MenuEntry("artist", "查看歌手", "", false, RowKind.Open, icon = "mic"))
+        if (canAlbum) add(MenuEntry("album", "查看专辑", "", false, RowKind.Open, icon = "album"))
+        add(MenuEntry("lyric", "歌词", fontLevel, false, RowKind.Open, icon = "lyric"))
         /* 播放模式是行内步进（左右键直接切模式），和音频质量一样，不是二级菜单。 */
-        MenuEntry("播放模式", playMode.label, false, RowKind.Step, icon = "shuffle"),
-        MenuEntry("极光电台", if (radioLoading) "准备中" else "", radioLoading, RowKind.Toggle, on = radioActive, icon = "radio"),
-    )
-    val level2 = listOf(
-        MenuEntry("字号", fontLevel, false, RowKind.Step, icon = "lyric"),
-        MenuEntry("翻译与注音", "", false, RowKind.Toggle, on = subLyrics, icon = "layers"),
-        MenuEntry("时间校准", calibrationText(offsetMs), !canCalibrate, RowKind.Step, icon = "history"),
-    )
+        add(MenuEntry("mode", "播放模式", playMode.label, false, RowKind.Step, icon = "shuffle"))
+        add(MenuEntry("radio", "极光电台", if (radioLoading) "准备中" else "", radioLoading, RowKind.Toggle,
+            on = radioActive, icon = "radio"))
+    }
+    val level2 = buildList {
+        add(MenuEntry("font", "字号", fontLevel, false, RowKind.Step, icon = "lyric"))
+        add(MenuEntry("sub", "翻译与注音", "", false, RowKind.Toggle, on = subLyrics, icon = "layers"))
+        /* 没有歌词就没有可校准的东西，这一行不出现。 */
+        if (canCalibrate) add(MenuEntry("calibrate", "时间校准", calibrationText(offsetMs), false, RowKind.Step, icon = "history"))
+    }
     val rows = if (level == 1) level1 else level2
     val index = row.coerceIn(0, rows.lastIndex)
 
@@ -1316,10 +1354,12 @@ private fun PlayerMenu(
     }
 
     fun stepQuality(dir: Int) {
-        if (usable.isEmpty()) return
-        val at = usable.indexOfFirst { it == current }.takeIf { it >= 0 } ?: usable.lastIndex
-        val next = usable[(at + dir).coerceIn(0, usable.lastIndex)]
-        if (next != current) onQuality(next)
+        /* 正在取流时不接受第二次按键：连按只会把上一个请求取消掉，用户看到的是「按了没动静」。 */
+        if (!qualityEnabled || qualitySwitching.isNotBlank() || usable.isEmpty()) return
+        val here = usable.indexOfFirst { it == current }
+        val next = if (here >= 0) usable.getOrNull(here + dir)
+                   else if (dir > 0) usable.firstOrNull { it != current } else usable.lastOrNull { it != current }
+        if (next != null && next != current) onQuality(next)
     }
 
     Dialog(onDismissRequest = { dismiss() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -1345,39 +1385,35 @@ private fun PlayerMenu(
                         val n = rows.size
                         fun back() { if (level == 2) { level = 1; row = parentRow } else dismiss() }
                         fun activate() {
-                            if (level == 2) {
-                                when (index) {
-                                    0 -> stepFont(1)
-                                    1 -> onSubLyrics(!subLyrics)
-                                    2 -> if (canCalibrate) onCalibration((offsetMs + 100).coerceIn(-LyricCalibration.LIMIT_MS, LyricCalibration.LIMIT_MS))
-                                }
-                            } else {
-                                when (index) {
-                                    0 -> stepQuality(1)
-                                    1 -> if (canArtist) dismiss(onArtist)
-                                    2 -> if (canAlbum) dismiss(onAlbum)
-                                    3 -> { parentRow = index; level = 2; row = 0 }
-                                    4 -> onMode()
-                                    5 -> if (!radioLoading) onRadio()
-                                }
+                            val entry = rows[index]
+                            /* 置灰的行用确定键也不该有动作 —— 箭头可以不动，回车更不该假装能动。 */
+                            if (entry.dim) return
+                            when (entry.id) {
+                                "quality" -> stepQuality(1)
+                                "artist" -> dismiss(onArtist)
+                                "album" -> dismiss(onAlbum)
+                                "lyric" -> { parentRow = index; level = 2; row = 0 }
+                                "mode" -> onMode()
+                                "radio" -> if (!radioLoading) onRadio()
+                                "font" -> stepFont(1)
+                                "sub" -> onSubLyrics(!subLyrics)
+                                "calibrate" -> onCalibration((offsetMs + 100).coerceIn(-LyricCalibration.LIMIT_MS, LyricCalibration.LIMIT_MS))
                             }
                         }
                         fun adjust(dir: Int) {
-                            if (level == 2) {
-                                when (index) {
-                                    0 -> stepFont(dir)
-                                    1 -> onSubLyrics(dir > 0)
-                                    2 -> if (canCalibrate) onCalibration((offsetMs + dir * 100L).coerceIn(-LyricCalibration.LIMIT_MS, LyricCalibration.LIMIT_MS))
-                                }
-                            } else {
-                                when (index) {
-                                    0 -> stepQuality(dir)
-                                    4 -> onModeStep(dir)
-                                    5 -> if (!radioLoading && (dir > 0) != radioActive) onRadio()
-                                    /* 别的行不认左右：一级页按左不该把整个面板收掉——那和
-                                       「退出」是两件事，却被同一个键做了。 */
-                                    else -> Unit
-                                }
+                            when (rows[index].id) {
+                                "quality" -> stepQuality(dir)
+                                "mode" -> onModeStep(dir)
+                                "radio" -> if (!radioLoading && (dir > 0) != radioActive) onRadio()
+                                "font" -> stepFont(dir)
+                                "sub" -> onSubLyrics(dir > 0)
+                                "calibrate" -> onCalibration((offsetMs + dir * 100L).coerceIn(-LyricCalibration.LIMIT_MS, LyricCalibration.LIMIT_MS))
+                                /* 画了 › 的行，右键就该和确定键做同一件事：那个箭头的含义
+                                   就是「往右能进去」。只有确定能进的行，不该有箭头。 */
+                                "artist", "album", "lyric" -> if (dir > 0) activate()
+                                /* 别的行不认左右：一级页按左不该把整个面板收掉——那和
+                                   「退出」是两件事，却被同一个键做了。 */
+                                else -> Unit
                             }
                         }
                         when (event.key) {
@@ -1385,10 +1421,9 @@ private fun PlayerMenu(
                             Key.DirectionUp -> { row = (index - 1 + n) % n; true }
                             Key.DirectionDown -> { row = (index + 1) % n; true }
                             Key.DirectionLeft -> { adjust(-1); true }
-                            Key.DirectionRight -> {
-                                if (level == 1 && index == 3) { parentRow = index; level = 2; row = 0 } else adjust(1)
-                                true
-                            }
+                            /* 歌词那条曾经在这里硬编码 index == 3 抢在 adjust 前面，
+                               现在所有 Open 行都由 adjust 统一按 OK 处理。 */
+                            Key.DirectionRight -> { adjust(1); true }
                             Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> { activate(); true }
                             else -> false
                         }
@@ -1398,15 +1433,17 @@ private fun PlayerMenu(
                 Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                     if (level == 1) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            /* 跑马灯会把文字画到自己的测量宽度之外：两段并排滚动时，
+                               歌手那行会压到专辑那行上。各裁各的边界。 */
                             Text(
                                 artistName ?: "未知歌手", color = c.foreground, fontSize = 16.sp, maxLines = 1,
-                                modifier = Modifier.weight(1f, fill = false)
+                                modifier = Modifier.weight(1f, fill = false).clipToBounds()
                                     .then(if (motion) Modifier.basicMarquee(delayMillis = 1600) else Modifier),
                             )
                             Text("  ·  ", color = c.muted.copy(alpha = .5f), fontSize = 16.sp)
                             Text(
                                 if (albumName != null) "《$albumName》" else "无专辑", color = c.muted, fontSize = 16.sp, maxLines = 1,
-                                modifier = Modifier.weight(1f, fill = false)
+                                modifier = Modifier.weight(1f, fill = false).clipToBounds()
                                     .then(if (motion) Modifier.basicMarquee(delayMillis = 1600) else Modifier),
                             )
                         }
@@ -1482,17 +1519,35 @@ private fun PlayerMenu(
                                 }
                                 PrismCapsule(entry.on)
                             } else {
-                                if (entry.kind == RowKind.Step) {
+                                /* 步进行：哪一侧还有档位就画哪一侧的箭头。打开类行：没东西可进时
+                                   不画 ›，否则那个箭头就是在承诺一件不会发生的事。 */
+                                val downArrow = entry.kind == RowKind.Step && entry.canDown
+                                val upArrow = (entry.kind == RowKind.Step && entry.canUp) ||
+                                    (entry.kind == RowKind.Open && !entry.dim)
+                                if (downArrow) {
                                     Text("‹", color = c.accent.copy(alpha = mark), fontSize = 18.sp)
                                     Spacer(Modifier.width(9.dp))
                                 }
                                 if (entry.value.isNotEmpty()) {
                                     Text(entry.value, color = settle, fontSize = 17.sp, maxLines = 1)
                                 }
-                                if (entry.kind == RowKind.Step) Spacer(Modifier.width(9.dp))
-                                else Spacer(Modifier.width(10.dp))
-                                Text("›", color = c.accent.copy(alpha = mark), fontSize = 18.sp)
+                                if (entry.note.isNotEmpty()) {
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(entry.note, color = c.muted.copy(alpha = .5f), fontSize = 12.sp, maxLines = 1)
+                                }
+                                if (upArrow) {
+                                    if (entry.kind == RowKind.Step) Spacer(Modifier.width(9.dp))
+                                    else Spacer(Modifier.width(10.dp))
+                                    Text("›", color = c.accent.copy(alpha = mark), fontSize = 18.sp)
+                                }
                             }
+                        }
+                        /* 为什么没换成，写在面板里：状态条在底下那层窗口，被遮罩盖住，用户看不到。 */
+                        if (level == 1 && qualityNotice.isNotBlank()) {
+                            Text(
+                                qualityNotice, color = c.accent.copy(alpha = .82f), fontSize = 12.sp,
+                                maxLines = 2, modifier = Modifier.padding(start = 22.dp, top = 2.dp, bottom = 4.dp),
+                            )
                         }
                     }
                 }

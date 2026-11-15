@@ -68,6 +68,9 @@ data class PluginReplacement(val candidates: List<Plugin>, val incoming: Plugin)
 }
 data class SyncResult(val message: String, val failed: Boolean = false, val replacements: List<PluginReplacement> = emptyList())
 
+/** (done, total, label) for a long sync: the screen says "正在更新 3/6：酷狗音乐" with it. */
+typealias Progress = (done: Int, total: Int, label: String) -> Unit
+
 class Plugins(private val context: Context, val client: PluginClient) {
     private val mutex = Mutex()
     private val updateMutex = Mutex()
@@ -222,7 +225,8 @@ class Plugins(private val context: Context, val client: PluginClient) {
         return SyncResult("已${if (previous == null) "导入" else "更新"}插件：${plugin.displayName}")
     }
 
-    suspend fun importUrl(url: String): SyncResult = updateMutex.withLock {
+    /** Progress is (done, total, label) — "更新第 3 个，共 6 个，名字是酷狗音乐". */
+    suspend fun importUrl(url: String, onProgress: Progress? = null): SyncResult = updateMutex.withLock {
         val normalized = normalizeUrl(url)
         val raw = download(normalized, MAX_MANIFEST)
         if (raw.trimStart().startsWith("{")) {
@@ -239,12 +243,12 @@ class Plugins(private val context: Context, val client: PluginClient) {
                 val state = mutable.value
                 withContext(Dispatchers.IO) { write(state.copy(subscriptions = (state.subscriptions + normalized).distinct())) }
             }
-            return@withLock syncUrls(urls, normalized)
+            return@withLock syncUrls(urls, normalized, onProgress)
         }
         storeSource(raw, normalized, normalized)
     }
 
-    suspend fun syncAll(): SyncResult {
+    suspend fun syncAll(onProgress: Progress? = null): SyncResult {
         val subscriptions = state.value.subscriptions
         if (subscriptions.isEmpty()) return SyncResult("没有订阅")
         val results = mutableListOf<String>()
@@ -252,7 +256,8 @@ class Plugins(private val context: Context, val client: PluginClient) {
         var failed = false
         var overflow = false
         var pendingBytes = 0
-        for (url in subscriptions) {
+        for ((index, url) in subscriptions.withIndex()) {
+            onProgress?.invoke(index + 1, subscriptions.size, subscriptionLabel(url))
             val result = try {
                 val direct = state.value.plugins.firstOrNull { it.origin == url && it.url == url }
                 if (direct != null && direct.updateUrl != url) refresh(direct.id) else importUrl(url)
@@ -300,12 +305,23 @@ class Plugins(private val context: Context, val client: PluginClient) {
         return videoSource(client.call(plugin.source, plugin.variables, "getMvSource", JSONArray().put(song.data), plugin.id))
     }
 
-    private suspend fun syncUrls(urls: List<String>, origin: String): SyncResult {
+    /** A progress label should read like a name: the installed plugin's, or the file name minus its version. */
+    private fun progressLabel(url: String): String =
+        state.value.plugins.firstOrNull { it.url == url }?.displayName
+            ?: url.substringAfterLast('/').ifBlank { url }.removeSuffix(".js").substringBefore(".plugin.v")
+
+    /** Subscriptions are identified by URL, so the host is the closest thing to a name they have. */
+    private fun subscriptionLabel(url: String): String =
+        state.value.plugins.firstOrNull { it.origin == url && it.url == url }?.displayName
+            ?: url.substringAfter("://").substringBefore('/').ifBlank { url }
+
+    private suspend fun syncUrls(urls: List<String>, origin: String, onProgress: Progress? = null): SyncResult {
         var ok = 0
         val errors = mutableListOf<String>()
         val replacements = mutableListOf<PluginReplacement>()
         var pendingBytes = 0
-        for (url in urls) {
+        for ((index, url) in urls.withIndex()) {
+            onProgress?.invoke(index + 1, urls.size, progressLabel(url))
             try {
                 val update = state.value.plugins.firstOrNull { it.url == url }?.updateUrl?.ifBlank { url } ?: url
                 val result = storeSource(download(normalizeUrl(update), MAX_SCRIPT), url, origin)

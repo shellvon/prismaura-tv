@@ -93,6 +93,25 @@ internal fun Modifier.keepFocusVisible(): Modifier = composed {
     }
 }
 
+/** Reveal a whole stacked row — its label above the control, not just the control.
+    keepFocusVisible only knows the node it is applied to, and a form field is focused as a
+    node of its own: the title above it stays scrolled out of the dialog. Applied to the
+    row's Column, this reveals title and field together whenever either takes focus. */
+@OptIn(ExperimentalFoundationApi::class)
+internal fun Modifier.revealRow(): Modifier = composed {
+    val requester = remember { BringIntoViewRequester() }
+    val scope = rememberCoroutineScope()
+    val margin = with(LocalDensity.current) { 8.dp.toPx() }
+    var rowSize by remember { mutableStateOf(IntSize.Zero) }
+    this.bringIntoViewRequester(requester).onSizeChanged { rowSize = it }.onFocusChanged { state ->
+        scope.coroutineContext.cancelChildren()
+        if (state.hasFocus) scope.launch {
+            withFrameNanos { }
+            requester.bringIntoView(Rect(-margin, -margin, rowSize.width + margin, rowSize.height + margin))
+        }
+    }
+}
+
 /** Mount without moving the viewport. Apply the modifier outside any nested horizontal list. */
 @Composable
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)

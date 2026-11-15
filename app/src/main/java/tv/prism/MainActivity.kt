@@ -293,6 +293,10 @@ class MainActivity : ComponentActivity() {
     private fun tierFor(song: Song?): String = song?.let { songTier[it.key] } ?: quality
     private val tierCache = mutableMapOf<String, List<String>>()
     private var availableTiers by mutableStateOf<List<String>>(emptyList())
+    /* 正在为哪一档取流。面板靠它把「按了」和「切好了」分开显示，也靠它吃掉连发键。 */
+    private var qualitySwitching by mutableStateOf("")
+    /* 上一次切换为什么没成。面板里那一行提示的生命周期比状态条短，四秒后自己散。 */
+    private var qualityNotice by mutableStateOf("")
     private var playing by mutableStateOf(false)
     private var exitArmedAt = 0L
     private var playbackState by mutableIntStateOf(Player.STATE_IDLE)
@@ -1500,42 +1504,62 @@ class MainActivity : ComponentActivity() {
         return ActiveQueue.source?.takeIf { it.originalKey == song.key }?.song ?: song
     }
 
+    /* 面板里那一行"为什么没换成"的生命周期：出现后四秒自散，不留在下次打开的面板上。 */
+    private fun qualityFailure(message: String) {
+        qualityNotice = message
+        lifecycleScope.launch {
+            delay(4_000)
+            if (qualityNotice == message) qualityNotice = ""
+        }
+    }
+
     // Keep the current stream and lyric state until the replacement URL is available.
     private fun switchQuality(tier: String) {
         val song = queue.getOrNull(queueIndex) ?: return
         val player = controller ?: return
         val streamSong = playbackSong() ?: song
         if (song.pluginId == "local" || tier.isBlank()) return
+        /* 上一档还在取流时不接第二次：连按只会把上一个请求取消掉，界面看着像没反应。 */
+        if (qualitySwitching.isNotBlank()) return
         if (tier == playingQuality.ifBlank { tierFor(streamSong) }) return
         val plugin = plugins.state.value.plugins.firstOrNull { it.id == streamSong.pluginId } ?: return
         val at = player.currentPosition.coerceAtLeast(0L).takeIf { it > 0L } ?: positionMs
         val wasPlaying = player.playWhenReady
         streamSwap?.cancel()
+        qualitySwitching = tier
+        qualityNotice = ""
         streamSwap = lifecycleScope.launch {
-            val source = try {
-                plugins.mediaSource(plugin, streamSong, tier, refresh = true)
-            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-              catch (e: Exception) {
-                reportPlayback("音质切换失败：${e.message ?: "音源没有应答"}")
-                return@launch
+            try {
+                val source = try {
+                    plugins.mediaSource(plugin, streamSong, tier, refresh = true)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    qualityFailure(e.message ?: "音源没有应答")
+                    reportPlayback("音质切换失败：${e.message ?: "音源没有应答"}")
+                    return@launch
+                }
+                val uri = Uri.parse(source?.optString("url").orEmpty())
+                if (source == null || uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank()) {
+                    unsupportedTiers[song.key] = unsupportedTiers[song.key].orEmpty() + tier
+                    qualityFailure("该音源不提供${qualityText(tier)}")
+                    reportPlayback("音质切换失败：该音源不提供${qualityText(tier)}")
+                    return@launch
+                }
+                val actual = source.optString("quality").ifBlank { tier }
+                playingQuality = actual
+                if (actual != tier) unsupportedTiers[song.key] = unsupportedTiers[song.key].orEmpty() + tier
+                songTier[song.key] = actual
+                songTier[streamSong.key] = actual
+                player.setMediaItem(audioMediaItem(song, source))
+                player.prepare()
+                if (at > 0L) { player.seekTo(at); positionMs = at }
+                if (wasPlaying) player.play()
+                ActiveQueue.source = PlayingSource(song.key, streamSong)
+                failedSongs.clear()
+            } finally {
+                if (qualitySwitching == tier) qualitySwitching = ""
             }
-            val uri = Uri.parse(source?.optString("url").orEmpty())
-            if (source == null || uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank()) {
-                unsupportedTiers[song.key] = unsupportedTiers[song.key].orEmpty() + tier
-                reportPlayback("音质切换失败：该音源不提供${qualityText(tier)}")
-                return@launch
-            }
-            val actual = source.optString("quality").ifBlank { tier }
-            playingQuality = actual
-            if (actual != tier) unsupportedTiers[song.key] = unsupportedTiers[song.key].orEmpty() + tier
-            songTier[song.key] = actual
-            songTier[streamSong.key] = actual
-            player.setMediaItem(audioMediaItem(song, source))
-            player.prepare()
-            if (at > 0L) { player.seekTo(at); positionMs = at }
-            if (wasPlaying) player.play()
-            ActiveQueue.source = PlayingSource(song.key, streamSong)
-            failedSongs.clear()
         }
     }
 
@@ -2486,7 +2510,7 @@ class MainActivity : ComponentActivity() {
                                 lifecycleScope.launch {
                                     busy = true
                                     status = "正在导入…"
-                                    try { showPluginImport(plugins.importUrl(value)) }
+                                    try { showPluginImport(plugins.importUrl(value) { done, total, label -> status = "正在导入 $done/$total：$label" }) }
                                     catch (e: kotlinx.coroutines.CancellationException) { throw e }
                                     catch (e: Exception) { status = "导入失败：${e.message}" }
                                     finally { busy = false }
@@ -5079,7 +5103,7 @@ class MainActivity : ComponentActivity() {
                                         if (subscription.isBlank()) { addSourceError = "请输入地址"; return }
                                         lifecycleScope.launch {
                                             busy = true; addSourceError = ""
-                                            try { showPluginImport(plugins.importUrl(subscription.trim())); subscription = ""; closeAddSource() }
+                                            try { showPluginImport(plugins.importUrl(subscription.trim()) { done, total, label -> status = "正在导入 $done/$total：$label" }); subscription = ""; closeAddSource() }
                                             catch (e: kotlinx.coroutines.CancellationException) { throw e }
                                             catch (e: Exception) { addSourceError = e.message ?: "添加失败，请检查地址" }
                                             finally { busy = false }
@@ -5093,7 +5117,7 @@ class MainActivity : ComponentActivity() {
                                             }
                                             SettingsButton("添加", { addSourceError = ""; addingSource = true }, Modifier.focusAnchor(sourceActionFocus).then(entryEdge)
                                                 .focusProperties { right = updateSourcesFocus }.rememberFocus(bodyFocusMemory), primary = true, icon = "plus")
-                                            SettingsButton(if (busy) "更新中…" else "全部更新", { if (!busy) lifecycleScope.launch { busy = true; try { showPluginImport(plugins.syncAll()) } catch (e: Exception) { status = "同步失败：${e.message}" } finally { busy = false } } },
+                                            SettingsButton(if (busy) "更新中…" else "全部更新", { if (!busy) lifecycleScope.launch { busy = true; try { showPluginImport(plugins.syncAll { done, total, label -> status = "正在更新 $done/$total：$label" }) } catch (e: Exception) { status = "同步失败：${e.message}" } finally { busy = false } } },
                                                 Modifier.focusRequester(updateSourcesFocus).focusProperties { up = pluginsFocus; leftTo(sourceActionFocus) }.rememberFocus(bodyFocusMemory), icon = "refresh")
                                         }
                                     }
@@ -5166,7 +5190,7 @@ class MainActivity : ComponentActivity() {
                                             SettingsButton("更新", { if (!busy) lifecycleScope.launch {
                                                 busy = true
                                                 status = "正在更新订阅…"
-                                                try { showPluginImport(plugins.importUrl(url)) }
+                                                try { showPluginImport(plugins.importUrl(url) { done, total, label -> status = "正在更新 $done/$total：$label" }) }
                                                 catch (e: Exception) { status = "更新失败：${e.message}" }
                                                 finally { busy = false }
                                             } }, Modifier.focusRequester(updateFocus).focusProperties { left = titleFocus }.rememberFocus(bodyFocusMemory))
@@ -5307,6 +5331,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 if (statusVisible && statusNotice.isNotBlank()) Box(Modifier.align(Alignment.TopEnd).padding(top = 78.dp, end = 32.dp)
+                    .widthIn(max = 560.dp)
                     .background(c.panel.copy(alpha = .94f), androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
                     .border(1.dp, c.line, androidx.compose.foundation.shape.RoundedCornerShape(10.dp)).padding(horizontal = 16.dp, vertical = 10.dp)) {
                     Text(statusNotice, color = c.foreground, fontSize = 12.sp, maxLines = 2)
@@ -5389,6 +5414,11 @@ class MainActivity : ComponentActivity() {
                                through streams this song can actually play. */
                             tiers = availableTiers.filterNot { it in unsupportedTiers[playbackSong()?.key].orEmpty() },
                             ladder = ladder,
+                            /* 本地文件没有可切换的音质，pluginId 是 "local"。行要置灰，而不是
+                               摆一排按了没反应的箭头。 */
+                            qualityEnabled = (playbackSong() ?: song)?.pluginId?.let { it != "local" } ?: false,
+                            qualitySwitching = qualitySwitching,
+                            qualityNotice = qualityNotice,
                             onSelectQuality = { tier -> switchQuality(tier) })
                     }
                     /* 幕布：渐隐时盖住正在淡出的播放器；唤醒时播放器先回到幕布下，再渐亮出来。
@@ -6397,12 +6427,14 @@ class MainActivity : ComponentActivity() {
                     Spacer(Modifier.height(10.dp))
                     Box(Modifier.fillMaxWidth().height(1.dp).background(c.foreground.copy(alpha = .10f)))
                     Spacer(Modifier.height(4.dp))
-                    Column(Modifier.weight(1f, fill = false).fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    /* 上下各留 12dp：滚到最上时标题不会贴着分隔线，滚到最下时最后一个
+                       输入框的下边框不会正好卡在弹窗边缘（电视上看起来像是被切掉了）。 */
+                    Column(Modifier.weight(1f, fill = false).fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         entries.forEachIndexed { position, (field, key) ->
                             val title = field.optString("title").ifBlank { field.optString("name").ifBlank { key } }
                             val secret = credentialKeys.any { key.contains(it, ignoreCase = true) }
                             val filled = values[key].orEmpty().isNotBlank()
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 2.dp)) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 2.dp).revealRow()) {
                                 Row(Modifier.fillMaxWidth().padding(horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Text(title, color = c.foreground, fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1,
                                         overflow = TextOverflow.Ellipsis)
