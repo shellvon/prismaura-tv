@@ -5824,8 +5824,11 @@ class MainActivity : ComponentActivity() {
                 val listState = rememberLazyListState()
                 val scrollScope = rememberCoroutineScope()
                 /* 链接先认平台，平台再给提示：认不出来就不猜，免得把别家的说明挂在你的链接上。
-                   同平台常有多个源，优先用写了导入说明的那一个——否则同一首链接的提示会时有时无。 */
-                val capable = plugins.state.value.plugins.filter { it.enabled && (it.metadata.optBoolean("importSheet") || it.metadata.optBoolean("importItem")) }
+                   同平台常有多个源，优先用写了导入说明的那一个——否则同一首链接的提示会时有时无。
+                   state 要用 collectAsState 订阅：直接取 .value 不会重组，弹窗开着时装好的插件
+                   不会出现在可选列表里。 */
+                val pluginList = plugins.state.collectAsState().value.plugins
+                val capable = pluginList.filter { it.enabled && (it.metadata.optBoolean("importSheet") || it.metadata.optBoolean("importItem")) }
                 val detectedPlatform = MusicPlatform.identify(shareUrlOf(importUrl))
                 val samePlatform = capable.filter { it.platform == detectedPlatform }
                 val detected = if (detectedPlatform == MusicPlatform.OTHER) null
