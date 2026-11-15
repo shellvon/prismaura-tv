@@ -2220,6 +2220,8 @@ class MainActivity : ComponentActivity() {
         var importUrl by remember { mutableStateOf("") }
         var importName by remember { mutableStateOf("") }
         var importDialog by remember { mutableStateOf(false) }
+        /* 选定的音源要活过弹窗关闭：「用手机填写」之后 H5 导入仍沿用它。 */
+        var targetId by remember { mutableStateOf<String?>(null) }
         var pendingSong by remember { mutableStateOf<Song?>(null) }
         var trackMenu by remember { mutableStateOf<TrackMenuTarget?>(null) }
         val queuePlaybackFocus = remember { FocusRequester() }
@@ -2277,6 +2279,10 @@ class MainActivity : ComponentActivity() {
                 finally { mvResolving = false }
             }
         }
+
+        /* 快照与导入命令读「选中且仍可用」的音源；弹窗内的列表另用 collectAsState 保证重组。 */
+        fun importCapablePlugins() = plugins.state.value.plugins.filter { it.enabled && (it.metadata.optBoolean("importSheet") || it.metadata.optBoolean("importItem")) }
+        fun importTargetPlugin() = targetId?.let { id -> importCapablePlugins().firstOrNull { it.id == id } }
 
         fun openPhoneHub(entry: String? = null) {
             phoneRemoteEntry = entry ?: when {
@@ -2340,6 +2346,8 @@ class MainActivity : ComponentActivity() {
                         .put("page", page)
                         .put("playerOpen", playerOpen)
                         .put("importBusy", busy)
+                        .put("importTarget", importTargetPlugin()?.displayName.orEmpty())
+                        .put("importCapableCount", importCapablePlugins().size)
                         .put("restoreBusy", restoringBackup)
                         .put("restoreMessage", restoreMessage)
                         .put("restoreFailed", restoreFailed)
@@ -2555,7 +2563,7 @@ class MainActivity : ComponentActivity() {
                                 val payload = JSONObject(value)
                                 val sheetUrl = payload.optString("url").trim()
                                 require(sheetUrl.isNotEmpty()) { "请输入歌单或单曲链接" }
-                                importPlaylist(payload.optString("name"), sheetUrl)
+                                importPlaylist(payload.optString("name"), sheetUrl, importTargetPlugin())
                             }
                             "sourceToggle" -> {
                                 val plugin = plugins.state.value.plugins.firstOrNull { it.id == value } ?: error("音源不存在")
@@ -5836,7 +5844,6 @@ class MainActivity : ComponentActivity() {
                 val primaryFocus = remember { FocusRequester() }
                 val firstRowFocus = remember { FocusRequester() }
                 var picker by remember { mutableStateOf(false) }
-                var targetId by remember { mutableStateOf<String?>(null) }
                 val listState = rememberLazyListState()
                 val scrollScope = rememberCoroutineScope()
                 /* 链接先认平台，平台再给提示：认不出来就不猜，免得把别家的说明挂在你的链接上。
@@ -5865,7 +5872,7 @@ class MainActivity : ComponentActivity() {
                             .padding(horizontal = 28.dp, vertical = 22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Text("导入歌单或单曲", color = c.foreground, fontSize = 22.sp)
-                                Text(if (picker) "按确定选中的音源会记住，直到关掉这个弹窗" else "粘贴分享链接，自动识别音源",
+                                Text(if (picker) "按确定选中的音源会记住，手机导入也沿用" else "粘贴分享链接，自动识别音源",
                                     color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 2)
                             }
                             ImportDoorRow(picker, effective, chosen != null, capable.size, doorFocus,

@@ -394,6 +394,7 @@
           <input id="sheet-url" name="url" type="text" inputmode="url" placeholder="粘贴分享链接，或歌单编号" maxlength="2048" autocomplete="off">
           <label for="sheet-name">歌单名称（选填）</label>
           <input id="sheet-name" name="name" type="text" placeholder="留空按音源命名" maxlength="60" autocomplete="off">
+          <p class="meta" id="sheet-target" hidden></p>
           <button class="btn" type="submit">导入到电视歌单</button>
         </form>
         <p class="meta">链接交给对应音源自己的导入能力解析；私有歌单需要先在「音源管理」里填好该音源的 Cookie。结果显示在页面顶部</p>
@@ -738,9 +739,21 @@
     applySourcesFold();
     renderFilters(s);
     renderSearchResults(s);
+    renderSheetTarget(s);
     syncSheet();
     online(true);
     land(s);
+  }
+  function renderSheetTarget(s){
+    var capable = Number(s.importCapableCount || 0);
+    var target = s.importTarget || "";
+    var line = $("sheet-target");
+    var text = !capable ? "没有支持链接导入的音源，请先添加并启用"
+      : target ? "将使用：" + target + "（电视上已选）"
+      : "自动 · 按顺序尝试 " + capable + " 个音源";
+    if (line.textContent !== text) line.textContent = text;
+    line.hidden = false;
+    $("sheet-form").querySelector("button").disabled = !capable || !!s.importBusy;
   }
   function renderSearchResults(s){
     var music = s.searchType === "music";
@@ -1273,6 +1286,7 @@
   });
   $("sheet-form").addEventListener("submit", function(event){
     event.preventDefault();
+    if (this.querySelector("button").disabled) return;
     var url = $("sheet-url");
     var link = url.value.trim();
     if (!link){ url.focus(); return; }
