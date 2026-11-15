@@ -1783,6 +1783,7 @@ class MainActivity : ComponentActivity() {
                 for ((position, plugin) in candidates.withIndex()) {
                     status = "正在用 ${plugin.displayName} 导入…"
                     var sheet: JSONArray? = null
+                    var sheetTitle = ""
                     var failure = ""
                     val methods = buildList {
                         if (plugin.metadata.optBoolean("importSheet")) add("importMusicSheet")
@@ -1793,8 +1794,22 @@ class MainActivity : ComponentActivity() {
                     for (method in methods) {
                         try {
                             val imported = plugins.client.call(plugin.source, plugin.variables, method, JSONArray().put(url), plugin.id, budget)
-                            val tracks = if (method == "importMusicItem") (imported as? JSONObject)?.let { JSONArray().put(it) } else imported as? JSONArray
-                            if (tracks != null && tracks.length() > 0) { sheet = tracks; break }
+                            /* importMusicSheet 在 MusicFree 的类型里是 MusicItem[]，但那是历史写法
+                               （它自己的 plugin.d.ts 还留着「数据结构应该是 IMusicSheetItem」的 todo）。
+                               新一代插件返回整个歌单对象 {title, artwork, worksNum, musicList}，
+                               BakaMusic 也按两种都收处理并写进了插件文档。只认数组的话这些音源
+                               一律报「没有返回歌曲」，所以数组优先、其次取对象里的 musicList。 */
+                            val tracks = when {
+                                method == "importMusicItem" -> (imported as? JSONObject)?.let { JSONArray().put(it) }
+                                imported is JSONArray -> imported
+                                imported is JSONObject -> imported.optJSONArray("musicList")
+                                else -> null
+                            }
+                            if (tracks != null && tracks.length() > 0) {
+                                sheet = tracks
+                                sheetTitle = (imported as? JSONObject)?.optString("title").orEmpty().trim()
+                                break
+                            }
                             failure = "插件没有返回歌曲"
                         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
                           catch (e: Exception) { failure = e.message ?: "没有读到歌曲" }
@@ -1810,7 +1825,8 @@ class MainActivity : ComponentActivity() {
                     /* 超出上限的部分不能悄悄丢掉：导入前 5000 首，并把真实数量说清楚。 */
                     val kept = songs.take(5000)
                     val source = MusicPlatform.identify(url, kept.first().data.optString("source"), kept.first().data.optString("platform"), plugin.displayName)
-                    val title = name.trim().ifBlank { autoPlaylistName(plugin, library.state.value.playlists.map { it.name }.toSet()) }
+                    /* 插件自己报的歌单名比「网易云音乐 2」有用，但用户填了名字就听用户的。 */
+                    val title = name.trim().ifBlank { sheetTitle.ifBlank { autoPlaylistName(plugin, library.state.value.playlists.map { it.name }.toSet()) } }
                     library.create(title, kept, source.id)
                     /* create appends, so the list just written is the last one. Handing its id to 我的
                        is what makes an import findable instead of a number in a status line. */

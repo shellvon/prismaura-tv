@@ -91,10 +91,12 @@
 | `getAlbumInfo(item, page)` | `{ musicList, isEnd?, albumItem? }` | albumItem 补充首屏实体信息 |
 | `getMusicSheetInfo(item, page)` | `{ musicList, isEnd?, sheetItem? }` | sheetItem 补充首屏实体信息 |
 | `getArtistWorks(item, page, type)` | `{ data, isEnd? }` | type 为 music 或 album；album 本身是标准能力 |
-| `importMusicSheet(urlLike: string)` | MusicItem[] | 导入歌单 |
+| `importMusicSheet(urlLike: string)` | `MusicItem[]` 或 `{ musicList, title?, artwork?, worksNum? }` | 两种写法都接受；歌单名优先用插件给的 title |
 | `importMusicItem(urlLike: string)` | MusicItem | 导入单曲 |
 
 链接导入先尝试匹配平台的启用插件，再尝试其它有导入能力的插件；同一插件先尝试歌单接口，再尝试单曲接口。第一个返回歌曲的结果胜出，单曲也保存为本机歌单。每次最多保存 5000 首；短链、编号或私有链接能否解析由插件负责。导入不写回平台账号。
+
+`importMusicSheet` 的历史返回值是 `MusicItem[]`，MusicFree 的类型定义至今仍是数组（其类型文件里留着「数据结构应该是 IMusicSheetItem」的待办）。新一代插件改成返回整个歌单对象 `{ title, artwork, worksNum, musicList }`，BakaMusic 的插件文档推荐的也是这一种，并同样兼容数组。Prism 两种都收：先认数组，其次取对象里的 `musicList`；歌单名在用户未填写时用插件返回的 `title`。
 
 专辑／歌单优先使用 MusicFree 标准的 albumItem／sheetItem；Prism 新增 artistInfo／albumInfo 补充字段，同名信息以标准字段为准。单页展示限制：搜索每源最多 100 项，详情最多 200 首；插件应正确分页而不是一次返回无限列表。
 
