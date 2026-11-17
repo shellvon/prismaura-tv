@@ -431,12 +431,9 @@ internal fun PrismConfirmDialog(
     }
 }
 
-/* 动作卡片固定 112dp，弹窗按动作数收窄：一个动作的菜单不该是半屏空白。 */
-internal fun menuWidth(actions: Int): Dp = (actions * 112 + (actions - 1) * 12 + 52).dp.coerceIn(360.dp, 620.dp)
-
 /* subtitle 为空时整行不画：只有一个动作的菜单，标题下面再补一句说明只会把弹窗撑高。 */
 @Composable
-fun PrismContextMenu(title: String, subtitle: String, onDismiss: () -> Unit, initialFocus: FocusRequester? = null,
+fun PrismContentDialog(title: String, subtitle: String, onDismiss: () -> Unit, initialFocus: FocusRequester? = null,
                      width: Dp = 520.dp, content: @Composable ColumnScope.() -> Unit) {
     val c = LocalPrismColors.current
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {

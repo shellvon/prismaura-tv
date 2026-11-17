@@ -57,6 +57,7 @@ data class PluginsState(
     /* address → id of a removed source. Favorites and history are keyed by plugin id, so
        re-importing the same address reuses the old id and those entries attach again. */
     val removed: Map<String, String> = emptyMap(),
+    val subscriptionDescriptions: Map<String, String> = emptyMap(),
 )
 /** A confirmation binds the exact code and the installed revision, never a re-download. */
 data class PluginReplacement(val candidates: List<Plugin>, val incoming: Plugin) {
@@ -96,7 +97,11 @@ class Plugins(private val context: Context, val client: PluginClient) {
         val removed = removedRoot?.let { obj ->
             obj.keys().asSequence().mapNotNull { url -> obj.optString(url).takeIf { it.isNotBlank() }?.let { url to it } }.toMap()
         } ?: emptyMap()
-        return PluginsState(plugins, (0 until subscriptions.length()).map { subscriptions.getString(it) }, removed = removed)
+        val urls = (0 until subscriptions.length()).map { subscriptions.getString(it) }
+        val descriptions = root.optJSONObject("subscriptionDescriptions")
+        return PluginsState(plugins, urls, removed = removed, subscriptionDescriptions = urls.mapNotNull { url ->
+            (descriptions?.opt(url) as? String)?.trim()?.take(1024)?.takeIf { it.isNotBlank() }?.let { url to it }
+        }.toMap())
     }
 
     private fun write(state: PluginsState) {
@@ -106,6 +111,7 @@ class Plugins(private val context: Context, val client: PluginClient) {
             .put("enabled", p.enabled).put("origin", p.origin)) }
         val removed = JSONObject().apply { state.removed.forEach { (url, id) -> put(url, id) } }
         val root = JSONObject().put("plugins", plugins).put("subscriptions", JSONArray(state.subscriptions)).put("removed", removed)
+            .put("subscriptionDescriptions", JSONObject(state.subscriptionDescriptions))
         val stream = file.startWrite()
         try { stream.write(root.toString().toByteArray(Charsets.UTF_8)); file.finishWrite(stream) }
         catch (e: Exception) { file.failWrite(stream); throw e }
@@ -120,6 +126,7 @@ class Plugins(private val context: Context, val client: PluginClient) {
             .put("metadata", p.metadata).put("variables", p.variables).put("enabled", p.enabled).put("origin", p.origin)) }
         val removed = JSONObject().apply { state.removed.forEach { (url, id) -> put(url, id) } }
         return JSONObject().put("plugins", plugins).put("subscriptions", JSONArray(state.subscriptions)).put("removed", removed)
+            .put("subscriptionDescriptions", JSONObject(state.subscriptionDescriptions))
     }
 
     suspend fun restoreBackup(root: JSONObject) = mutex.withLock {
@@ -221,7 +228,8 @@ class Plugins(private val context: Context, val client: PluginClient) {
         // subscription must not later try to reinstall the old channel. Shared manifests stay intact.
         val obsolete = previous?.origin?.takeIf { it == previous.url && it != plugin.origin && updated.none { p -> p.origin == it } }
         val subscriptions = (state.subscriptions.filterNot { it == obsolete } + listOf(plugin.origin).filter { it.isNotBlank() }).distinct()
-        withContext(Dispatchers.IO) { write(state.copy(plugins = updated, subscriptions = subscriptions, removed = state.removed - plugin.url)) }
+        withContext(Dispatchers.IO) { write(state.copy(plugins = updated, subscriptions = subscriptions, removed = state.removed - plugin.url,
+            subscriptionDescriptions = state.subscriptionDescriptions.filterKeys { it in subscriptions })) }
         return SyncResult("已${if (previous == null) "导入" else "更新"}插件：${plugin.displayName}")
     }
 
@@ -241,7 +249,11 @@ class Plugins(private val context: Context, val client: PluginClient) {
             // Keep the explicitly added subscription even if every child is temporarily unavailable.
             mutex.withLock {
                 val state = mutable.value
-                withContext(Dispatchers.IO) { write(state.copy(subscriptions = (state.subscriptions + normalized).distinct())) }
+                // desc is optional display metadata, never the subscription's identity.
+                val description = (manifest.opt("desc") as? String)?.trim()?.take(1024).orEmpty()
+                val descriptions = state.subscriptionDescriptions - normalized +
+                    if (description.isNotBlank()) mapOf(normalized to description) else emptyMap()
+                withContext(Dispatchers.IO) { write(state.copy(subscriptions = (state.subscriptions + normalized).distinct(), subscriptionDescriptions = descriptions)) }
             }
             return@withLock syncUrls(urls, normalized, onProgress)
         }
@@ -310,9 +322,9 @@ class Plugins(private val context: Context, val client: PluginClient) {
         state.value.plugins.firstOrNull { it.url == url }?.displayName
             ?: url.substringAfterLast('/').ifBlank { url }.removeSuffix(".js").substringBefore(".plugin.v")
 
-    /** Subscriptions are identified by URL, so the host is the closest thing to a name they have. */
-    private fun subscriptionLabel(url: String): String =
-        state.value.plugins.firstOrNull { it.origin == url && it.url == url }?.displayName
+    internal fun subscriptionLabel(url: String): String =
+        state.value.subscriptionDescriptions[url]?.takeIf { it.isNotBlank() }
+            ?: state.value.plugins.firstOrNull { it.origin == url && it.url == url }?.displayName
             ?: url.substringAfter("://").substringBefore('/').ifBlank { url }
 
     private suspend fun syncUrls(urls: List<String>, origin: String, onProgress: Progress? = null): SyncResult {
@@ -394,6 +406,7 @@ class Plugins(private val context: Context, val client: PluginClient) {
             withContext(Dispatchers.IO) {
                 write(state.copy(
                     subscriptions = state.subscriptions.filterNot { it == url },
+                    subscriptionDescriptions = state.subscriptionDescriptions - url,
                     plugins = state.plugins.filterNot { it.origin == url || (it.origin.isBlank() && it.url == url) },
                     removed = removed,
                 ))

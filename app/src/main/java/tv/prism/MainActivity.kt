@@ -71,6 +71,8 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
@@ -133,6 +135,7 @@ private class PlaybackRecovery(val sources: SourceRecovery, val onFailure: (Bool
 // Keep the UI's queue when Android recreates the activity; the audio itself lives in PlaybackService.
 private object ActiveQueue {
     var songs by mutableStateOf<List<Song>>(emptyList())
+    var order by mutableStateOf(PlaybackOrder())
     var index by mutableIntStateOf(-1)
     var radio by mutableStateOf(false)
     var radioRecent: List<String> = emptyList()
@@ -273,7 +276,10 @@ class MainActivity : ComponentActivity() {
     private var chartLoading by mutableStateOf(false)
     private var queue: List<Song>
         get() = ActiveQueue.songs
-        set(value) { ActiveQueue.songs = value }
+        set(value) {
+            ActiveQueue.order = ActiveQueue.order.updated(value.map { it.key })
+            ActiveQueue.songs = value
+        }
     private var queueIndex: Int
         get() = ActiveQueue.index
         set(value) { ActiveQueue.index = value }
@@ -513,6 +519,8 @@ class MainActivity : ComponentActivity() {
             queueIndex = saved.index
             ActiveQueue.radio = saved.radio
             ActiveQueue.radioRecent = saved.radioRecent
+            ActiveQueue.order = ActiveQueue.order.restored(saved.shuffleOrder, saved.index,
+                playMode == PlaybackMode.SHUFFLE && !saved.radio)
             positionMs = saved.position
             resumePending = saved.position
         }
@@ -597,6 +605,26 @@ class MainActivity : ComponentActivity() {
             }
             catch (e: Exception) { reportPlayback("播放器连接失败：${e.cause?.message ?: e.message}") }
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun searchUsingSubscription(url: String) {
+        val current = plugins.state.value
+        require(url in current.subscriptions) { "订阅已移除" }
+        searchUsingSources(current.plugins.filter { it.origin == url || (it.origin.isBlank() && it.url == url) }.mapTo(linkedSetOf()) { it.id })
+    }
+
+    private fun searchUsingSources(ids: Set<String>) {
+        check(!busy) { "请等待当前操作完成后再切换音源" }
+        val sources = plugins.state.value.plugins.filter { it.id in ids && it.enabled && it.capabilities.has("search") }
+        // An empty filter means ALL sources; never turn a disabled/removed group into that scope.
+        require(sources.isNotEmpty()) { "没有已启用且支持搜索的音源" }
+        searchSources = sources.mapTo(linkedSetOf()) { it.id }
+        selectedPlugin = sources.first().id
+        val types = searchTypeChoices(sources)
+        if (types.none { it.first == searchType }) searchType = types.firstOrNull()?.first ?: "music"
+        results = emptyList(); entities = emptyList(); hasMore = false
+        page = "search"; playerOpen = false; focusSearchResults = false
+        if (searchTerm.isNotBlank()) search(searchTerm, focusResults = false)
     }
 
     private fun search(query: String, append: Boolean = false, focusResults: Boolean = true) {
@@ -992,6 +1020,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun leaveRadio() {
+        if (ActiveQueue.radio && playMode == PlaybackMode.SHUFFLE)
+            ActiveQueue.order = ActiveQueue.order.randomized(queueIndex)
         ActiveQueue.radio = false
         radioJob?.cancel(); radioAdvanceJob?.cancel()
     }
@@ -1000,7 +1030,16 @@ class MainActivity : ComponentActivity() {
         if (!radio) leaveRadio()
         ActiveQueue.radio = radio
         queue = songs
+        ActiveQueue.order = PlaybackOrder().updated(songs.map { it.key }).let {
+            if (!radio && playMode == PlaybackMode.SHUFFLE) it.randomized(index) else it
+        }
         playAt(index)
+    }
+
+    private fun playCollection(songs: List<Song>, shuffle: Boolean = false) {
+        if (songs.isEmpty()) return
+        updatePreference("mode", (if (shuffle) PlaybackMode.SHUFFLE else PlaybackMode.SEQUENTIAL).id)
+        playQueue(songs, if (shuffle) songs.indices.random() else 0)
     }
 
     /* A single pick joins the listening context instead of replacing it: insert right after
@@ -1009,16 +1048,40 @@ class MainActivity : ComponentActivity() {
         leaveRadio()
         if (queue.isEmpty()) { playQueue(listOf(song)); return }
         val existing = queue.indexOfFirst { it.key == song.key }
-        if (existing >= 0) { playAt(existing); return }
+        if (existing >= 0) {
+            ActiveQueue.order = ActiveQueue.order.placed(existing, queueIndex, next = true)
+            playAt(existing)
+            return
+        }
         val at = (queueIndex + 1).coerceIn(0, queue.size)
         queue = queue.toMutableList().also { it.add(at, song) }
+        ActiveQueue.order = ActiveQueue.order.placed(at, queueIndex, next = true)
         playAt(at)
+    }
+
+    private fun enqueueSong(song: Song, next: Boolean) {
+        if (queue.getOrNull(queueIndex)?.key == song.key) {
+            status = "这首歌已是当前曲目"
+            return
+        }
+        val current = queue.getOrNull(queueIndex)?.key
+        val updated = queue.filterNot { it.key == song.key }.toMutableList()
+        val currentIndex = updated.indexOfFirst { it.key == current }
+        val at = if (next && currentIndex >= 0) currentIndex + 1 else updated.size
+        updated.add(at, song)
+        queue = updated
+        queueIndex = if (currentIndex >= 0) currentIndex else 0
+        ActiveQueue.order = ActiveQueue.order.placed(at, queueIndex, next)
+        saveResume()
+        status = "${if (next) "已设为下一首" else "已添加到播放队列"}：${song.title}"
     }
 
     private fun removeQueueItem(index: Int) {
         if (index !in queue.indices) return
         val autoplay = controller?.playWhenReady == true
         val removingCurrent = index == queueIndex
+        val following = if (removingCurrent && playMode == PlaybackMode.SHUFFLE && !ActiveQueue.radio && queue.size > 1)
+            nextIndex(1) else null
         queue = queue.toMutableList().also { it.removeAt(index) }
         when {
             queue.isEmpty() -> {
@@ -1035,7 +1098,7 @@ class MainActivity : ComponentActivity() {
             /* Removing the song under the needle: the next one takes its place and plays,
                so the title on screen and the audio never disagree. */
             removingCurrent -> {
-                queueIndex = index.coerceAtMost(queue.lastIndex)
+                queueIndex = following?.let { it - if (it > index) 1 else 0 } ?: index.coerceAtMost(queue.lastIndex)
                 playAt(queueIndex, openPlayer = false, autoplay = autoplay)
             }
         }
@@ -1301,17 +1364,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun toggleFavorite(song: Song?, onFailure: (String) -> Unit = { status = it }) {
+    private fun toggleFavorite(song: Song?, onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = { status = it }) {
         if (song == null) return
         if (song.pluginId == "local" && !song.data.optBoolean("persisted")) onFailure("本地文件未获得长期授权，不能保存")
         else lifecycleScope.launch {
-            try { library.toggleFavorite(song) }
+            try { library.toggleFavorite(song); onSuccess() }
             catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { onFailure(e.message ?: "保存失败") }
         }
     }
 
-    private fun toggleSubject(pluginId: String, kind: String, item: JSONObject, sourceName: String, onFailure: (String) -> Unit = { status = it }) {
+    private fun toggleSubject(pluginId: String, kind: String, item: JSONObject, sourceName: String,
+                              onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = { status = it }) {
         lifecycleScope.launch {
             try {
                 val keys = plugins.state.value.plugins.firstOrNull { it.id == pluginId }?.metadata?.let(::primaryKeys) ?: listOf("id")
@@ -1319,6 +1383,7 @@ class MainActivity : ComponentActivity() {
                 val wasSaved = library.state.value.subjects.any { it.key == key }
                 library.toggleSubject(SavedSubject(pluginId, kind, item, sourceName, keys))
                 status = if (wasSaved) "已取消收藏" else "已收藏"
+                onSuccess()
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { onFailure(e.message ?: "保存失败") }
         }
@@ -1688,8 +1753,10 @@ class MainActivity : ComponentActivity() {
     private fun advanceAfterFailure(song: Song, label: String, detail: String, autoplay: Boolean = true, restore: () -> Unit) {
         if (!autoplay) { reportPlayback(detail); restore(); return }
         failedSongs += song.key
+        val order = playbackIndices()
+        val current = order.indexOf(queueIndex).coerceAtLeast(0)
         val next = (if (ActiveQueue.radio) (queueIndex + 1 until queue.size).toList() else
-            (1 until queue.size).map { offset -> (queueIndex + offset) % queue.size })
+            (1 until order.size).map { offset -> order[(current + offset) % order.size] })
             .firstOrNull { index -> queue[index].key !in failedSongs }
         if (next == null || ActiveQueue.radio && failedSongs.size >= 5) {
             if (ActiveQueue.radio) { controller?.pause(); radioJob?.cancel(); radioRetryAt = android.os.SystemClock.elapsedRealtime() + 30_000 }
@@ -1853,7 +1920,8 @@ class MainActivity : ComponentActivity() {
         if (queue.isEmpty()) return
         val position = recovery?.takeIf { resolving?.isActive == true }?.position
             ?: controller?.currentPosition?.coerceAtLeast(0L) ?: positionMs
-        resumeStore.write(queue, queueIndex, position, ActiveQueue.radio, ActiveQueue.radioRecent)
+        resumeStore.write(queue, queueIndex, position, ActiveQueue.radio, ActiveQueue.radioRecent,
+            if (playMode == PlaybackMode.SHUFFLE && !ActiveQueue.radio) ActiveQueue.order.indices else emptyList())
     }
 
     private fun step(direction: Int) {
@@ -1876,10 +1944,14 @@ class MainActivity : ComponentActivity() {
         playAt(nextIndex(direction), openPlayer = false)
     }
 
-    private fun nextIndex(direction: Int): Int =
-        if (playMode == PlaybackMode.SHUFFLE && queue.size > 1 && direction > 0) {
-            val n = kotlin.random.Random.nextInt(queue.size - 1); if (n >= queueIndex) n + 1 else n
-        } else (queueIndex + direction + queue.size) % queue.size
+    private fun playbackIndices(): List<Int> =
+        if (playMode == PlaybackMode.SHUFFLE && !ActiveQueue.radio) ActiveQueue.order.indices else queue.indices.toList()
+
+    private fun nextIndex(direction: Int): Int {
+        val order = playbackIndices()
+        val current = order.indexOf(queueIndex).coerceAtLeast(0)
+        return order[(current + direction + order.size) % order.size]
+    }
 
     private fun readPlaybackMode(): PlaybackMode {
         val prefs = getSharedPreferences("playback", MODE_PRIVATE)
@@ -1894,8 +1966,11 @@ class MainActivity : ComponentActivity() {
             "mode" -> {
                 val mode = PlaybackMode.fromId(value) ?: error("未知播放模式")
                 leaveRadio()
+                if (mode == PlaybackMode.SHUFFLE && playMode != PlaybackMode.SHUFFLE)
+                    ActiveQueue.order = ActiveQueue.order.randomized(queueIndex)
                 playMode = mode
                 getSharedPreferences("playback", MODE_PRIVATE).edit().putString("mode", mode.id).apply()
+                saveResume()
             }
             "quality" -> {
                 require(value in setOf("low", "standard", "high", "super", "flac", "flac24bit", "hires", "dolby", "atmos", "atmos_plus", "64k", "128k", "192k", "320k", "mgg")) { "未知音质" }
@@ -3631,9 +3706,11 @@ class MainActivity : ComponentActivity() {
                                                         toggleSubject(browsePluginId, browseKind, item, sourceName)
                                                     }, if (!playAllInHero) heroUp.focusAnchor(detailHeaderFocus) else heroUp,
                                                         icon = if (saved) "heartFilled" else "heart")
-                                                    if (playAllInHero)
-                                                        PrismAction("播放全部", { playQueue(browseSongs.toList()) }, heroUp.focusAnchor(detailHeaderFocus), primary = true)
-                                                    if (queue.isNotEmpty()) PrismAction("打开播放器", { playerOpen = true }, heroUp)
+                                                    if (playAllInHero) {
+                                                        PrismAction("播放全部", { playCollection(browseSongs.toList()) }, heroUp.focusAnchor(detailHeaderFocus), primary = true, icon = "play")
+                                                        PrismAction("随机播放", { playCollection(browseSongs.toList(), shuffle = true) }, heroUp, icon = "shuffle")
+                                                    }
+                                                    else if (queue.isNotEmpty()) PrismAction("打开播放器", { playerOpen = true }, heroUp)
                                                 }
                                             }
                                             if (browseKind == "artist" && (browseAlbums.isNotEmpty() || browseAlbumStatus.isNotBlank())) {
@@ -5184,13 +5261,16 @@ class MainActivity : ComponentActivity() {
                                         val expanded = collapsedSubscriptions[url] != true
                                         val enabledCount = owned.count { it.enabled }
                                         val allEnabled = owned.isNotEmpty() && enabledCount == owned.size
+                                        val searchable = owned.filter { it.enabled && it.capabilities.has("search") }
                                         var infoOpen by remember(url) { mutableStateOf(false) }
                                         var groupMenu by remember(url) { mutableStateOf(false) }
+                                        var groupPending by remember(url) { mutableStateOf(false) }
+                                        var groupNotice by remember(url) { mutableStateOf("") }
                                         val titleFocus = remember(url) { FocusRequester() }
                                         val updateFocus = remember(url) { FocusRequester() }
                                         val moreFocus = remember(url) { FocusRequester() }
                                         val subscriptionUri = remember(url) { Uri.parse(url) }
-                                        val groupTitle = subscriptionUri.host?.let { "订阅 · $it" } ?: "音源订阅"
+                                        val groupTitle = plugins.subscriptionLabel(url)
                                         fun backToHeader() {
                                             pageScope.launch { withFrameNanos { }; runCatching { moreFocus.requestFocus() } }
                                         }
@@ -5221,26 +5301,39 @@ class MainActivity : ComponentActivity() {
                                             SettingsButton("更多", { groupMenu = true }, Modifier.focusRequester(moreFocus)
                                                 .focusProperties { left = updateFocus }.rememberFocus(bodyFocusMemory))
                                         }
-                                        if (groupMenu) PrismContextMenu(groupTitle, "${owned.size} 个音源 · 已启用 $enabledCount", {
-                                            groupMenu = false; backToHeader()
-                                        }, moreFocus, width = menuWidth(3)) {
-                                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
-                                                PrismIconAction(if (allEnabled) "close" else "check",
-                                                    if (allEnabled) "全部停用" else "全部启用", {
-                                                        if (!busy) lifecycleScope.launch {
-                                                            try { plugins.setEnabled(owned.map { it.id }, !allEnabled); status = if (allEnabled) "已停用 ${owned.size} 个音源" else "已启用 ${owned.size} 个音源" }
-                                                            catch (e: Exception) { status = e.message ?: "操作失败" }
-                                                            finally { groupMenu = false; backToHeader() }
+                                        if (groupMenu) PrismActionMenu(groupTitle, "${owned.size} 个音源 · 已启用 $enabledCount",
+                                            onDismiss = { groupMenu = false; backToHeader() }, notice = groupNotice, actions = listOf(
+                                                PrismMenuAction("使用此组搜索", "search", navigates = true, enabled = !busy && !groupPending && searchable.isNotEmpty(),
+                                                    description = if (searchable.isEmpty()) "组内没有已启用且支持搜索的音源" else "使用 ${searchable.size} 个已启用音源") {
+                                                    groupMenu = false
+                                                    runCatching { searchUsingSubscription(url) }.onFailure { status = it.message ?: "无法切换音源" }
+                                                },
+                                                PrismMenuAction("订阅信息", "info", navigates = true) { groupMenu = false; infoOpen = true },
+                                                PrismMenuAction(if (groupPending) "正在保存…" else if (allEnabled) "全部停用" else "全部启用", if (allEnabled) "close" else "check", enabled = !busy && owned.isNotEmpty(), keepOpen = true, section = PrismMenuSection.MANAGEMENT) {
+                                                    if (!busy && !groupPending) {
+                                                        groupPending = true; groupNotice = "正在保存…"
+                                                        lifecycleScope.launch {
+                                                            try {
+                                                                plugins.setEnabled(owned.map { it.id }, !allEnabled)
+                                                                groupNotice = if (allEnabled) "已停用 ${owned.size} 个音源" else "已启用 ${owned.size} 个音源"
+                                                                status = groupNotice
+                                                            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                                                            catch (e: Exception) { groupNotice = e.message ?: "操作失败"; status = groupNotice }
+                                                            finally { groupPending = false }
                                                         }
-                                                    }, Modifier.weight(1f, fill = false).focusRequester(moreFocus))
-                                                PrismIconAction("info", "订阅地址", { groupMenu = false; infoOpen = true }, Modifier.weight(1f, fill = false))
-                                                PrismIconAction("trash", "移除订阅", { groupMenu = false; removingSubscription = url }, Modifier.weight(1f, fill = false))
-                                            }
-                                        }
+                                                    }
+                                                },
+                                                PrismMenuAction("移除订阅", "trash", description = "同时移除订阅内音源，保留本机歌单和收藏", destructive = true, enabled = !busy) {
+                                                    groupMenu = false; removingSubscription = url
+                                                },
+                                            ))
                                         val subscriptionCloseFocus = remember(url) { FocusRequester() }
-                                        if (infoOpen) PrismContextMenu("音源订阅", "订阅地址", {
+                                        if (infoOpen) PrismContentDialog("音源订阅", "订阅地址", {
                                             infoOpen = false; backToHeader()
                                         }, subscriptionCloseFocus) {
+                                            state.subscriptionDescriptions[url]?.let { description ->
+                                                Text(description, color = c.foreground, fontSize = 14.sp, lineHeight = 21.sp)
+                                            }
                                             SourceAddressList(listOf(SourceAddress("订阅地址", url)))
                                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                                                 PrismAction("关闭", { infoOpen = false; backToHeader() }, Modifier.focusRequester(subscriptionCloseFocus), primary = true)
@@ -5379,7 +5472,7 @@ class MainActivity : ComponentActivity() {
                     if (!playerScreenOff || !screenOffSettled) PrismBackground {
                         PrismPlayer(song, lyrics, lyricStatus, positionMs, durationMs, playing, playMode,
                             song != null && libraryState.favorites.any { it.key == song.key }, tierFor(song), playingQuality,
-                            queueIndex, queue.size, playbackStatus,
+                            playbackIndices().indexOf(queueIndex).coerceAtLeast(0), queue.size, playbackStatus,
                             streamFormat,
                             playbackSource = playbackSong(),
                             hasMv = song != null && song.hasMv && song.pluginId in mvCapableIds,
@@ -5482,7 +5575,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (radioMenuOpen) {
-                val first = remember { FocusRequester() }
                 fun closeRadioMenu() {
                     radioMenuOpen = false
                     pageScope.launch {
@@ -5492,19 +5584,17 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                Dialog(onDismissRequest = { closeRadioMenu() }) {
-                    LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; first.requestFocus() }
-                    Column(Modifier.width(440.dp).background(c.panel, androidx.compose.foundation.shape.RoundedCornerShape(18.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                        Text("极光电台", color = c.foreground, fontSize = 22.sp)
-                        Text(if (playerOpen) "保留当前歌曲和进度，为接下来的队列穿插新发现。" else "从收藏与常听出发，穿插榜单和推荐歌单中的曲目，自动接着播放。", color = c.muted, fontSize = 13.sp)
-                        if (radioStatus.contains("暂") || radioStatus.contains("失败")) Text(radioStatus, color = c.muted, fontSize = 12.sp)
-                        PrismAction(if (ActiveQueue.radio) "更换接下来的歌曲" else "开启电台", {
+                PrismActionMenu("极光电台",
+                    if (radioStatus.contains("暂") || radioStatus.contains("失败")) radioStatus
+                    else if (playerOpen) "保留当前歌曲和进度，为接下来的队列穿插新发现" else "从收藏与常听出发，穿插榜单和推荐歌单中的曲目",
+                    onDismiss = { closeRadioMenu() }, actions = buildList {
+                        add(PrismMenuAction(if (ActiveQueue.radio) "更换接下来的歌曲" else "开启电台", "radio") {
                             closeRadioMenu(); startRadio(restart = true, keepCurrent = playerOpen || ActiveQueue.radio)
-                        }, Modifier.focusRequester(first), primary = true)
-                        if (ActiveQueue.radio) PrismAction("退出极光电台，保留当前队列", { leaveRadio(); saveResume(); closeRadioMenu() })
-                        PrismAction("返回", { closeRadioMenu() })
-                    }
-                }
+                        })
+                        if (ActiveQueue.radio) add(PrismMenuAction("退出极光电台", "close", description = "保留当前队列") {
+                            leaveRadio(); saveResume(); closeRadioMenu()
+                        })
+                    })
             }
             if (updateDialogOpen) AppUpdateDialog(updateState, appUpdates.releasePage,
                 onCheck = { checkAppUpdates() }, onDownload = { downloadAppUpdate() },
@@ -5529,7 +5619,8 @@ class MainActivity : ComponentActivity() {
             if (queueOpen) {
                 val favoriteKeys = remember(libraryState.favorites) { libraryState.favorites.map { it.key }.toSet() }
                 val currentQueueFocus = queuePlaybackFocus
-                val queueFocusIndex = queueIndex.coerceIn(0, (queue.size - 1).coerceAtLeast(0))
+                val order = playbackIndices()
+                val queueFocusIndex = order.indexOf(queueIndex).coerceAtLeast(0)
                 val queueListState = rememberLazyListState(initialFirstVisibleItemIndex = queueFocusIndex)
                 var panelVisible by remember { mutableStateOf(false) }
                 val panelScope = rememberCoroutineScope()
@@ -5558,13 +5649,14 @@ class MainActivity : ComponentActivity() {
                                 Spacer(Modifier.height(14.dp))
                                 if (queue.isEmpty()) Text("播放歌曲后显示队列", color = c.muted)
                                 LazyColumn(Modifier.weight(1f), state = queueListState) {
-                                    itemsIndexed(queue) { index, item ->
-                                        val rowFocus = if (index == queueFocusIndex) currentQueueFocus else detailFocus("queue:${item.key}:$index")
+                                    itemsIndexed(order) { position, index ->
+                                        val item = queue[index]
+                                        val rowFocus = if (index == queueIndex) currentQueueFocus else detailFocus("queue:${item.key}:$index")
                                         val rowModifier = Modifier.focusRequester(rowFocus)
-                                        PrismQueueRow(item, index, index == queueIndex,
+                                        PrismQueueRow(item, position, index == queueIndex,
                                             /* The first row has no neighbour above it inside the panel's
                                                focus space; point Up at 关闭 so it is always reachable. */
-                                            if (index == 0 && queueCloseFocus.attached) rowModifier.focusProperties { up = queueCloseFocus.requester } else rowModifier,
+                                            if (position == 0 && queueCloseFocus.attached) rowModifier.focusProperties { up = queueCloseFocus.requester } else rowModifier,
                                             /* Every song row in the app answers a long hold the same
                                                way; the queue is no exception. */
                                             onLongPress = { menuReturnFocus = rowFocus; trackMenu = TrackMenuTarget(item, list = "queue", originFocus = "queue:${item.key}") },
@@ -5579,8 +5671,8 @@ class MainActivity : ComponentActivity() {
             }
             trackMenu?.let { target ->
                 val song = target.song
-                val firstFocus = remember { FocusRequester() }
-                var menuError by remember(song.key) { mutableStateOf("") }
+                var favoritePending by remember(song.key) { mutableStateOf(false) }
+                var menuNotice by remember(song.key) { mutableStateOf("") }
                 val saved = libraryState.favorites.any { it.key == song.key }
                 val songPlugin = activePlugins.firstOrNull { it.id == song.pluginId }
                 val artistDetail = supportsSubjectSearch(songPlugin, "artist")
@@ -5595,87 +5687,49 @@ class MainActivity : ComponentActivity() {
                     page = "search"
                     if (!busy && term.isNotBlank()) search(term)
                 }
-                Dialog(onDismissRequest = { trackMenu = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-                    LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; firstFocus.requestFocus() }
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(Modifier.width(620.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(24.dp))
-                            .background(Brush.verticalGradient(listOf(c.panel, c.background.copy(alpha = .985f))))
-                            .border(1.dp, c.line.copy(alpha = .75f), androidx.compose.foundation.shape.RoundedCornerShape(24.dp))
-                            .padding(horizontal = 30.dp, vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                PrismArtwork(song, Modifier.size(96.dp))
-                                Spacer(Modifier.width(18.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(song.title, color = c.foreground, fontSize = 22.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Spacer(Modifier.height(5.dp))
-                                    Text(listOf(song.artist, song.album).filter { it.isNotBlank() && it != "未知歌手" }.joinToString(" · ").ifBlank { song.sourceLabel },
-                                        color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Spacer(Modifier.height(7.dp))
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        PlatformIcon(song.platform, Modifier.size(14.dp))
-                                        Spacer(Modifier.width(7.dp))
-                                        Text(song.sourceLabel, color = c.muted.copy(alpha = .85f), fontSize = 10.sp, maxLines = 1)
-                                    }
-                                }
-                                AuraIconButton("close", "关闭", { trackMenu = null }, Modifier.size(38.dp))
+                PrismActionMenu(song.title, song.artist, song, onDismiss = { trackMenu = null }, notice = menuNotice, actions = buildList {
+                        add(PrismMenuAction("下一首播放", "queueNext") { trackMenu = null; enqueueSong(song, next = true) })
+                        add(PrismMenuAction("添加到播放队列", "queueAdd") { trackMenu = null; enqueueSong(song, next = false) })
+                        add(PrismMenuAction(if (favoritePending) "正在保存…" else if (saved) "取消收藏" else "收藏歌曲", if (saved) "heartFilled" else "heart", active = saved, keepOpen = true) {
+                            if (!favoritePending) {
+                                favoritePending = true; menuNotice = "正在保存…"
+                                toggleFavorite(song, onSuccess = {
+                                    favoritePending = false
+                                    menuNotice = if (library.state.value.favorites.any { it.key == song.key }) "已收藏" else "已取消收藏"
+                                    status = "$menuNotice：${song.title}"
+                                }, onFailure = { favoritePending = false; menuNotice = it; status = it })
                             }
-                            Box(Modifier.fillMaxWidth().height(1.dp).background(c.line.copy(alpha = .55f)))
-                            /* Verbs in one centred row; the labels say whether 歌手/专辑 opens a
-                               detail or falls back to a search, so the glyph is never the whole
-                               instruction. */
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
-                                val current = queue.getOrNull(queueIndex)?.key == song.key && loadedKey == song.key &&
-                                    playbackState != Player.STATE_IDLE && playbackState != Player.STATE_ENDED
-                                PrismIconAction("play", "播放", {
-                                    trackMenu = null
-                                    if (current) playerOpen = true
-                                    else playSingle(song)
-                                }, Modifier.weight(1f, fill = false))
-                                PrismIconAction(if (saved) "heartFilled" else "heart", if (saved) "已收藏" else "收藏", {
-                                    menuError = ""
-                                    toggleFavorite(song) { menuError = it }
-                                }, Modifier.weight(1f, fill = false).focusRequester(firstFocus), active = saved)
-                                if (song.artist.isNotBlank() && song.artist != "未知歌手")
-                                    PrismIconAction("mic", if (artistDetail) "歌手详情" else "搜歌手", {
-                                        trackMenu = null
-                                        if (artistDetail) openSubject(song, "artist", target.originFocus) else find(song.artist, "music")
-                                    }, Modifier.weight(1f, fill = false))
-                                if (song.album.isNotBlank())
-                                    PrismIconAction("album", if (albumDetail) "专辑详情" else "搜专辑", {
-                                        trackMenu = null
-                                        if (albumDetail) openSubject(song, "album", target.originFocus) else find(song.album, if (albumSearch) "album" else "music")
-                                    }, Modifier.weight(1f, fill = false))
-                                if (target.list?.startsWith("playlist:") == true)
-                                    PrismIconAction("trash", "移出歌单", {
-                                        trackMenu = null
-                                        lifecycleScope.launch { try { library.removeSong(target.list.removePrefix("playlist:"), song) } catch (e: Exception) { status = e.message ?: "操作失败" } }
-                                    }, Modifier.weight(1f, fill = false))
-                                if (target.list == "recent")
-                                    PrismIconAction("trash", "删除记录", {
-                                        trackMenu = null
-                                        lifecycleScope.launch { try { library.removeRecent(song) } catch (e: Exception) { status = e.message ?: "删除失败" } }
-                                    }, Modifier.weight(1f, fill = false))
-                                if (target.list == "queue")
-                                    PrismIconAction("trash", "移出队列", {
-                                        trackMenu = null
-                                        removeQueueItem(queue.indexOfFirst { it.key == song.key })
-                                    }, Modifier.weight(1f, fill = false))
-                            }
-                            if (menuError.isNotBlank()) Text(menuError, color = c.accent, fontSize = 12.sp)
-                        }
-                    }
-                }
+                        })
+                        if (song.artist.isNotBlank() && song.artist != "未知歌手") add(PrismMenuAction(if (artistDetail) "歌手详情" else "搜歌手", "mic", description = song.artist, navigates = true, section = PrismMenuSection.RELATED) {
+                            trackMenu = null
+                            if (artistDetail) openSubject(song, "artist", target.originFocus) else find(song.artist, "music")
+                        })
+                        if (song.album.isNotBlank()) add(PrismMenuAction(if (albumDetail) "专辑详情" else "搜专辑", "album", description = song.album, navigates = true, section = PrismMenuSection.RELATED) {
+                            trackMenu = null
+                            if (albumDetail) openSubject(song, "album", target.originFocus) else find(song.album, if (albumSearch) "album" else "music")
+                        })
+                        if (target.list?.startsWith("playlist:") == true) add(PrismMenuAction("移出歌单", "trash", destructive = true) {
+                            trackMenu = null
+                            lifecycleScope.launch { try { library.removeSong(target.list.removePrefix("playlist:"), song); status = "已移出歌单：${song.title}" } catch (e: Exception) { status = e.message ?: "操作失败" } }
+                        })
+                        if (target.list == "recent") add(PrismMenuAction("删除记录", "trash", destructive = true) {
+                            trackMenu = null
+                            lifecycleScope.launch { try { library.removeRecent(song); status = "已删除播放记录" } catch (e: Exception) { status = e.message ?: "删除失败" } }
+                        })
+                        if (target.list == "queue") add(PrismMenuAction("移出播放队列", "trash", section = PrismMenuSection.MANAGEMENT) {
+                            trackMenu = null
+                            removeQueueItem(queue.indexOfFirst { it.key == song.key })
+                            status = "已移出播放队列：${song.title}"
+                        })
+                    })
             }
             subjectMenu?.let { subject ->
-                val firstFocus = remember { FocusRequester() }
-                var menuError by remember(subject.key) { mutableStateOf("") }
+                var favoritePending by remember(subject.key) { mutableStateOf(false) }
+                var menuNotice by remember(subject.key) { mutableStateOf("") }
                 val saved = libraryState.subjects.any { it.key == subject.key }
                 val plugin = activePlugins.firstOrNull { it.id == subject.pluginId }
-                val subjectActions = (if (plugin != null) 1 else 0) + (if (subject.kind != "chart") 1 else 0) +
-                    (if (subject.kind == "chart" && plugin != null) 1 else 0)
-                PrismContextMenu(subject.title, if (subject.kind == "chart") "榜单" else subject.kindLabel,
-                    { subjectMenu = null }, initialFocus = firstFocus, width = menuWidth(subjectActions)) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
+                PrismActionMenu(subject.title, if (subject.kind == "chart") "榜单" else subject.kindLabel,
+                    onDismiss = { subjectMenu = null }, notice = menuNotice, actions = buildList {
                         val detailLabel = when (subject.kind) {
                             "artist" -> "歌手详情"
                             "album" -> "专辑详情"
@@ -5683,17 +5737,21 @@ class MainActivity : ComponentActivity() {
                             else -> "歌单详情"
                         }
                         val detailIcon = when (subject.kind) { "artist" -> "mic"; "album" -> "album"; else -> "list" }
-                        if (plugin != null) PrismIconAction(detailIcon, detailLabel, {
+                        if (plugin != null) add(PrismMenuAction(detailLabel, detailIcon, navigates = true) {
                             val origin = detailCardFocus.entries.firstOrNull { it.value === menuReturnFocus }?.key
                             subjectMenu = null
                             if (subject.kind == "chart") openChart(plugin, subject.data)
                             else openBrowse(plugin, subject.data, subject.kind, origin)
-                        }, Modifier.weight(1f, fill = false).focusRequester(firstFocus))
-                        if (subject.kind != "chart") PrismIconAction(if (saved) "heartFilled" else "heart", if (saved) "已收藏" else "收藏", {
-                            menuError = ""
-                            toggleSubject(subject.pluginId, subject.kind, subject.data, subject.sourceName) { menuError = it }
-                        }, Modifier.weight(1f, fill = false).then(if (plugin == null) Modifier.focusRequester(firstFocus) else Modifier), active = saved)
-                        if (subject.kind == "chart" && plugin != null) PrismIconAction("refresh", "刷新曲目", {
+                        })
+                        if (subject.kind != "chart") add(PrismMenuAction(if (favoritePending) "正在保存…" else if (saved) "取消收藏" else "收藏", if (saved) "heartFilled" else "heart", active = saved, keepOpen = true) {
+                            if (!favoritePending) {
+                                favoritePending = true; menuNotice = "正在保存…"
+                                toggleSubject(subject.pluginId, subject.kind, subject.data, subject.sourceName,
+                                    onSuccess = { favoritePending = false; menuNotice = status },
+                                    onFailure = { favoritePending = false; menuNotice = it; status = it })
+                            }
+                        })
+                        if (subject.kind == "chart" && plugin != null) add(PrismMenuAction("刷新曲目", "refresh") {
                             subjectMenu = null
                             lifecycleScope.launch {
                                 try {
@@ -5703,45 +5761,41 @@ class MainActivity : ComponentActivity() {
                                 } catch (e: kotlinx.coroutines.CancellationException) { throw e }
                                 catch (e: Exception) { status = "刷新失败：${e.message}" }
                             }
-                        }, Modifier.weight(1f, fill = false))
-                    }
-                    if (menuError.isNotBlank()) Text(menuError, color = c.accent, fontSize = 12.sp)
-                }
+                        })
+                    })
             }
             collectionMenu?.let { target ->
                 var confirming by remember(target) { mutableStateOf(false) }
                 var removing by remember(target) { mutableStateOf(false) }
                 var error by remember(target) { mutableStateOf("") }
-                val firstFocus = remember { FocusRequester() }
-                LaunchedEffect(confirming) { withFrameNanos { }; runCatching { firstFocus.requestFocus() } }
                 val verb = if (target.playlistId != null) "删除歌单" else "取消专辑收藏"
-                PrismContextMenu(target.title, "本机 · ${target.songs.size} 首", { if (!removing) collectionMenu = null }, initialFocus = firstFocus, width = menuWidth(2)) {
-                    if (confirming) Text(if (target.playlistId != null) "删除本机歌单？此操作无法撤销。" else "取消这张专辑中 ${target.songs.size} 首歌曲的收藏？", color = c.foreground)
-                    if (error.isNotBlank()) Text(error, color = c.muted)
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
-                        if (!confirming) {
-                            PrismIconAction("play", "播放", {
-                                if (target.songs.isNotEmpty()) { collectionMenu = null; playQueue(target.songs) }
-                                else error = "这个歌单还没有歌曲"
-                            }, Modifier.weight(1f, fill = false).focusRequester(firstFocus))
-                            PrismIconAction(if (target.playlistId != null) "trash" else "heartFilled", verb, { confirming = true }, Modifier.weight(1f, fill = false))
-                        } else {
-                            PrismIconAction("close", "取消", { if (!removing) confirming = false }, Modifier.weight(1f, fill = false).focusRequester(firstFocus))
-                            PrismIconAction(if (target.playlistId != null) "trash" else "heartFilled", if (removing) "处理中…" else "确认$verb", {
-                                if (!removing) lifecycleScope.launch {
-                                    removing = true
-                                    try {
-                                        if (target.playlistId != null) library.delete(target.playlistId)
-                                        else library.removeFavorites(target.songs.map { it.key }.toSet())
-                                        collectionMenu = null; status = "已$verb"
-                                    } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-                                    catch (e: Exception) { error = e.message ?: "操作失败" }
-                                    finally { removing = false }
-                                }
-                            }, Modifier.weight(1f, fill = false))
+                if (confirming) PrismConfirmDialog(verb,
+                    (if (target.playlistId != null) "删除本机歌单「${target.title}」？此操作无法撤销。" else "取消这张专辑中 ${target.songs.size} 首歌曲的收藏？") +
+                        error.takeIf { it.isNotBlank() }?.let { "\n$it" }.orEmpty(),
+                    if (removing) "处理中…" else "确认$verb",
+                    onDismiss = { if (!removing) confirming = false }, onConfirm = {
+                        if (!removing) {
+                            removing = true; error = ""
+                            lifecycleScope.launch {
+                                try {
+                                    if (target.playlistId != null) library.delete(target.playlistId)
+                                    else library.removeFavorites(target.songs.map { it.key }.toSet())
+                                    collectionMenu = null; status = "已$verb"
+                                } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                                catch (e: Exception) { error = e.message ?: "操作失败" }
+                                finally { removing = false }
+                            }
                         }
-                    }
-                }
+                    }, confirmIcon = if (target.playlistId != null) "trash" else "heart")
+                else PrismActionMenu(target.title, "本机 · ${target.songs.size} 首", onDismiss = { collectionMenu = null }, actions = listOf(
+                    PrismMenuAction("播放全部", "play", enabled = target.songs.isNotEmpty(), description = if (target.songs.isEmpty()) "这个歌单还没有歌曲" else "") {
+                        collectionMenu = null; playCollection(target.songs)
+                    },
+                    PrismMenuAction("随机播放", "shuffle", enabled = target.songs.isNotEmpty()) {
+                        collectionMenu = null; playCollection(target.songs, shuffle = true)
+                    },
+                    PrismMenuAction(verb, if (target.playlistId != null) "trash" else "heart", destructive = true) { error = ""; confirming = true },
+                ))
             }
             if (libraryListMenu) {
                 val menuSongs: List<Song> = when {
@@ -5763,27 +5817,18 @@ class MainActivity : ComponentActivity() {
                     showingPlaylists -> "我的歌单"
                     else -> "收藏的歌曲"
                 }
-                val firstFocus = remember { FocusRequester() }
-                val menuActions = (if (menuSongs.isNotEmpty()) 1 else 0) + (if (showingPlaylists) 1 else 0) + (if (menuManageable) 1 else 0)
-                PrismContextMenu(menuTitle, "", { libraryListMenu = false }, firstFocus, width = menuWidth(menuActions)) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
-                        var needsFocus = true
+                PrismActionMenu(menuTitle, onDismiss = { libraryListMenu = false }, actions = buildList {
                         if (menuSongs.isNotEmpty()) {
-                            PrismIconAction("play", "播放", { libraryListMenu = false; playQueue(menuSongs) },
-                                Modifier.weight(1f, fill = false).focusRequester(firstFocus))
-                            needsFocus = false
+                            add(PrismMenuAction("播放全部", "play") { libraryListMenu = false; playCollection(menuSongs) })
+                            add(PrismMenuAction("随机播放", "shuffle") { libraryListMenu = false; playCollection(menuSongs, shuffle = true) })
                         }
                         if (showingPlaylists) {
-                            PrismIconAction("import", "导入歌单", { libraryListMenu = false; importDialog = true },
-                                Modifier.weight(1f, fill = false).then(if (needsFocus) Modifier.focusRequester(firstFocus) else Modifier))
-                            needsFocus = false
+                            add(PrismMenuAction("导入歌单", "import", navigates = true) { libraryListMenu = false; importDialog = true })
                         }
                         if (menuManageable) {
-                            PrismIconAction("list", "管理", { libraryListMenu = false; enterLibraryManage() },
-                                Modifier.weight(1f, fill = false).then(if (needsFocus) Modifier.focusRequester(firstFocus) else Modifier))
+                            add(PrismMenuAction("批量管理", "list", navigates = true, section = PrismMenuSection.MANAGEMENT) { libraryListMenu = false; enterLibraryManage() })
                         }
-                    }
-                }
+                    })
             }
             if (confirmBatchOpen) {
                 val showingSubjects = selectedList in setOf("artists", "albums")
@@ -5964,7 +6009,7 @@ class MainActivity : ComponentActivity() {
                 key(replacement.incoming.id) {
                     val first = remember { FocusRequester() }
                     val newVersion = replacement.incoming.metadata.optString("version").ifBlank { "未知版本" }
-                    PrismContextMenu("发现同名插件", "${replacement.incoming.name} · $newVersion。替换会沿用原配置和登录状态；独立安装使用独立配置，请确认来源可信。", {
+                    PrismContentDialog("发现同名插件", "${replacement.incoming.name} · $newVersion。替换会沿用原配置和登录状态；独立安装使用独立配置，请确认来源可信。", {
                         if (!busy) resolvePluginReplacement(replacement.incoming.id, "cancel")
                     }, first) {
                         PrismAction("取消", { if (!busy) resolvePluginReplacement(replacement.incoming.id, "cancel") }, Modifier.focusRequester(first), primary = true)
@@ -6070,7 +6115,6 @@ class MainActivity : ComponentActivity() {
         var infoOpen by remember(plugin.id) { mutableStateOf(false) }
         var confirmRemoval by remember(plugin.id) { mutableStateOf(false) }
         val moreFocus = remember(plugin.id) { FocusRequester() }
-        val menuFocus = remember(plugin.id) { FocusRequester() }
         val toggleFocus = remember(plugin.id) { FocusAnchor() }
         val scope = rememberCoroutineScope()
         fun closeMenu() {
@@ -6112,39 +6156,31 @@ class MainActivity : ComponentActivity() {
                 SettingsButton("更多", { confirmRemoval = false; menuOpen = true }, Modifier.focusRequester(moreFocus).focusProperties { left = configureFocus.requester })
             }
         }
-        if (menuOpen) key(confirmRemoval) {
-            val actions = if (confirmRemoval) 2
-                else 1 + (if (plugin.enabled && plugin.capabilities.has("search")) 1 else 0) +
-                    (if (plugin.updateUrl.isNotBlank()) 1 else 0) + (if (!owned) 1 else 0)
-            PrismContextMenu(if (confirmRemoval) "移除 ${plugin.displayName}？" else plugin.displayName,
-                if (confirmRemoval) "本机歌单和收藏会保留" else listOfNotNull(
+        if (menuOpen) {
+            if (confirmRemoval) PrismConfirmDialog("移除 ${plugin.displayName}？", "本机歌单和收藏会保留", "移除音源",
+                onDismiss = { closeMenu() }, onConfirm = {
+                    menuOpen = false
+                    lifecycleScope.launch { try { plugins.remove(plugin.id); status = "已移除音源"; onRemoved() } catch (e: Exception) { status = e.message ?: "移除失败" } }
+                }, confirmIcon = "trash")
+            else PrismActionMenu(plugin.displayName, listOfNotNull(
                     plugin.metadata.optString("version").takeIf { it.isNotBlank() }?.let { "v$it" },
                     plugin.metadata.optString("author").takeIf { it.isNotBlank() },
-                ).joinToString(" · ").ifBlank { "未提供版本与作者" }, { closeMenu() }, menuFocus, width = menuWidth(actions)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
-                    if (confirmRemoval) {
-                        PrismIconAction("close", "取消", { closeMenu() }, Modifier.weight(1f, fill = false).focusRequester(menuFocus))
-                        PrismIconAction("trash", "移除音源", {
+                ).joinToString(" · ").ifBlank { "未提供版本与作者" }, onDismiss = { closeMenu() }, actions = buildList {
+                        add(PrismMenuAction("音源信息", "info", navigates = true) { menuOpen = false; infoOpen = true })
+                        if (plugin.enabled && plugin.capabilities.has("search")) add(PrismMenuAction("使用此音源搜索", "search", navigates = true, enabled = !busy) {
                             menuOpen = false
-                            lifecycleScope.launch { try { plugins.remove(plugin.id); status = "已移除音源"; onRemoved() } catch (e: Exception) { status = e.message ?: "移除失败" } }
-                        }, Modifier.weight(1f, fill = false))
-                    } else {
-                        PrismIconAction("info", "音源信息", { menuOpen = false; infoOpen = true }, Modifier.weight(1f, fill = false).focusRequester(menuFocus))
-                        if (plugin.enabled && plugin.capabilities.has("search")) PrismIconAction("search", "搜索此音源", {
-                            menuOpen = false; selectedPlugin = plugin.id; searchSources = setOf(plugin.id); page = "search"
-                        }, Modifier.weight(1f, fill = false))
-                        if (plugin.updateUrl.isNotBlank()) PrismIconAction("refresh", "更新插件", {
+                            runCatching { searchUsingSources(setOf(plugin.id)) }.onFailure { status = it.message ?: "无法切换音源" }
+                        })
+                        if (plugin.updateUrl.isNotBlank()) add(PrismMenuAction("更新插件", "refresh", enabled = !busy) {
                             closeMenu()
                             lifecycleScope.launch {
                                 try { showPluginImport(plugins.refresh(plugin.id)) }
                                 catch (e: kotlinx.coroutines.CancellationException) { throw e }
                                 catch (e: Exception) { status = "更新失败：${e.message}" }
                             }
-                        }, Modifier.weight(1f, fill = false))
-                        if (!owned) PrismIconAction("trash", "移除音源", { confirmRemoval = true }, Modifier.weight(1f, fill = false))
-                    }
-                }
-            }
+                        })
+                        if (!owned) add(PrismMenuAction("移除音源", "trash", destructive = true, enabled = !busy) { confirmRemoval = true })
+                    })
         }
         if (infoOpen) PluginInfoDialog(plugin) { infoOpen = false; menuOpen = true }
     }
@@ -6177,7 +6213,7 @@ class MainActivity : ComponentActivity() {
         val closeFocus = remember(plugin.id) { FocusRequester() }
         /* 返回键先退回上页：焦点得先落到入口行（它不随换页离场），
            否则旧焦点跟着地址行一起消失，之后谁也接不住。 */
-        PrismContextMenu(plugin.displayName, "音源信息",
+        PrismContentDialog(plugin.displayName, "音源信息",
             { if (open) { doorFocus.requestFocus(); open = false } else onDismiss() },
             if (addresses.isEmpty()) closeFocus else doorFocus) {
             if (open) {

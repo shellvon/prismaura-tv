@@ -140,6 +140,18 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
                 drawLine(color, p(.34f, .66f), p(.66f, .66f), w, StrokeCap.Round)
             }
             "list" -> for (y in listOf(.28f, .5f, .72f)) drawLine(color, p(.22f, y), p(.78f, y), w, StrokeCap.Round)
+            "queueNext" -> {
+                drawLine(color, p(.12f, .23f), p(.55f, .23f), w, StrokeCap.Round)
+                drawLine(color, p(.12f, .55f), p(.55f, .55f), w, StrokeCap.Round)
+                drawLine(color, p(.12f, .80f), p(.82f, .80f), w, StrokeCap.Round)
+                drawPath(path { moveTo(s * .76f, s * .10f); lineTo(s * .76f, s * .55f); lineTo(s * .61f, s * .40f)
+                    moveTo(s * .76f, s * .55f); lineTo(s * .91f, s * .40f) }, color, style = Stroke(w, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            }
+            "queueAdd" -> {
+                for (y in listOf(.23f, .50f, .77f)) drawLine(color, p(.12f, y), p(.53f, y), w, StrokeCap.Round)
+                drawLine(color, p(.64f, .63f), p(.94f, .63f), w, StrokeCap.Round)
+                drawLine(color, p(.79f, .48f), p(.79f, .78f), w, StrokeCap.Round)
+            }
             "add", "plus" -> {
                 drawLine(color, p(.5f, .2f), p(.5f, .8f), w, StrokeCap.Round)
                 drawLine(color, p(.2f, .5f), p(.8f, .5f), w, StrokeCap.Round)
@@ -361,31 +373,5 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
         .clip(CircleShape).background(if (primary) c.accent else c.panel)
         .clickable(onClick = onClick).semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
         Glyph(icon, Modifier.size(size * .6f), if (primary) c.onAccent else c.foreground.copy(alpha = .82f))
-    }
-}
-
-/** A labelled icon tile for a dialog row: one glyph, one short label. */
-@Composable fun PrismIconAction(icon: String, label: String, onClick: () -> Unit, modifier: Modifier = Modifier, active: Boolean = false) {
-    val c = LocalPrismColors.current
-    var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(18.dp)
-    Column(
-        modifier.width(112.dp).height(104.dp)
-            .auraFocus(shape, 1f)
-            .onFocusChanged { focused = it.isFocused }
-            .clip(shape)
-            .background(if (focused) c.accent.copy(alpha = .17f) else c.background.copy(alpha = .5f))
-            .border(1.dp, if (focused) c.accent else c.line.copy(alpha = .6f), shape)
-            .clickable(onClick = onClick)
-            .semantics { contentDescription = label }
-            .padding(vertical = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
-    ) {
-        Box(Modifier.size(48.dp).clip(CircleShape)
-            .background(if (active) c.accent else c.foreground.copy(alpha = .08f)), contentAlignment = Alignment.Center) {
-            Glyph(icon, Modifier.size(26.dp), if (active) c.onAccent else c.foreground.copy(alpha = .88f))
-        }
-        Spacer(Modifier.height(8.dp))
-        Text(label, color = if (focused || active) c.accent else c.muted, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
