@@ -306,12 +306,6 @@ internal val lyricFontLevels = listOf("小", "标准", "大", "特大")
 
 private fun hueFor(seed: String): Float = (abs(seed.hashCode()) % 360).toFloat()
 
-private fun tierLabel(tier: String): String = when (tier) {
-    "low" -> "流畅"; "standard" -> "标准"; "high" -> "高品"; "super" -> "无损优先"
-    "flac" -> "无损"; "flac24bit" -> "24-bit 无损"; "hires" -> "Hi-Res"; "dolby" -> "杜比"
-    "atmos" -> "Atmos"; "atmos_plus" -> "Atmos+"; else -> tier
-}
-
 private fun calibrationText(ms: Long): String =
     if (ms == 0L) "0.0s" else "%+.1fs".format(ms / 1000f)
 
@@ -417,9 +411,9 @@ fun PrismPlayer(
     val artistName = song?.artist.orEmpty().takeIf { it.isNotBlank() && it != "未知歌手" }
     val albumName = song?.album.orEmpty().takeIf { it.isNotBlank() }
     val sourceSong = playbackSource ?: song
-    val stream = streamFormat.ifBlank { tierLabel(playingTier) }
+    val stream = streamFormat
     /* The room shows the tier in words; codec and bitrate live in the ⋯ header. */
-    val qualityText = tierLabel(playingTier).takeIf { it != playingTier } ?: stream
+    val qualityText = audioQualityLabel(playingTier)
 
     var immersive by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
@@ -1274,6 +1268,7 @@ private fun PlayerMenu(
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
     var level by remember { mutableIntStateOf(1) }
+    val informationHeight = with(LocalDensity.current) { 36.sp.toDp() }
     var row by remember { mutableIntStateOf(0) }
     // Returning from lyric settings restores the parent row.
     var parentRow by remember { mutableIntStateOf(0) }
@@ -1313,7 +1308,7 @@ private fun PlayerMenu(
        行本身不压灰 —— 「切换中…」要是灰色的，看起来像失败了。 */
     val stepping = qualitySwitching.isNotBlank()
     val qualityNote = when {
-        stepping -> tierLabel(qualitySwitching)
+        stepping -> audioQualityLabel(qualitySwitching)
         !qualityEnabled -> "本地文件"
         usable.isEmpty() -> "本音源未提供音质"
         usable.size < 2 -> "仅此一档"
@@ -1322,13 +1317,13 @@ private fun PlayerMenu(
     val qualityValue = when {
         stepping -> "切换中…"
         current.isBlank() -> "—"
-        else -> tierLabel(current)
+        else -> audioQualityLabel(current)
     }
 
     /* 拿不到的歌手/专辑直接不出这一行：一行灰字既没有信息量，也挡着下面的入口。
        头部本来就在显示歌手和专辑名，删掉这两行不丢信息。 */
     val level1 = buildList {
-        add(MenuEntry("quality", "音频质量", qualityValue, !stepping && !canUp && !canDown, RowKind.Step,
+        add(MenuEntry("quality", "音源档位", qualityValue, !stepping && !canUp && !canDown, RowKind.Step,
             icon = "fader", canUp = canUp && !stepping, canDown = canDown && !stepping, note = qualityNote))
         if (canArtist) add(MenuEntry("artist", "查看歌手", "", false, RowKind.Open, icon = "mic"))
         if (canAlbum) add(MenuEntry("album", "查看专辑", "", false, RowKind.Open, icon = "album"))
@@ -1448,12 +1443,23 @@ private fun PlayerMenu(
                             )
                         }
                         Spacer(Modifier.height(6.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (platform != null) {
-                                PlatformIcon(platform, Modifier.size(14.dp))
-                                Spacer(Modifier.width(6.dp))
+                        // Feedback replaces a fixed metadata slot instead of moving any focus row.
+                        Box(Modifier.fillMaxWidth().height(informationHeight), contentAlignment = Alignment.CenterStart) {
+                            if (qualityNotice.isNotBlank()) {
+                                Text(qualityNotice, color = c.accent.copy(alpha = .86f), fontSize = 12.sp, lineHeight = 16.sp,
+                                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            } else Column {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (platform != null) {
+                                        PlatformIcon(platform, Modifier.size(14.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                    }
+                                    Text(sourceLabel, color = c.muted, fontSize = 12.sp, lineHeight = 16.sp,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                Text("输入：${stream.ifBlank { "读取中…" }}", color = c.muted, fontSize = 12.sp, lineHeight = 16.sp,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
-                            Text("$sourceLabel · $stream", color = c.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         Spacer(Modifier.height(10.dp))
                         Box(Modifier.fillMaxWidth().height(1.dp).background(c.foreground.copy(alpha = .09f)))
@@ -1541,13 +1547,6 @@ private fun PlayerMenu(
                                     Text("›", color = c.accent.copy(alpha = mark), fontSize = 18.sp)
                                 }
                             }
-                        }
-                        /* 为什么没换成，写在面板里：状态条在底下那层窗口，被遮罩盖住，用户看不到。 */
-                        if (level == 1 && qualityNotice.isNotBlank()) {
-                            Text(
-                                qualityNotice, color = c.accent.copy(alpha = .82f), fontSize = 12.sp,
-                                maxLines = 2, modifier = Modifier.padding(start = 22.dp, top = 2.dp, bottom = 4.dp),
-                            )
                         }
                     }
                 }

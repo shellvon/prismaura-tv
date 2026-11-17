@@ -77,12 +77,17 @@ internal class SourceRecovery(
     var current: RecoveryStream? = null
         private set
     val unsupported = mutableMapOf<String, Set<String>>()
+    var protectionFailure: String? = null
+        private set
 
     private fun installed(owner: Plugin): Boolean = plugins.state.value.plugins.any {
         it.id == owner.id && it.enabled && it.source == owner.source && it.variables.toString() == owner.variables.toString()
     }
 
-    fun failed() { refresh = canRefresh; canRefresh = false }
+    fun failed(error: Throwable? = null) {
+        generateSequence(error) { it.cause }.take(8).filterIsInstance<QmcDecryptionException>().firstOrNull()?.let { protectionFailure = it.message }
+        refresh = canRefresh; canRefresh = false
+    }
 
     suspend fun next(): RecoveryStream? {
         while (true) {
@@ -101,7 +106,9 @@ internal class SourceRecovery(
                     withTimeoutOrNull(5_000) {
                         plugins.mediaSource(owner, song, tier, refresh = fresh).also { answered = true }
                     }
-                } catch (e: CancellationException) { throw e }
+                } catch (e: UnsupportedAudioEncryptionException) { protectionFailure = e.message; continue }
+                  catch (e: QmcDecryptionException) { protectionFailure = e.message; continue }
+                  catch (e: CancellationException) { throw e }
                   catch (_: Exception) { continue }
                 val uri = Uri.parse(source?.optString("url").orEmpty())
                 if (uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank() || uri.userInfo != null) {

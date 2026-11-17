@@ -300,9 +300,15 @@ class Plugins(private val context: Context, val client: PluginClient) {
         val cacheRevision = mediaCache.revision(plugin.id)
         val policy = plugin.metadata.optString("cacheControl", "no-cache")
         val online = (context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)?.activeNetwork != null
-        if (!refresh && (policy == "cache" || (policy == "no-cache" && !online))) mediaCache.read(plugin, song, quality)?.let { return it }
+        if (!refresh && (policy == "cache" || (policy == "no-cache" && !online))) mediaCache.read(plugin, song, quality)?.let {
+            requireSupportedAudioEncryption(it)
+            return it
+        }
         val result = client.call(plugin.source, plugin.variables, "getMediaSource", JSONArray().put(song.data).put(quality), plugin.id) as? JSONObject
-        if (policy != "no-store" && result != null) {
+        result?.let(::requireSupportedAudioEncryption)
+        // Playback keys are session data, never persistent URL-cache entries.
+        val hasPlaybackKey = !(result?.opt("ekey") as? String).isNullOrBlank() || !(result?.opt("cek") as? String).isNullOrBlank()
+        if (policy != "no-store" && result != null && !hasPlaybackKey) {
             try { mediaCache.write(plugin, song, quality, result, cacheRevision) }
             catch (e: CancellationException) { throw e }
             catch (_: Exception) { /* A cache failure must not prevent a resolved stream playing. */ }
