@@ -220,6 +220,7 @@ class MainActivity : ComponentActivity() {
     private var searchType by mutableStateOf("music")
     private var entities by mutableStateOf<List<SearchEntity>>(emptyList())
     private var searchTerm by mutableStateOf("")
+    private var recentArtists by mutableStateOf<List<SavedSubject>>(emptyList())
     private var searchHistory by mutableStateOf<Map<String, List<String>>>(emptyMap())
     private var hasMore by mutableStateOf(false)
     private var searchAppending by mutableStateOf(false)
@@ -310,6 +311,7 @@ class MainActivity : ComponentActivity() {
     private var qualityNotice by mutableStateOf("")
     private var qualityNoticeJob: Job? = null
     private var playing by mutableStateOf(false)
+    private var playbackActive by mutableStateOf(false)
     private var exitArmedAt = 0L
     private var playbackState by mutableIntStateOf(Player.STATE_IDLE)
     private var busy by mutableStateOf(false)
@@ -360,6 +362,12 @@ class MainActivity : ComponentActivity() {
     private val phoneHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var phoneRemoteTimeout: Runnable? = null
     private var phoneFormTimeout: Runnable? = null
+    private data class ContentTask(val revision: Long, val message: String, val running: Boolean = true, val failed: Boolean = false)
+    private val contentTasks = mutableStateMapOf<String, ContentTask>()
+    private var contentTaskRevision = 0L
+    private var phoneQueueOffset = -1
+    private var phoneFormTitle by mutableStateOf("手机代填")
+    private var phoneFormReturn: (() -> Unit)? = null
     private var restoringBackup by mutableStateOf(false)
     private var restoreMessage by mutableStateOf("")
     private var restoreFailed by mutableStateOf(false)
@@ -373,6 +381,7 @@ class MainActivity : ComponentActivity() {
            the user resumes that track, the failure belongs to a song that is no longer on
            screen; replace it with what is actually playing. */
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            playbackActive = isPlaying
             if (!isPlaying) return
             val pass = recovery
             if (pass != null && loadedKey != pass.sources.original.key) {
@@ -512,6 +521,7 @@ class MainActivity : ComponentActivity() {
         subLyrics = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("sub_lyrics", true)
         pluginWorkerLimit = PluginWorkers.saved(this)
         searchHistory = loadSearchHistory()
+        recentArtists = loadRecentArtists()
         searchLatency = runCatching {
             val saved = JSONObject(getSharedPreferences("search", MODE_PRIVATE).getString("latency", "{}") ?: "{}")
             saved.keys().asSequence().associateWith { saved.optLong(it) }
@@ -569,7 +579,7 @@ class MainActivity : ComponentActivity() {
                             val p = controller
                             /* While a restored track is still being prepared, the controller reports 0 and
                                would overwrite the saved position with it. */
-                            if (p != null && resumePending < 0 && pendingSeekMs == null && !(recovery != null && resolving?.isActive == true)) {
+                            if (p != null && resumePending < 0 && pendingSeekMs == null && qualitySwap?.replaced != true && !(recovery != null && resolving?.isActive == true)) {
                                 val duration = p.duration.coerceAtLeast(0)
                                 if (duration > 0 || p.playbackState != Player.STATE_IDLE) {
                                     positionMs = p.currentPosition.coerceAtLeast(0)
@@ -599,7 +609,7 @@ class MainActivity : ComponentActivity() {
         future.addListener({
             if (connection !== future || isDestroyed) return@addListener
             try {
-                controller = future.get().also { it.addListener(listener); playing = it.playWhenReady; playbackState = it.playbackState; listener.onTracksChanged(it.currentTracks) }
+                controller = future.get().also { it.addListener(listener); playing = it.playWhenReady; playbackActive = it.isPlaying; playbackState = it.playbackState; listener.onTracksChanged(it.currentTracks) }
                 /* Restore paused: reopening the app should show where you stopped, not start
                    talking to the room on its own. */
                 val at = resumePending
@@ -1934,20 +1944,16 @@ class MainActivity : ComponentActivity() {
         return match.value.trimEnd(')', '】', ']', '}', ',', '.', ';', ':', '!', '?')
     }
 
-    private fun importPlaylist(name: String, input: String, target: Plugin? = null) {
+    private fun importPlaylist(name: String, input: String, target: Plugin? = null): String {
         val url = shareUrlOf(input)
-        if (url.isBlank()) { status = "请填写歌单或单曲链接"; return }
+        require(url.isNotBlank()) { "请填写歌单或单曲链接" }
         val candidates = target?.let { listOf(it) } ?: importCandidates(url)
-        if (candidates.isEmpty()) {
-            status = "没有音源支持链接导入：请先启用支持歌单或单曲导入的音源"
-            return
-        }
-        lifecycleScope.launch {
-            busy = true
+        require(candidates.isNotEmpty()) { "没有音源支持链接导入：请先启用支持歌单或单曲导入的音源" }
+        return runContentTask("importSheet", "正在导入歌单…") { progress ->
             val reasons = mutableListOf<String>()
             try {
                 for ((position, plugin) in candidates.withIndex()) {
-                    status = "正在用 ${plugin.displayName} 导入…"
+                    progress("正在用 ${plugin.displayName} 导入…")
                     var sheet: JSONArray? = null
                     var sheetTitle = ""
                     var failure = ""
@@ -1997,19 +2003,18 @@ class MainActivity : ComponentActivity() {
                     /* create appends, so the list just written is the last one. Handing its id to 我的
                        is what makes an import findable instead of a number in a status line. */
                     playlistToShow = library.state.value.playlists.lastOrNull()?.id
-                    status = "已导入「$title」${kept.size} 首歌曲 · 我的 → 歌单" +
+                    val message = "已导入「$title」${kept.size} 首歌曲 · 我的 → 歌单" +
                         if (songs.size > kept.size) "（歌单共 ${songs.size} 首，超出 5000 首上限的部分未导入）" else ""
-                    return@launch
+                    return@runContentTask SyncResult(message)
                 }
                 val detail = reasons.take(2).joinToString("；").ifBlank { "音源没有返回歌曲" }
-                status = "链接导入失败：$detail" + when {
+                SyncResult("链接导入失败：$detail" + when {
                     target != null -> "；可以换个音源再试"
                     reasons.size > 2 -> "（共尝试 ${reasons.size} 个音源）"
                     else -> ""
-                }
+                }, failed = true)
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-            catch (e: Exception) { status = "链接导入失败：${e.message}" }
-            finally { busy = false }
+            catch (e: Exception) { SyncResult("链接导入失败：${e.message}", failed = true) }
         }
     }
 
@@ -2142,6 +2147,7 @@ class MainActivity : ComponentActivity() {
         recommendationPluginId = getSharedPreferences("home", MODE_PRIVATE).getString("recommendation_plugin", "") ?: ""
         chartPluginId = getSharedPreferences("home", MODE_PRIVATE).getString("chart_plugin", "") ?: ""
         searchHistory = loadSearchHistory()
+        recentArtists = loadRecentArtists()
         SourcePlatforms.initialize(this)
     }
 
@@ -2163,6 +2169,23 @@ class MainActivity : ComponentActivity() {
         }
     }.getOrDefault(emptyMap())
 
+    private fun loadRecentArtists(): List<SavedSubject> = runCatching {
+        val rows = JSONArray(getSharedPreferences("search", MODE_PRIVATE).getString("recent_artists", "[]"))
+        (0 until minOf(rows.length(), 8)).mapNotNull { i ->
+            val row = rows.optJSONObject(i) ?: return@mapNotNull null
+            val data = row.optJSONObject("data") ?: return@mapNotNull null
+            SavedSubject(row.getString("pluginId"), "artist", data, row.optString("sourceName"), primaryKeys(row))
+        }
+    }.getOrDefault(emptyList())
+
+    private fun saveRecentArtists(artists: List<SavedSubject>) {
+        recentArtists = artists
+        val rows = JSONArray()
+        artists.forEach { rows.put(JSONObject().put("pluginId", it.pluginId).put("data", it.data)
+            .put("sourceName", it.sourceName).put("primaryKey", JSONArray(it.primaryKey))) }
+        getSharedPreferences("search", MODE_PRIVATE).edit().putString("recent_artists", rows.toString()).apply()
+    }
+
     private fun saveSearchHistory() {
         val root = JSONObject()
         searchHistory.forEach { (type, terms) -> root.put(type, JSONArray(terms)) }
@@ -2170,7 +2193,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun closePhoneInput() {
+        val returnToForm = if (phoneRemoteMode) null else phoneFormReturn
         closePhoneSession(phoneRemoteMode)
+        returnToForm?.invoke()
     }
 
     private fun closePhoneSession(remote: Boolean) {
@@ -2180,7 +2205,7 @@ class MainActivity : ComponentActivity() {
         timeout?.let { phoneHandler.removeCallbacks(it) }
         session?.close()
         if (remote) { phoneRemote = null; phoneRemoteTimeout = null }
-        else { phoneForm = null; phoneFormTimeout = null }
+        else { phoneForm = null; phoneFormTimeout = null; phoneFormReturn = null }
     }
 
     private fun closePhoneSessions() {
@@ -2218,17 +2243,48 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun openPhoneInput(fields: List<Pair<String, String>>, onSubmit: (Map<String, String>) -> Unit) {
+    /** A command acknowledgement is separate from the result of its asynchronous work. */
+    private fun runContentTask(key: String, message: String, block: suspend ((String) -> Unit) -> SyncResult): String {
+        check(!busy && !restoringBackup && contentTasks.values.none { it.running } && pluginReplacements.isEmpty()) { "请先完成当前操作或音源替换确认" }
+        val revision = ++contentTaskRevision
+        contentTasks[key] = ContentTask(revision, message)
+        busy = true
+        lifecycleScope.launch {
+            try {
+                val result = block { progress ->
+                    contentTasks[key] = ContentTask(revision, progress)
+                    status = progress
+                }
+                showPluginImport(result)
+                contentTasks[key] = ContentTask(revision, result.message, running = false, failed = result.failed)
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) {
+                val error = e.message ?: "操作失败"
+                status = error
+                contentTasks[key] = ContentTask(revision, error, running = false, failed = true)
+            } finally { busy = false }
+        }
+        return JSONObject().put("ok", true).put("taskKey", key).put("taskRevision", revision).toString()
+    }
+
+    private fun openPhoneInput(
+        fields: List<Pair<String, String>>, initialValues: Map<String, String> = emptyMap(),
+        title: String = "填写音源配置", message: String = "留空的配置项不修改。填写后回到电视确认并保存。",
+        onReturn: () -> Unit = {}, onSubmit: (Map<String, String>) -> Unit,
+    ) {
         closePhoneSession(false)
         try {
             lateinit var form: PhoneInput
-            form = PhoneInput(this, fields) { values ->
+            form = PhoneInput(this, fields, initialValues = initialValues, formTitle = title, formMessage = message) { values ->
                 if (phoneForm === form) {
                     closePhoneSession(false)
                     onSubmit(values)
+                    onReturn()
                 }
             }
             phoneForm = form
+            phoneFormTitle = title
+            phoneFormReturn = onReturn
             phoneRemoteMode = false
             phoneDialog = true
             phoneFormTimeout = Runnable { closePhoneSession(false); status = "扫码输入已过期，请重新打开" }.also { phoneHandler.postDelayed(it, 300_000) }
@@ -2245,13 +2301,6 @@ class MainActivity : ComponentActivity() {
             phoneDialog = true
             phoneRemoteTimeout = Runnable { closePhoneSession(true); status = "手机遥控已过期，请重新打开" }.also { phoneHandler.postDelayed(it, 1_800_000) }
         } catch (e: Exception) { status = "无法启动手机遥控：${e.message}" }
-    }
-
-    private fun qualityText(value: String) = when (value) {
-        "low" -> "流畅"; "standard" -> "标准"; "high" -> "高品"; "super" -> "无损优先"
-        "flac" -> "无损"; "flac24bit" -> "24-bit 无损"; "hires" -> "Hi-Res"
-        "128k" -> "128k"; "192k" -> "192k"; "320k" -> "320k"
-        else -> value
     }
 
     /* Only offer the search types some enabled source can actually answer: a type every source
@@ -2394,7 +2443,7 @@ class MainActivity : ComponentActivity() {
         var importUrl by remember { mutableStateOf("") }
         var importName by remember { mutableStateOf("") }
         var importDialog by remember { mutableStateOf(false) }
-        /* 选定的音源要活过弹窗关闭：「用手机填写」之后 H5 导入仍沿用它。 */
+        /* Keep the selected source across phone autofill and full remote operations. */
         var targetId by remember { mutableStateOf<String?>(null) }
         var pendingSong by remember { mutableStateOf<Song?>(null) }
         var trackMenu by remember { mutableStateOf<TrackMenuTarget?>(null) }
@@ -2470,6 +2519,8 @@ class MainActivity : ComponentActivity() {
             openPhoneRemote(
                 snapshot = {
                     val song = queue.getOrNull(queueIndex)
+                    val order = playbackIndices()
+                    val cursor = order.indexOf(queueIndex).coerceAtLeast(0)
                     JSONObject()
                         .put("title", song?.title.orEmpty())
                         .put("artist", song?.artist.orEmpty())
@@ -2477,8 +2528,9 @@ class MainActivity : ComponentActivity() {
                         .put("playing", playing && playbackState != Player.STATE_ENDED)
                         .put("position", positionMs)
                         .put("duration", durationMs)
-                        .put("quality", tierFor(playbackSong()))
-                        .put("qualityLabel", qualityText(playingQuality.ifBlank { quality }))
+                        .put("quality", playingQuality.ifBlank { tierFor(playbackSong()) })
+                        .put("qualityLabel", audioQualityLabel(playingQuality.ifBlank { tierFor(playbackSong()) }))
+                        .put("streamFormat", streamFormat)
                         .put("mode", playMode.id)
                         .put("radioActive", ActiveQueue.radio)
                         .put("miniLyrics", showMiniLyrics)
@@ -2498,13 +2550,17 @@ class MainActivity : ComponentActivity() {
                         })
                         .put("favorite", song != null && library.state.value.favorites.any { it.key == song.key })
                         .put("queueSize", queue.size)
-                        .put("queueIndex", if (queue.isEmpty()) 0 else queueIndex + 1)
+                        .put("queueIndex", if (queue.isEmpty()) 0 else cursor + 1)
                         /* The phone needs the queue itself, not just its length, for the
                            playlist button. Capped so a huge queue does not ride along on
                            every 1.2 s poll. */
                         .put("queueSongs", JSONArray().also { array ->
-                            queue.take(200).forEachIndexed { index, item ->
-                                array.put(JSONObject().put("title", item.title).put("artist", item.artist).put("index", index))
+                            val start = if (phoneQueueOffset < 0) (cursor - 100).coerceIn(0, (queue.size - 200).coerceAtLeast(0))
+                                else phoneQueueOffset.coerceIn(0, (queue.size - 1).coerceAtLeast(0))
+                            order.drop(start).take(200).forEachIndexed { offset, index ->
+                                val item = queue[index]
+                                array.put(JSONObject().put("title", item.title).put("artist", item.artist).put("index", index)
+                                    .put("position", start + offset).put("key", item.key))
                             }
                         })
                         /* Which tiers this song can actually serve, so the phone offers the
@@ -2514,12 +2570,18 @@ class MainActivity : ComponentActivity() {
                             val plugin = stream?.let { current -> plugins.state.value.plugins.firstOrNull { it.id == current.pluginId } }
                             if (stream != null && plugin != null) qualityOptions(plugin, stream)
                                 .filterNot { it in unsupportedTiers[stream.key].orEmpty() }
-                                .forEach { tier -> array.put(JSONObject().put("id", tier).put("label", qualityText(tier))) }
+                                .forEach { tier -> array.put(JSONObject().put("id", tier).put("label", audioQualityLabel(tier))) }
                         })
                         .put("status", status)
                         .put("page", page)
                         .put("playerOpen", playerOpen)
                         .put("importBusy", busy)
+                        .put("tasks", JSONObject().also { tasks -> contentTasks.forEach { (key, task) ->
+                            tasks.put(key, JSONObject().put("revision", task.revision).put("message", task.message)
+                                .put("running", task.running).put("failed", task.failed))
+                        } })
+                        .put("subscriptions", JSONArray(plugins.state.value.subscriptions))
+                        .put("subscriptionDescriptions", JSONObject(plugins.state.value.subscriptionDescriptions))
                         .put("importTarget", importTargetPlugin()?.displayName.orEmpty())
                         .put("importCapableCount", importCapablePlugins().size)
                         .put("restoreBusy", restoringBackup)
@@ -2538,10 +2600,7 @@ class MainActivity : ComponentActivity() {
                         .put("sources", JSONArray().also { array ->
                             plugins.state.value.plugins.forEach { plugin ->
                                 val subscription = plugins.state.value.subscriptions.firstOrNull { it == plugin.origin || it == plugin.url }
-                                val groupName = subscription?.let { url ->
-                                    val uri = Uri.parse(url)
-                                    listOfNotNull(uri.host, uri.lastPathSegment?.takeIf { it.isNotBlank() }).joinToString(" / ").ifBlank { "音源订阅" }
-                                } ?: "单独安装"
+                                val groupName = subscription?.let { plugins.subscriptionLabel(it) } ?: "单独安装"
                                 val fields = JSONArray()
                                 val variables = plugin.metadata.optJSONArray("userVariables") ?: JSONArray()
                                 for (i in 0 until variables.length()) {
@@ -2562,6 +2621,7 @@ class MainActivity : ComponentActivity() {
                                     .put("groupName", groupName)
                                     .put("supportsRecommendations", plugin.capabilities.recommendations)
                                     .put("supportsCharts", plugin.capabilities.charts)
+                                    .put("supportsSearch", plugin.capabilities.has("search"))
                                     .put("author", plugin.metadata.optString("author"))
                                     .put("enabled", plugin.enabled)
                                     .put("version", plugin.metadata.optString("version"))
@@ -2585,7 +2645,8 @@ class MainActivity : ComponentActivity() {
                         .put("searchResults", JSONArray().also { array ->
                             if (searchType == "music") results.take(200).forEach { track ->
                                 array.put(JSONObject().put("key", track.key).put("title", track.title.take(300))
-                                    .put("artist", track.artist.take(200)).put("source", track.sourceLabel.take(120))
+                                    .put("current", queue.getOrNull(queueIndex)?.key == track.key)
+                                    .put("artist", track.artist.take(200)).put("album", track.album.take(200)).put("source", track.sourceLabel.take(120))
                                     .put("duration", track.durationLabel).put("current", track.key == queue.getOrNull(queueIndex)?.key))
                             }
                         })
@@ -2626,8 +2687,9 @@ class MainActivity : ComponentActivity() {
                                 seekPlayback(at)
                             }
                             "queuePlay" -> {
-                                val index = value.toIntOrNull() ?: error("歌曲序号无效")
-                                require(index in queue.indices) { "这首歌已经不在播放列表里" }
+                                val selected = JSONObject(value)
+                                val index = selected.getInt("index")
+                                require(queue.getOrNull(index)?.key == selected.getString("key")) { "播放列表已变化，请重新选择歌曲" }
                                 playAt(index, openPlayer = false)
                             }
                             "theme" -> {
@@ -2658,19 +2720,30 @@ class MainActivity : ComponentActivity() {
                                 if (payload.getBoolean("visible") == (id in homeShelfHidden)) toggleHomeShelf(id)
                             }
                             "search" -> {
+                                check(contentTasks.values.none { it.running }) { "请等待当前导入或音源操作完成" }
                                 require(value.isNotEmpty()) { "请输入搜索内容" }
                                 keyword = value
                                 playerOpen = false
                                 page = "search"
                                 search(value)
                             }
-                            "playSearchResult" -> {
+                            "playSearchResult", "queueSearchResult" -> {
                                 val payload = JSONObject(value)
                                 require(searchType == "music" && payload.getInt("generation") == searchGeneration) { "搜索结果已更新，请重新选择" }
                                 val songs = results.toList()
                                 val index = songs.indexOfFirst { it.key == payload.getString("key") }
                                 require(index >= 0) { "这首歌已不在搜索结果中，请重新搜索" }
-                                playSingle(songs[index])
+                                if (type == "playSearchResult") playSingle(songs[index])
+                                else {
+                                    val placement = payload.getString("placement")
+                                    require(placement in setOf("next", "last")) { "未知队列操作" }
+                                    enqueueSong(songs[index], placement == "next")
+                                }
+                            }
+                            "queuePage" -> {
+                                val offset = value.toIntOrNull() ?: error("页码无效")
+                                require(offset == -1 || offset in queue.indices) { "播放列表已变化，请重新定位" }
+                                phoneQueueOffset = offset
                             }
                             "searchMore" -> {
                                 check(!busy && hasMore && searchType == "music") { "当前无法加载更多" }
@@ -2702,31 +2775,17 @@ class MainActivity : ComponentActivity() {
                                 results = emptyList(); entities = emptyList(); hasMore = false
                                 if (keyword.isNotBlank()) search(keyword)
                             }
+                            "subscriptionSearch" -> searchUsingSubscription(value)
                             "import" -> {
                                 require(value.isNotEmpty()) { "请输入插件或订阅地址" }
-                                check(!busy && pluginReplacements.isEmpty()) { "请先完成当前音源导入" }
-                                lifecycleScope.launch {
-                                    busy = true
-                                    status = "正在导入…"
-                                    try { showPluginImport(plugins.importUrl(value) { done, total, label -> status = "正在导入 $done/$total：$label" }) }
-                                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
-                                    catch (e: Exception) { status = "导入失败：${e.message}" }
-                                    finally { busy = false }
+                                result = runContentTask("import", "正在导入音源…") { progress ->
+                                    plugins.importUrl(value) { done, total, label -> progress("正在导入 $done/$total：$label") }
                                 }
                             }
                             "importFile" -> {
-                                check(!busy && pluginReplacements.isEmpty()) { "请先完成当前音源导入" }
-                                val payload = JSONObject(value)
-                                val source = payload.getString("source")
+                                val source = JSONObject(value).getString("source")
                                 require(source.toByteArray(Charsets.UTF_8).size <= Plugins.MAX_SCRIPT) { "插件文件超过 ${Plugins.MAX_SCRIPT / 1024} KiB" }
-                                lifecycleScope.launch {
-                                    busy = true
-                                    status = "正在导入插件文件…"
-                                    try { showPluginImport(plugins.importSource(source)) }
-                                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
-                                    catch (e: Exception) { status = "导入失败：${e.message}" }
-                                    finally { busy = false }
-                                }
+                                result = runContentTask("import", "正在导入插件文件…") { plugins.importSource(source) }
                             }
                             "importReplace" -> {
                                 val payload = JSONObject(value)
@@ -2737,50 +2796,46 @@ class MainActivity : ComponentActivity() {
                                 val payload = JSONObject(value)
                                 val sheetUrl = payload.optString("url").trim()
                                 require(sheetUrl.isNotEmpty()) { "请输入歌单或单曲链接" }
-                                importPlaylist(payload.optString("name"), sheetUrl, importTargetPlugin())
+                                result = importPlaylist(payload.optString("name"), sheetUrl, importTargetPlugin())
                             }
-                            "sourceToggle" -> {
-                                val plugin = plugins.state.value.plugins.firstOrNull { it.id == value } ?: error("音源不存在")
-                                lifecycleScope.launch {
-                                    try {
-                                        plugins.setEnabled(plugin.id, !plugin.enabled)
-                                        status = if (plugin.enabled) "已停用 ${plugin.displayName}" else "已启用 ${plugin.displayName}"
-                                    } catch (e: Exception) { status = "操作失败：${e.message}" }
-                                }
-                            }
-                            "sourceUpdate" -> {
-                                val plugin = plugins.state.value.plugins.firstOrNull { it.id == value } ?: error("音源不存在")
-                                lifecycleScope.launch {
-                                    status = "正在更新 ${plugin.displayName}…"
-                                    try { showPluginImport(plugins.refresh(plugin.id)) }
-                                    catch (e: Exception) { status = "更新失败：${e.message}" }
-                                }
-                            }
-                            "sourceRemove" -> {
-                                val plugin = plugins.state.value.plugins.firstOrNull { it.id == value } ?: error("音源不存在")
-                                require(plugin.origin.isBlank() && plugin.url !in plugins.state.value.subscriptions) {
-                                    "这是订阅带回的音源，下次同步会重新出现；请在电视上移除整个订阅"
-                                }
-                                lifecycleScope.launch {
-                                    try {
-                                        plugins.remove(plugin.id)
-                                        status = "已删除音源：${plugin.displayName}"
-                                    } catch (e: Exception) { status = "删除失败：${e.message}" }
-                                }
-                            }
-                            "sourceConfig" -> {
-                                val payload = JSONObject(value)
-                                val id = payload.optString("id")
+                            "sourceToggle", "sourceUpdate", "sourceRemove", "sourceConfig" -> {
+                                val payload = if (type == "sourceConfig") JSONObject(value) else null
+                                val id = payload?.getString("id") ?: value
                                 val plugin = plugins.state.value.plugins.firstOrNull { it.id == id } ?: error("音源不存在")
-                                val values = payload.optJSONObject("values") ?: JSONObject()
-                                lifecycleScope.launch {
-                                    try {
-                                        val merged = JSONObject(plugin.variables.toString())
-                                        val keys = values.keys()
-                                        while (keys.hasNext()) { val key = keys.next(); merged.put(key, values.optString(key)) }
-                                        plugins.setVariables(plugin.id, merged)
-                                        status = "已保存 ${plugin.displayName} 的配置"
-                                    } catch (e: Exception) { status = "保存失败：${e.message}" }
+                                if (type == "sourceRemove") require(plugin.origin.isBlank() && plugin.url !in plugins.state.value.subscriptions) {
+                                    "这是订阅带回的音源，请移除对应订阅"
+                                }
+                                val values = payload?.getJSONObject("values")
+                                if (values != null) {
+                                    val allowed = plugin.metadata.optJSONArray("userVariables") ?: JSONArray()
+                                    val keys = (0 until allowed.length()).mapNotNull { allowed.optJSONObject(it)?.optString("key") }.toSet()
+                                    require(values.keys().asSequence().all { it in keys && values.opt(it) is String && values.getString(it).length <= 4096 }) { "配置项无效" }
+                                }
+                                result = runContentTask("source:$id", "正在处理 ${plugin.displayName}…") {
+                                    when (type) {
+                                        "sourceUpdate" -> plugins.refresh(id)
+                                        "sourceRemove" -> { plugins.remove(id); SyncResult("已删除音源：${plugin.displayName}") }
+                                        "sourceConfig" -> {
+                                            val merged = JSONObject(plugin.variables.toString())
+                                            values?.keys()?.forEach { key -> merged.put(key, values.getString(key)) }
+                                            plugins.setVariables(id, merged)
+                                            SyncResult("已保存 ${plugin.displayName} 的配置；尚未验证登录或播放")
+                                        }
+                                        else -> {
+                                            plugins.setEnabled(id, !plugin.enabled)
+                                            SyncResult(if (plugin.enabled) "已停用 ${plugin.displayName}" else "已启用 ${plugin.displayName}")
+                                        }
+                                    }
+                                }
+                            }
+                            "subscriptionUpdate", "subscriptionRemove", "sourcesUpdate" -> {
+                                if (type != "sourcesUpdate") require(value in plugins.state.value.subscriptions) { "订阅已不存在" }
+                                result = runContentTask("sources", "正在处理订阅…") { progress ->
+                                    when (type) {
+                                        "subscriptionRemove" -> { plugins.removeSubscription(value); SyncResult("已移除订阅及其音源；收藏与歌单保留") }
+                                        "subscriptionUpdate" -> plugins.importUrl(value) { done, total, label -> progress("正在更新 $done/$total：$label") }
+                                        else -> plugins.syncAll { done, total, label -> progress("正在更新 $done/$total：$label") }
+                                    }
                                 }
                             }
                             "player" -> playerOpen = true
@@ -3516,7 +3571,11 @@ class MainActivity : ComponentActivity() {
         val motionEnabled = !reduceMotion && (android.os.Build.VERSION.SDK_INT < 26 || android.animation.ValueAnimator.areAnimatorsEnabled())
         /* The screen-off fade and wake fade are the screen's own state, not 动效: they must run
            even when 减少动效 is on. Only hidden background motion obeys the switch here. */
-        CompositionLocalProvider(LocalPrismColors provides prismColors(theme), LocalAuraMotion provides (motionEnabled && !(playerScreenOff && screenOffSettled))) {
+        CompositionLocalProvider(
+            LocalPrismColors provides prismColors(theme),
+            LocalAuraMotion provides (motionEnabled && !(playerScreenOff && screenOffSettled)),
+            LocalPlaybackActive provides playbackActive,
+        ) {
             val c = LocalPrismColors.current
             Box(Modifier.fillMaxSize()) {
             /* Cold start: the light comes into the room before the furniture does. Drawn above
@@ -4173,15 +4232,27 @@ class MainActivity : ComponentActivity() {
                                     (history + libraryTerms).filter { keyword.isBlank() || matchesSearchHistory(it.keyword, keyword) }
                                         .distinctBy { it.keyword.lowercase(java.util.Locale.ROOT) }.take(12)
                                 }
-                                val availableSuggestions = remember(keyword, visibleHot, localTerms) {
-                                    (if (keyword.isBlank()) visibleHot + localTerms else localTerms)
-                                        .distinctBy { it.keyword.lowercase(java.util.Locale.ROOT) }.take(12)
+                                val availableSuggestions = remember(keyword, visibleHot, localTerms, recentArtists, activePlugins, searchSources, searchType) {
+                                    val direct = if (searchType == "artist") recentArtists.filter { artist ->
+                                        activePlugins.any { it.id == artist.pluginId } && (searchSources.isEmpty() || artist.pluginId in searchSources) &&
+                                            (keyword.isBlank() || matchesSearchHistory(artist.title, keyword))
+                                    }.map { SearchSuggestion(it.title, artwork = it.artwork, subtitle = it.sourceName, badge = "最近打开", artist = it) } else emptyList()
+                                    (direct + (if (keyword.isBlank()) visibleHot + localTerms else localTerms)
+                                        .distinctBy { it.keyword.lowercase(java.util.Locale.ROOT) }).take(12)
                                 }
                                 // Network arrivals must not replace the card currently under the remote.
                                 var pinnedSuggestions by remember(searchType, keyword, pluginSignature, searchSources) {
                                     mutableStateOf<List<SearchSuggestion>?>(null)
                                 }
                                 val suggestionRows = pinnedSuggestions ?: availableSuggestions
+                                fun selectSuggestion(item: SearchSuggestion) {
+                                    ime?.hide()
+                                    searchInputFocus.requestIfAttached()
+                                    val artist = item.artist
+                                    val plugin = activePlugins.firstOrNull { it.id == artist?.pluginId }
+                                    if (artist != null && plugin != null) openBrowse(plugin, artist.data, "artist", "")
+                                    else { keyword = item.keyword; if (!busy) search(item.keyword) }
+                                }
                                 val suggestionsVisible = searchSuggestionsVisible
                                 /* 下键总要落到真实节点：联想与结果都可能为空，逐个退让到迷你条。 */
                                 val searchContentFocus = when {
@@ -4282,12 +4353,18 @@ class MainActivity : ComponentActivity() {
                                         /* Do not clearFocus here: this button already holds focus, and
                                            clearing it leaves the whole screen without a focus target.
                                            Hiding the IME is enough to get it out of the way. */
-                                        if (!busy) { ime?.hide(); if (keyword.isBlank()) openPhoneHub("search") else search(keyword) }
+                                        if (!busy) { ime?.hide(); if (keyword.isBlank()) searchInputFocus.requestIfAttached() else search(keyword) }
                                     }, Modifier.focusProperties {
                                         if (searchContentFocus.attached) down = searchContentFocus.requester
                                         up = searchFocus
                                     }.then(revealOnDown(searchContentFocus)), primary = true)
-                                    AuraIconButton("qr", "手机遥控", { openPhoneHub("search") })
+                                    AuraIconButton("qr", "手机代填搜索词", {
+                                        openPhoneInput(listOf("keyword" to "搜索关键词"), mapOf("keyword" to keyword),
+                                            title = "填写搜索关键词", message = "填写后回到电视按搜索，不会自动切页或播放。",
+                                            onReturn = { pageScope.launch { repeat(2) { withFrameNanos { } }; searchInputFocus.requestIfAttached() } }) {
+                                            keyword = it["keyword"].orEmpty().take(120)
+                                        }
+                                    })
                                 }
                                 /* Filters are footnotes: a quiet link row under the field, not a strip
                                    of buttons competing with the thing you actually came to do. */
@@ -4387,11 +4464,12 @@ class MainActivity : ComponentActivity() {
                                             "artist" -> "常听歌手与最近搜索"; "album" -> "曲库专辑与最近搜索"; "sheet" -> "收藏歌单与最近搜索"; else -> "常听与最近"
                                         }, color = c.foreground, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                                         Spacer(Modifier.width(8.dp))
-                                        if (hotLoading || suggestionRows.isNotEmpty()) Text(if (hotLoading) "正在获取热门内容…" else "确定即搜索", color = c.muted, fontSize = 11.sp)
+                                        if (hotLoading || suggestionRows.isNotEmpty()) Text(if (hotLoading) "正在获取热门内容…" else if (suggestionRows.any { it.artist != null }) "最近打开可直达歌手页" else "确定即搜索", color = c.muted, fontSize = 11.sp)
                                         Spacer(Modifier.weight(1f))
-                                        if (typeHistory.isNotEmpty()) {
+                                        if (typeHistory.isNotEmpty() || (searchType == "artist" && recentArtists.isNotEmpty())) {
                                             /* 联想区是独立焦点组，几何搜索进不去：上下都点名。 */
                                             PrismLink("清空历史", {
+                                                if (searchType == "artist") saveRecentArtists(emptyList())
                                                 searchHistory = searchHistory - searchType
                                                 pinnedSuggestions = null
                                                 saveSearchHistory()
@@ -4422,7 +4500,7 @@ class MainActivity : ComponentActivity() {
                                                 group.forEachIndexed { columnIndex, item ->
                                                     val focus = remember(item.keyword, item.badge, rowIndex, columnIndex) { FocusRequester() }
                                                     PrismSearchSuggestionCard(item, searchType, {
-                                                        keyword = item.keyword; ime?.hide(); searchInputFocus.requestIfAttached(); if (!busy) search(item.keyword)
+                                                        selectSuggestion(item)
                                                     }, Modifier.weight(1f).focusRequester(focus)
                                                         .then(if (rowIndex == 0 && columnIndex == 0) Modifier.focusAnchor(firstSuggestionFocus) else Modifier)
                                                         .focusProperties {
@@ -4440,7 +4518,7 @@ class MainActivity : ComponentActivity() {
                                                 item.badge,
                                                 /* The row that was focused vanishes once the list collapses;
                                                    hand focus back to the field so Down still reaches results. */
-                                                { keyword = item.keyword; ime?.hide(); searchInputFocus.requestIfAttached(); if (!busy) search(item.keyword) },
+                                                { selectSuggestion(item) },
                                                 Modifier.focusRequester(focus)
                                                     .then(if (index == 0) Modifier.focusAnchor(firstSuggestionFocus) else Modifier)
                                                     .focusProperties {
@@ -4510,7 +4588,13 @@ class MainActivity : ComponentActivity() {
                                                         onLongPress = { state.plugins.firstOrNull { it.id == entry.pluginId }?.let {
                                                             showSubjectMenu(it, searchType, entry.data, detailFocus("$searchType:${entry.pluginId}:${entry.data.optString("id")}"))
                                                         } }) {
-                                                        state.plugins.firstOrNull { it.id == entry.pluginId }?.let { openBrowse(it, entry.data, searchType) }
+                                                        state.plugins.firstOrNull { it.id == entry.pluginId }?.let {
+                                                            if (searchType == "artist") {
+                                                                val artist = SavedSubject(it.id, "artist", entry.data, it.displayName, primaryKeys(it.metadata))
+                                                                saveRecentArtists((listOf(artist) + recentArtists.filterNot { old -> old.key == artist.key }).take(8))
+                                                            }
+                                                            openBrowse(it, entry.data, searchType)
+                                                        }
                                                     }
                                                 }
                                             }
@@ -5335,7 +5419,13 @@ class MainActivity : ComponentActivity() {
                                             if (addSourceError.isNotBlank()) Text(addSourceError, color = c.accent, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
                                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                                 PrismAction(if (busy) "添加中…" else "添加", { addSource() }, Modifier.focusRequester(addFocus).focusProperties { up = addressFocus }, primary = true)
-                                                PrismAction("用手机添加", { closeAddSource(); openPhoneHub("import-source") }, Modifier.focusProperties { up = addressFocus })
+                                                PrismAction("手机代填", {
+                                                    openPhoneInput(listOf("url" to "插件或订阅地址"), mapOf("url" to subscription),
+                                                        title = "填写音源地址", message = "填写后回到电视确认并添加，不会自动导入。",
+                                                        onReturn = { pageScope.launch { repeat(2) { withFrameNanos { } }; runCatching { addFocus.requestFocus() } } }) {
+                                                        subscription = it["url"].orEmpty(); addSourceError = ""
+                                                    }
+                                                }, Modifier.focusProperties { up = addressFocus })
                                                 PrismAction("取消", { closeAddSource() }, Modifier.focusProperties { up = addressFocus })
                                             }
                                         }
@@ -5473,9 +5563,10 @@ class MainActivity : ComponentActivity() {
                         song = queue.getOrNull(queueIndex),
                         playbackSource = playbackSong(),
                         playing = playing,
-                        position = positionMs,
-                        duration = durationMs,
-                        lyric = if (showMiniLyrics) lyrics.lastOrNull { it.timeMs <= positionMs - lyricCalibrationMs }?.text.orEmpty() else "",
+                        // Read the playback clock inside the mini player so progress ticks do not
+                        // invalidate the surrounding page content (including home shelf cards).
+                        progress = { MiniProgress(positionMs, durationMs,
+                            if (showMiniLyrics) lyrics.lastOrNull { it.timeMs <= positionMs - lyricCalibrationMs }?.text.orEmpty() else "") },
                         showLyric = showMiniLyrics,
                         onOpen = { if (queue.getOrNull(queueIndex) == null) page = "search" else playerOpen = true },
                         onToggle = { togglePlayback() },
@@ -5741,7 +5832,14 @@ class MainActivity : ComponentActivity() {
                                     Spacer(Modifier.width(12.dp))
                                     Column(Modifier.weight(1f)) {
                                         Text("接下来播放", color = c.foreground, fontSize = 19.sp, fontWeight = FontWeight.Medium)
-                                        Text("${queue.size} 首 · 选择即可切换", color = c.muted, fontSize = 11.sp)
+                                        val following = when {
+                                            queue.isEmpty() -> null
+                                            ActiveQueue.radio -> queue.getOrNull(queueIndex + 1)
+                                            else -> queue[nextIndex(1)]
+                                        }
+                                        Text(following?.let { "下一曲 · ${it.title}" }
+                                            ?: if (ActiveQueue.radio) "等待电台续播" else "队列为空",
+                                            color = c.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     }
                                     PrismAction("关闭", closeQueue, Modifier.focusAnchor(queueCloseFocus))
                                 }
@@ -6048,10 +6146,18 @@ class MainActivity : ComponentActivity() {
                                         if (!busy) {
                                             val url = importUrl
                                             importDialog = false
-                                            importPlaylist(importName, url, chosen)
+                                            runCatching { importPlaylist(importName, url, chosen) }.onFailure { status = it.message ?: "无法开始导入"; importDialog = true }
                                         }
                                     }, Modifier.focusRequester(primaryFocus).focusProperties { up = nameFocus }, primary = true)
-                                    PrismAction("用手机填写", { importDialog = false; openPhoneHub("import-sheet") }, Modifier.focusProperties { up = nameFocus })
+                                    PrismAction("手机代填", {
+                                        openPhoneInput(listOf("url" to "歌单、单曲链接或编号", "name" to "歌单名称（选填）"),
+                                            mapOf("url" to importUrl, "name" to importName), title = "填写歌单导入",
+                                            message = "填写后回到电视确认并开始导入，不会自动导入。",
+                                            onReturn = { pageScope.launch { repeat(2) { withFrameNanos { } }; runCatching { primaryFocus.requestFocus() } } }) { values ->
+                                            importUrl = values["url"].orEmpty()
+                                            importName = values["name"].orEmpty().take(60)
+                                        }
+                                    }, Modifier.focusProperties { up = nameFocus })
                                     PrismAction("取消", { importDialog = false }, Modifier.focusProperties { up = nameFocus })
                                 }
                                 Text("导入后保存在「我的 → 歌单」。私有歌单请先登录对应音源。",
@@ -6129,28 +6235,33 @@ class MainActivity : ComponentActivity() {
                 /* Same reason as the queue panel: a dialog opens with no focus owner, so its
                    only button would be dead on a remote until Back. */
                 val phoneCloseFocus = remember { FocusRequester() }
-                Dialog(onDismissRequest = { phoneDialog = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+                Dialog(onDismissRequest = { if (phoneRemoteMode) phoneDialog = false else closePhoneInput() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
                     LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; phoneCloseFocus.requestFocus() }
                     val shape = RoundedCornerShape(18.dp)
                     val qrPixels = with(LocalDensity.current) { 216.dp.roundToPx() }
                     val link = if (phoneRemoteMode) "${input.url}#$phoneRemoteEntry" else input.url
                     val qr = remember(link, qrPixels) { qrCodeBitmap(link, qrPixels) }
-                    Row(Modifier.width(560.dp).clip(shape).background(c.panel)
-                        .border(1.dp, c.accent.copy(alpha = .3f), shape).padding(24.dp),
-                        horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.clip(RoundedCornerShape(12.dp)).background(Color.White).padding(8.dp)) {
-                            Image(qr.asImageBitmap(),
-                                contentDescription = if (phoneRemoteMode) "手机遥控二维码" else "手机输入二维码",
-                                modifier = Modifier.size(216.dp))
+                    Row(Modifier.width(620.dp).clip(shape).background(c.panel)
+                        .border(1.dp, c.accent.copy(alpha = .18f), shape).padding(28.dp),
+                        horizontalArrangement = Arrangement.spacedBy(28.dp), verticalAlignment = Alignment.CenterVertically) {
+                        PrismQrFrame {
+                            Box(Modifier.clip(RoundedCornerShape(12.dp)).background(Color.White).padding(8.dp)) {
+                                Image(qr.asImageBitmap(),
+                                    contentDescription = if (phoneRemoteMode) "手机遥控二维码" else "手机输入二维码",
+                                    modifier = Modifier.size(216.dp))
+                            }
                         }
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                            Text(if (phoneRemoteMode) "手机遥控" else "扫码输入配置", color = c.foreground,
-                                fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                            Text("手机与电视连接同一网络后扫码", color = c.muted, fontSize = 13.sp)
+                            Text(if (phoneRemoteMode) "手机遥控" else phoneFormTitle, color = c.foreground,
+                                fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+                            Text(if (phoneRemoteMode) "同一网络扫码即可遥控，可多台手机同时使用\n应用保持前台 · 本次有效 30 分钟，随时可结束"
+                                else "同一网络扫码代填，只接收一次提交\n有效 5 分钟，填写后回电视确认", color = c.muted, fontSize = 13.sp)
                             if (phoneRemoteMode) Text("播放控制、搜索、音源管理与备份恢复", color = c.foreground, fontSize = 14.sp)
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                SettingsButton("隐藏二维码", { phoneDialog = false }, Modifier.focusRequester(phoneCloseFocus), primary = true)
-                                SettingsButton(if (phoneRemoteMode) "结束遥控" else "结束输入", { closePhoneInput() })
+                                SettingsButton(if (phoneRemoteMode) "隐藏二维码" else "返回电视输入", {
+                                    if (phoneRemoteMode) phoneDialog = false else closePhoneInput()
+                                }, Modifier.focusRequester(phoneCloseFocus), primary = true)
+                                if (phoneRemoteMode) SettingsButton("结束遥控", { closePhoneInput() })
                             }
                         }
                     }
@@ -6571,8 +6682,8 @@ class MainActivity : ComponentActivity() {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text("手动配置 · ${plugin.displayName}", color = c.foreground, fontSize = 20.sp, maxLines = 1,
                             overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                        PrismAction("用手机填写", {
-                            openPhoneInput(entries.map { (field, key) -> key to field.optString("title").ifBlank { key } }) { submitted ->
+                        PrismAction("手机代填", {
+                            openPhoneInput(entries.map { (field, key) -> key to field.optString("title").ifBlank { field.optString("name").ifBlank { key } } }, initialValues = values.toMap()) { submitted ->
                                 submitted.forEach { (key, value) -> if (value.isNotBlank() && key in values) values[key] = value }
                             }
                         }, Modifier.focusRequester(phoneFocus).focusProperties { down = fieldFocuses.first(); right = manualCloseFocus })
@@ -6623,20 +6734,13 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (loginOpen.value) PluginLoginQr(plugin, onClose = { closeQr() }, onApplied = { returned ->
-            val merged = JSONObject(plugin.variables.toString())
+            val current = plugins.state.value.plugins.firstOrNull { it.id == plugin.id } ?: error("音源已移除")
+            val merged = JSONObject(current.variables.toString())
             returned.keys().forEach { key -> merged.put(key, returned.optString(key)) }
-            closeQr()
-            lifecycleScope.launch {
-                /* The status only appears after a successful save; the count is the number of
-                   keys the plugin returned, not a completion verdict. */
-                val written = returned.length()
-                try {
-                    plugins.setVariables(plugin.id, merged)
-                    returned.keys().forEach { key -> if (key in values) values[key] = returned.optString(key) }
-                    status = if (written > 0) "扫码成功，已写入 $written 项配置" else "扫码成功，本次未返回配置项"
-                }
-                catch (e: Exception) { error = "登录成功，但写入配置失败：${e.message}" }
-            }
+            // Let the login dialog show completion only after the settings have been saved.
+            plugins.setVariables(plugin.id, merged)
+            returned.keys().forEach { key -> if (key in values) values[key] = returned.optString(key) }
+            status = if (returned.length() > 0) "扫码成功，已写入 ${returned.length()} 项配置" else "扫码成功，本次未返回配置项"
         })
         if (infoOpen) PluginInfoDialog(plugin) {
             infoOpen = false
@@ -6657,7 +6761,7 @@ class MainActivity : ComponentActivity() {
 
     /* 扫码登录是 Prism 的扩展能力（非 MusicFree 标准）：插件负责取二维码、报状态，界面只管展示与写入。
        任何一步失败都只停在这个弹窗里，音源已有的 Cookie 和手填路径不受影响。 */
-    @Composable private fun PluginLoginQr(plugin: Plugin, onClose: () -> Unit, onApplied: (JSONObject) -> Unit) {
+    @Composable private fun PluginLoginQr(plugin: Plugin, onClose: () -> Unit, onApplied: suspend (JSONObject) -> Unit) {
         val c = LocalPrismColors.current
         /* Prism 扩展：插件可以声明同一个登录入口里的几种出码方式（QQ/微信、桌面端/网页端）。
            这是登录流程中的临时选择，所以画在二维码上方，不占配置项；没有声明的插件这一行不存在。 */
@@ -6670,15 +6774,37 @@ class MainActivity : ComponentActivity() {
         var image by remember(plugin.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
         var link by remember(plugin.id) { mutableStateOf("") }
         var message by remember(plugin.id) { mutableStateOf("正在获取二维码…") }
-        var waiting by remember(plugin.id) { mutableStateOf(false) }
+        var qrState by remember(plugin.id) { mutableStateOf(PrismQrState.Loading) }
+        var confirmedVariables by remember(plugin.id) { mutableStateOf<JSONObject?>(null) }
+        val scope = rememberCoroutineScope()
         val refreshFocus = remember { FocusRequester() }
         val closeFocus = remember { FocusRequester() }
+        suspend fun applyLogin(returned: JSONObject) {
+            qrState = PrismQrState.Saving
+            message = "已在手机确认，正在保存登录信息…"
+            try {
+                onApplied(returned)
+                message = if (returned.length() > 0) "登录信息已保存，可以返回音源配置"
+                    else "已在手机确认，本次未返回配置项"
+                qrState = PrismQrState.Confirmed
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+              catch (e: Exception) {
+                message = "登录已确认，但保存失败：${loginReason(e.message ?: "请重试保存")}"
+                qrState = PrismQrState.Failed
+            }
+        }
         /* A dialog opens with no focus owner, so the remote would be dead until Back. */
-        Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Dialog(onDismissRequest = { if (qrState != PrismQrState.Saving) onClose() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        LaunchedEffect(qrState) {
+            if (qrState == PrismQrState.Confirmed) {
+                withFrameNanos { }
+                refreshFocus.requestFocus()
+            }
+        }
         LaunchedEffect(attempt, methodKey, plugin.id) {
             /* 换登录方式是自己按的，重新出码后焦点必须还停在那一行上；
                把它推回「刷新二维码」会让人以为界面在抢操作。
-               出码也不算用户操作，所以这里不再监听 waiting：以前码一出现焦点就跳到「关闭」，
+               出码也不算用户操作，所以这里不监听出码状态：以前码一出现焦点就跳到「关闭」，
                那一刻整张卡片像是自己动了一下。 */
             val target = if (methodSwitch && choosable) { methodSwitch = false; methodFocus } else refreshFocus
             /* 按钮比弹窗晚一帧合成，第一次要焦点可能落在还没挂载的节点上，重试到挂上为止。 */
@@ -6686,9 +6812,10 @@ class MainActivity : ComponentActivity() {
             target.requestFocus()
         }
         LaunchedEffect(attempt, methodKey, plugin.id) {
-            image = null; link = ""; waiting = false; message = "正在获取二维码…"
+            image = null; link = ""; qrState = PrismQrState.Loading; confirmedVariables = null; message = "正在获取二维码…"
             android.util.Log.i("PrismLogin", "获取二维码：${plugin.displayName} 方式=${methodKey.ifBlank { "默认" }}")
             val session = runCatching { plugins.client.call(plugin.source, plugin.variables, "getLoginSession", JSONArray().put(methodKey), plugin.id) as? JSONObject }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
             val opened = session.getOrNull()
             if (opened == null) {
                 /* The plugin's own error usually names the platform response (风控、参数错误、超时),
@@ -6696,6 +6823,7 @@ class MainActivity : ComponentActivity() {
                 val why = session.exceptionOrNull()?.message ?: "该音源没有返回登录会话"
                 android.util.Log.w("PrismLogin", "获取二维码失败：$why")
                 message = "获取二维码失败：" + loginReason(why)
+                qrState = PrismQrState.Failed
                 return@LaunchedEffect
             }
             fun renderQr(payload: JSONObject) {
@@ -6709,25 +6837,26 @@ class MainActivity : ComponentActivity() {
                 }
             }
             renderQr(opened)
-            message = if (image == null && link.isBlank()) "该音源没有返回二维码" else loginReason(opened.optString("hint")).ifBlank { "用手机 App 扫码，并在手机上确认登录" }
-            if (image == null) return@LaunchedEffect
+            message = if (image == null) "该音源没有返回可用的二维码" else loginReason(opened.optString("hint")).ifBlank { "用手机 App 扫码，并在手机上确认登录" }
+            if (image == null) { qrState = PrismQrState.Failed; return@LaunchedEffect }
             var sessionKey = opened.optString("session")
-            if (sessionKey.isBlank()) { message = "该音源没有返回登录会话标识"; return@LaunchedEffect }
+            if (sessionKey.isBlank()) { qrState = PrismQrState.Failed; message = "该音源没有返回登录会话标识"; return@LaunchedEffect }
             fun deadline(payload: JSONObject): Long {
                 val seconds = payload.optLong("expiresIn", opened.optLong("expiresIn", 0))
                 return if (seconds > 0) android.os.SystemClock.elapsedRealtime() + seconds.coerceAtMost(86400) * 1000 else Long.MAX_VALUE
             }
             var expiresAt = deadline(opened)
-            waiting = true
+            qrState = PrismQrState.Waiting
             android.util.Log.i("PrismLogin", "二维码已出，开始每 2 秒轮询")
             while (isActive) {
                 delay(2000)
                 if (android.os.SystemClock.elapsedRealtime() >= expiresAt) {
-                    waiting = false
-                    message = "二维码已失效，请刷新后重新扫码"
+                    qrState = PrismQrState.Expired
+                    message = "请重新获取二维码后扫码登录"
                     return@LaunchedEffect
                 }
                 val poll = runCatching { plugins.client.call(plugin.source, plugin.variables, "pollLoginStatus", JSONArray().put(sessionKey), plugin.id) as? JSONObject }
+                    .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
                 val failure = poll.exceptionOrNull()?.message
                 val state = poll.getOrNull() ?: JSONObject()
                 if (failure != null) android.util.Log.w("PrismLogin", "轮询调用失败：$failure")
@@ -6738,6 +6867,11 @@ class MainActivity : ComponentActivity() {
                     if (rotated.isNotBlank() && rotated != sessionKey) {
                         sessionKey = rotated
                         renderQr(state)
+                        if (image == null) {
+                            qrState = PrismQrState.Failed
+                            message = "新的二维码无法显示，请重新获取"
+                            return@LaunchedEffect
+                        }
                         expiresAt = deadline(state)
                         android.util.Log.i("PrismLogin", "插件轮换二维码，继续轮询")
                     }
@@ -6745,16 +6879,20 @@ class MainActivity : ComponentActivity() {
                 when (state.optString("state")) {
                     "pending" -> { val next = state.optString("message"); if (next.isNotBlank()) message = loginReason(next) }
                     "confirmed" -> {
-                        waiting = false
-                        message = loginReason(state.optString("message")).ifBlank { "登录成功" }
                         val returned = state.optJSONObject("variables") ?: JSONObject()
+                        confirmedVariables = returned
                         android.util.Log.i("PrismLogin", "登录成功，写入配置键：${returned.names()}")
-                        onApplied(returned)
+                        applyLogin(returned)
                         return@LaunchedEffect
                     }
-                    "expired" -> { waiting = false; message = loginReason(state.optString("message")).ifBlank { "二维码已失效，请刷新后重新扫码" }; android.util.Log.w("PrismLogin", "二维码失效：$message"); return@LaunchedEffect }
+                    "expired" -> { qrState = PrismQrState.Expired; message = loginReason(state.optString("message")).ifBlank { "请重新获取二维码后扫码登录" }; android.util.Log.w("PrismLogin", "二维码失效：$message"); return@LaunchedEffect }
+                    "failed" -> {
+                        qrState = PrismQrState.Failed
+                        message = loginReason(state.optString("message")).ifBlank { "本次登录未完成，请重新获取二维码" }
+                        return@LaunchedEffect
+                    }
                     else -> {
-                        waiting = false
+                        qrState = PrismQrState.Failed
                         /* A plugin that threw, or one that answers with a state we don't know, must still
                            tell the user why — the platform's own wording is what makes 风控 actionable. */
                         val why = state.optString("message").takeIf { it.isNotBlank() } ?: failure
@@ -6771,19 +6909,23 @@ class MainActivity : ComponentActivity() {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.CenterVertically) {
                 /* 码到不到都画同一个槽位：等待时是一块浅底方框，明确留着这块地方；码出现时淡入填进
                    同一个位置，不是凭空多出一个元素——原来的空框到二维码是硬切，看着像闪了一下。 */
-                Box(
-                    Modifier.size(190.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
-                        .background(c.line.copy(alpha = .30f), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
-                        .border(1.dp, c.line.copy(alpha = .75f), androidx.compose.foundation.shape.RoundedCornerShape(12.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    val qr = image
-                    val reveal by animateFloatAsState(
-                        if (qr != null || link.isNotBlank()) 1f else 0f,
-                        tween(if (LocalAuraMotion.current) 220 else 0), label = "二维码淡入",
-                    )
-                    if (qr != null) Image(qr.asImageBitmap(), contentDescription = "扫码登录二维码", modifier = Modifier.size(190.dp).alpha(reveal))
-                    else if (link.isNotBlank()) Text(link, color = c.muted, fontSize = 10.sp, maxLines = 5, overflow = TextOverflow.Ellipsis, modifier = Modifier.alpha(reveal))
+                PrismQrFrame(state = qrState, onConfirmationFinished = onClose) {
+                    Box(
+                        Modifier.size(206.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            .background(c.line.copy(alpha = .30f), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            .border(1.dp, c.line.copy(alpha = .75f), androidx.compose.foundation.shape.RoundedCornerShape(12.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        val qr = image
+                        val reveal by animateFloatAsState(
+                            if (qr != null || link.isNotBlank()) 1f else 0f,
+                            tween(if (LocalAuraMotion.current) 220 else 0), label = "二维码淡入",
+                        )
+                        if (qr != null) Box(Modifier.fillMaxSize().background(Color.White), contentAlignment = Alignment.Center) {
+                            Image(qr.asImageBitmap(), contentDescription = "扫码登录二维码", modifier = Modifier.size(190.dp).alpha(reveal))
+                        }
+                        else if (link.isNotBlank()) Text(link, color = c.muted, fontSize = 10.sp, maxLines = 5, overflow = TextOverflow.Ellipsis, modifier = Modifier.alpha(reveal))
+                    }
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (choosable) Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -6794,19 +6936,48 @@ class MainActivity : ComponentActivity() {
                         PrismAction(item.optString("name").ifBlank { key }, {
                             if (!selected) { methodSwitch = true; methodKey = key; attempt++ }
                         }, (if (selected) Modifier.focusRequester(methodFocus) else Modifier)
-                            .focusProperties { down = refreshFocus }, primary = selected)
+                            .focusProperties { down = refreshFocus }, primary = selected,
+                            enabled = qrState != PrismQrState.Saving && qrState != PrismQrState.Confirmed)
                     }
                 }
-                /* 提示语每个状态长短不同：只保底高度会让卡片在屏幕上重新居中，用户读到的就是晃。
-                   按最多四行一次留满，文字垂直居中，长短都不改变卡片尺寸。 */
-                Box(Modifier.fillMaxWidth().height(64.dp), contentAlignment = Alignment.Center) {
-                    Text(message, color = c.muted, fontSize = 12.sp, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                // Reserve the whole status slot so neither the card nor its focus rows jump.
+                val statusHeight = with(LocalDensity.current) { 88.sp.toDp() }
+                Box(Modifier.fillMaxWidth().height(statusHeight).semantics { liveRegion = LiveRegionMode.Polite }, contentAlignment = Alignment.CenterStart) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(when (qrState) {
+                            PrismQrState.Loading -> "正在获取二维码"
+                            PrismQrState.Waiting -> "等待扫码登录"
+                            PrismQrState.Saving -> "正在保存登录信息"
+                            PrismQrState.Confirmed -> "登录成功"
+                            PrismQrState.Expired -> "二维码已失效"
+                            PrismQrState.Failed -> if (confirmedVariables != null) "登录信息未保存" else "扫码登录未完成"
+                        }, color = c.foreground, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        Text(message, color = c.muted, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    PrismAction("刷新二维码", { attempt++ }, Modifier.focusRequester(refreshFocus)
-                        .focusProperties { if (choosable) up = methodFocus; right = closeFocus })
-                    PrismAction("返回配置", onClose, Modifier.focusRequester(closeFocus)
-                        .focusProperties { if (choosable) up = methodFocus; left = refreshFocus })
+                    val complete = qrState == PrismQrState.Confirmed
+                    val savingLogin = qrState == PrismQrState.Saving
+                    val retrySave = qrState == PrismQrState.Failed && confirmedVariables != null
+                    val retryQr = qrState == PrismQrState.Expired || qrState == PrismQrState.Failed
+                    PrismAction(when {
+                        complete -> "完成"
+                        savingLogin -> "保存中…"
+                        retrySave -> "重试保存"
+                        retryQr -> "重新获取"
+                        else -> "刷新二维码"
+                    }, {
+                        when {
+                            complete -> onClose()
+                            retrySave -> confirmedVariables?.let { returned -> scope.launch { applyLogin(returned) } }
+                            else -> attempt++
+                        }
+                    }, Modifier.focusRequester(refreshFocus).focusProperties {
+                        if (choosable && !complete) up = methodFocus
+                        if (!complete) right = closeFocus
+                    }, primary = complete || retryQr, enabled = !savingLogin)
+                    if (!complete) PrismAction("返回配置", onClose, Modifier.focusRequester(closeFocus)
+                        .focusProperties { if (choosable) up = methodFocus; left = refreshFocus }, enabled = !savingLogin)
                 }
             }
         }

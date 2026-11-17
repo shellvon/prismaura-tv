@@ -25,6 +25,7 @@
     button:focus-visible,.button:focus-visible{outline:2px solid #f2d69a;outline-offset:4px}
     .result-mark{display:grid;place-items:center;width:56px;height:56px;margin:24px 0 8px;border-radius:50%;background:#f2d69a18;color:#f2d69a}
     .result-mark svg{width:28px;height:28px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+    button.reveal{width:auto;min-height:36px;margin:6px 0 16px;padding:6px 12px;background:transparent;border:1px solid #514b40;color:#f2d69a;font-size:13px}
     footer{margin-top:24px;color:#a39b8e;font-size:12px;line-height:1.7}
     @media(max-width:360px){main{padding:20px 16px}.card{padding:20px}}
   </style>
@@ -43,5 +44,16 @@
   </section>
   <footer>手机需与电视连接同一局域网。填写的内容只发送到这台电视。</footer>
 </main>
+<script nonce="{{nonce}}">
+  document.addEventListener("click", function(event){
+    var button = event.target.closest("[data-secret-toggle]");
+    if (!button) return;
+    var input = document.getElementById(button.getAttribute("data-secret-toggle"));
+    var visible = input.type === "password";
+    input.type = visible ? "text" : "password";
+    button.textContent = visible ? "隐藏内容" : "显示内容";
+    button.setAttribute("aria-pressed", String(visible));
+  });
+</script>
 </body>
 </html>

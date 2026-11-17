@@ -4,9 +4,9 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** A suggestion starts a search; it is not a partially populated playable entity. */
+/** Previously opened artist results retain their source-specific detail object. */
 internal data class SearchSuggestion(val title: String, val keyword: String = title, val artwork: String = "",
-                                     val subtitle: String = "", val badge: String = "热搜")
+                                     val subtitle: String = "", val badge: String = "热搜", val artist: SavedSubject? = null)
 
 internal object SearchSuggestions {
     /** Preserve the source's HTTP(S) scheme, including images from a local network server. */

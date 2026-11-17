@@ -36,6 +36,24 @@ enum class MusicPlatform(val id: String, val label: String, val icon: Int?) {
     SPOTIFY("spotify", "Spotify", R.drawable.platform_spotify),
     YOUTUBE("youtube", "YouTube", R.drawable.platform_youtube),
     JOOX("joox", "JOOX", R.drawable.platform_joox),
+    LIZHI("lizhi", "荔枝FM", R.drawable.platform_lizhi),
+    HUAWEI("huawei", "华为音乐", R.drawable.platform_huawei_music),
+    APPLE_MUSIC("applemusic", "Apple Music", R.drawable.platform_applemusic),
+    XIMALAYA("ximalaya", "喜马拉雅", R.drawable.platform_ximalaya),
+    FANQIE("fanqie", "番茄畅听", R.drawable.platform_fanqie),
+    QIANQIAN("qianqian", "千千音乐", R.drawable.platform_qianqian),
+    STREETVOICE("streetvoice", "StreetVoice", R.drawable.platform_streetvoice),
+    MISSEVAN("missevan", "猫耳FM", R.drawable.platform_missevan),
+    QINGTING("qingting", "蜻蜓FM", R.drawable.platform_qingting),
+    CCTV("cctv", "CCTV听音", null),
+    HTQYY("htqyy", "好听轻音乐", null),
+    JAMENDO("jamendo", "Jamendo", null),
+    LRTS("lrts", "懒人听书", null),
+    BOOKAN("bookan", "博看听书", null),
+    YITING("1ting", "一听音乐", null),
+    KUAIYIN("kuaiyin", "快音", null),
+    NETEASE_RADIO("neteaseradio", "网易云电台", null),
+    AGGREGATE("aggregate", "聚合音源", null),
     WEBDAV("webdav", "WebDAV", null),
     LOCAL("local", "本地音乐", null),
     CUSTOM("custom", "自建歌单", null),
@@ -57,13 +75,36 @@ enum class MusicPlatform(val id: String, val label: String, val icon: Int?) {
                     "spotify", "sp" -> SPOTIFY
                     "youtube", "yt", "youtube music", "ytmusic" -> YOUTUBE
                     "joox" -> JOOX
+                    "lizhi", "lizhi fm", "荔枝", "荔枝fm" -> LIZHI
+                    "huawei", "huawei-music", "huaweimusic", "huawei music", "华为音乐" -> HUAWEI
+                    "applemusic", "apple-music", "apple music", "苹果音乐" -> APPLE_MUSIC
+                    "ximalaya", "喜马拉雅", "喜马拉雅fm" -> XIMALAYA
+                    "fanqie", "番茄", "番茄畅听", "番茄听书" -> FANQIE
+                    "qianqian", "taihe", "千千", "千千音乐", "百度音乐" -> QIANQIAN
+                    "streetvoice", "street voice", "街声", "街聲" -> STREETVOICE
+                    "missevan", "maoer", "猫耳", "猫耳fm", "m站" -> MISSEVAN
+                    "qingting", "qingtingfm", "蜻蜓", "蜻蜓fm" -> QINGTING
+                    "cctv", "cctv听音", "央视听音" -> CCTV
+                    "htqyy", "好听轻音乐" -> HTQYY
+                    "jamendo" -> JAMENDO
+                    "lrts", "懒人听书", "懒人畅听" -> LRTS
+                    "bookan", "bokantingshu", "博看", "博看听书" -> BOOKAN
+                    "1ting", "yiting", "一听", "一听音乐" -> YITING
+                    "kuaiyin", "快音" -> KUAIYIN
+                    "neteaseradio", "netease-radio", "网易云电台", "网易电台" -> NETEASE_RADIO
+                    "agg", "aggregate", "aggregator", "聚合", "聚合音源" -> AGGREGATE
                     "webdav" -> WEBDAV
                     "local", "本地", "本地音乐" -> LOCAL
                     "custom" -> CUSTOM
                     else -> null
                 }
                 if (direct != null) return direct
-                val host = runCatching { java.net.URI(v).host?.lowercase() }.getOrNull() ?: return@forEach
+                val uri = runCatching { java.net.URI(v) }.getOrNull() ?: return@forEach
+                val host = uri.host?.lowercase() ?: return@forEach
+                // This source names itself 聚合 and uses this versioned filename. Avoid a
+                // substring match: unrelated source names must keep their own identity.
+                val filename = uri.path.orEmpty().substringAfterLast('/')
+                if (filename.startsWith("agg-source.plugin.v") && filename.endsWith(".js")) return AGGREGATE
                 fun under(domain: String) = host == domain || host.endsWith(".$domain")
                 when {
                     under("y.qq.com") || under("music.qq.com") -> return QQ

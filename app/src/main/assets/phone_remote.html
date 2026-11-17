@@ -23,7 +23,7 @@
     --line:#383838; --ok:#B9B9B9; --bad:#D0D0D0;
     color-scheme:dark;
   }
-  body[data-reduce-motion="true"] *{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+  body[data-reduce-motion="true"] *,body[data-reduce-motion="true"] *::before,body[data-reduce-motion="true"] *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html{margin:0;height:100%;overflow:hidden;background:#050506}
   html:has(body[data-theme="porcelain"]){background:#CFC9BC}
@@ -117,13 +117,28 @@
 
   /* Search: one field with its own magnifier, then the two dropdowns that narrow it. */
   .search-row{display:flex;align-items:center;gap:8px}
-  #search-results{display:flex;flex-direction:column;gap:8px}
-  .search-result{display:flex;align-items:center;gap:10px;width:100%;min-height:64px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--fg);text-align:left}
-  .search-result.on{border-color:var(--accent);color:var(--accent)}
+  #search-results{display:flex;flex-direction:column}
+  .search-result{display:flex;align-items:center;gap:12px;width:100%;min-height:82px;padding:12px 0;border:0;background:transparent;color:var(--fg);text-align:left;border-radius:10px}
+  .search-result.on strong{color:var(--accent)}
   .search-result .result-copy{flex:1;min-width:0}
-  .search-result strong{display:block;font-size:15px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .search-result small{display:block;margin-top:5px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .search-result .result-duration{flex:none;font-size:12px;color:var(--muted)}
+  .search-hit{display:flex;gap:4px;align-items:center;border-bottom:1px solid var(--line)}
+  .search-hit:last-child{border-bottom:0}
+  .search-hit > .search-result{flex:1;min-width:0}
+  .search-more-actions{flex:none;width:40px;height:44px;border:0;border-radius:12px;background:transparent;color:var(--muted);font-size:24px}
+  .result-disc{flex:none;width:42px;height:48px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:3px;color:var(--muted)}
+  .result-disc svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.3}
+  .result-disc small{font-size:10px;font-variant-numeric:tabular-nums}
+  .search-result.on .result-disc{color:var(--accent)}
+  .search-result strong{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:15px;line-height:1.45;font-weight:600;overflow-wrap:anywhere}
+  .result-artist,.result-album{display:block;margin-top:4px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .result-album{font-size:11px;opacity:.85}
+  .result-meta{display:flex;align-items:center;gap:7px;margin-top:6px;font-size:10px;color:var(--muted);flex-wrap:wrap}
+  .result-source{padding:2px 6px;border-radius:5px;background:var(--raised);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .result-current{color:var(--accent)}
+  .result-duration{font-variant-numeric:tabular-nums}
+  #search-results-card .eyebrow{font-size:14px;color:var(--fg);font-weight:600}
+  button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+  .search-result:active,.search-more-actions:active{background:var(--raised)}
   .input-wrap{position:relative;flex:1;min-width:0;display:flex;align-items:center}
   .input-wrap > svg{position:absolute;left:12px;width:17px;height:17px;fill:none;stroke:var(--muted);
     stroke-width:1.8;stroke-linecap:round;pointer-events:none}
@@ -161,13 +176,40 @@
   .field input:focus{border-color:var(--accent)}
   .setting{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:56px;padding:10px 0;border-top:1px solid var(--line);font-size:14px}
   .setting:first-of-type{border-top:0}
-  .setting select{max-width:55%;min-height:44px;padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--fg);font-size:16px}
-  .setting input[type="checkbox"]{width:22px;height:22px;accent-color:var(--accent);flex:none}
+  .setting-choice{width:100%;background:none;border:0;border-top:1px solid var(--line);color:var(--fg);text-align:left;padding:14px 0}
+  .setting-copy{flex:1;min-width:0}
+  .setting-copy b{display:block;font-size:14px;font-weight:500}
+  .setting-copy small{display:block;margin-top:5px;font-size:11px;color:var(--muted);line-height:1.5}
+  .setting-value{flex:none;max-width:44%;font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .setting-choice::after{content:"›";font-size:23px;font-weight:300;color:var(--muted)}
+  .setting-choice:disabled{opacity:.45;cursor:default}
+  .setting input[type="checkbox"]{appearance:none;-webkit-appearance:none;width:42px;height:24px;border:1px solid var(--line);border-radius:20px;background:var(--raised);flex:none;position:relative;cursor:pointer;transition:background .16s}
+  .setting input[type="checkbox"]::after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:var(--muted);transition:transform .16s,background .16s}
+  .setting input[type="checkbox"]:checked{background:var(--accent);border-color:var(--accent)}
+  .setting input[type="checkbox"]:checked::after{transform:translateX(18px);background:var(--accent-fg)}
+  .setting input[type="checkbox"]:disabled{opacity:.4}
   .source-group{margin:10px 0;border:1px solid var(--line);border-radius:12px;overflow:hidden}
-  .source-group summary{padding:14px;font-size:14px;font-weight:600;cursor:pointer;overflow-wrap:anywhere}
+  .source-group summary{padding:14px;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:8px;list-style:none}
+  .source-group summary::before{content:"›";flex:none;color:var(--muted);transition:transform .16s}
+  .source-group[open] summary::before{transform:rotate(90deg)}
+  .source-group summary::-webkit-details-marker{display:none}
+  .group-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .source-group summary small{flex:none}
+  .group-description{margin:0;padding:0 14px 12px;font-size:12px;line-height:1.7;overflow-wrap:anywhere;color:var(--muted);white-space:pre-wrap}
+  .group-address{display:block;font-size:10px;margin-top:6px;overflow-wrap:anywhere;color:var(--muted)}
   .source-group summary small{font-size:11px;color:var(--muted);font-weight:400;margin-left:8px}
   .source-group .src{margin:0 10px;border-top:1px solid var(--line)}
   .restore-result{margin-top:14px;padding:14px;border:1px solid var(--accent);border-radius:12px;color:var(--fg);font-size:14px;line-height:1.7;overflow-wrap:anywhere}
+  .operation-result{position:relative;font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);margin:4px 0;padding:12px 42px 12px 12px;border:1px solid var(--line);border-radius:12px;background:var(--bg)}
+  .operation-result[data-running="true"]{border-left:2px solid var(--accent)}
+  .feedback-dismiss{position:absolute;right:0;top:0;width:40px;height:44px;padding:0;border:0;background:none;font-size:22px;color:var(--muted);border-radius:10px}
+  .operation-result.failed{color:var(--bad)}
+  .group-actions{display:flex;gap:8px;padding:0 10px 12px}
+  .group-actions button{min-height:44px;flex:1;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--fg)}
+  .source-group-actions{flex-wrap:wrap}
+  .source-group-actions [data-sub-search]{flex-basis:100%;color:var(--accent)}
+  .source-group-actions button:disabled{opacity:.4}
+  .source-group-actions [data-sub-remove]{color:var(--bad)}
   .restore-result.failed{border-color:var(--bad);color:var(--bad)}
   .field .row{display:flex;gap:8px;margin-top:2px}
   .btn{min-height:42px;padding:0 16px;border-radius:11px;border:none;background:var(--accent);
@@ -224,25 +266,37 @@
   .link.on i{background:var(--ok)}
 
   .sheet{position:fixed;inset:0;z-index:20;display:flex;align-items:flex-end;justify-content:center;
-    background:rgba(0,0,0,.55);opacity:0;transition:opacity .18s}
+    background:rgba(0,0,0,.38);opacity:0;transition:opacity .18s}
   .sheet.on{opacity:1}
   .sheet-card{width:100%;max-width:480px;max-height:72vh;display:flex;flex-direction:column;gap:12px;
     padding:18px 18px calc(18px + env(safe-area-inset-bottom));border:1px solid var(--line);border-bottom:none;
-    border-radius:20px 20px 0 0;background:var(--bg);transform:translateY(16px);transition:transform .2s}
+    border-radius:24px 24px 0 0;background:var(--surface);transform:translateY(24px);transition:transform .2s}
+  .sheet-card::before{content:"";display:block;align-self:center;width:30px;height:3px;border-radius:5px;background:var(--line);margin:-7px 0 4px}
   .sheet.on .sheet-card{transform:none}
   .sheet-head{display:flex;align-items:center;gap:12px}
   .sheet-head h3{margin:0;flex:1;font-size:15px;font-weight:600}
   .sheet-head button{height:34px;padding:0 14px;border-radius:10px;border:1px solid var(--line);
     background:transparent;color:var(--fg);font-size:12px}
-  #sheet-body{display:flex;flex-direction:column;gap:6px;overflow:auto;min-height:0}
+  #sheet-body{display:flex;flex-direction:column;gap:6px;overflow:auto;min-height:0;padding:5px}
   .sheet-option{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:48px;
-    padding:9px 14px;border-radius:13px;border:1px solid var(--line);background:var(--surface);color:var(--fg);
-    font-size:14px;text-align:left}
-  .sheet-option.on{border-color:var(--accent);color:var(--accent)}
+    padding:12px 14px;border-radius:12px;border:1px solid transparent;background:transparent;color:var(--fg);
+    font-size:14px;text-align:left;transition:transform .16s,background .16s,border-color .16s}
+  .sheet-option.on{border-color:color-mix(in srgb,var(--accent) 45%,var(--line));color:var(--accent);background:color-mix(in srgb,var(--accent) 7%,transparent)}
+  .sheet-option:active{background:var(--raised);transform:scale(.985)}
+  .sheet-option:focus-visible{outline:2px solid var(--accent);outline-offset:1px;transform:scale(1.01)}
+  .sheet-option:disabled{opacity:.45;pointer-events:none}
   .sheet-option small{display:block;margin-top:2px;color:var(--muted);font-size:11px;font-weight:400}
   .sheet-option .tick{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round}
   .sheet-index{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
   .sheet-empty{color:var(--muted);font-size:12px;padding:14px 2px;margin:0}
+  @media(min-width:700px){
+    .sheet{align-items:center;padding:24px}
+    .sheet-card{border-bottom:1px solid var(--line);border-radius:24px;max-height:calc(100dvh - 64px)}
+    .sheet-card::before{display:none}
+  }
+  @media(prefers-reduced-motion:reduce){
+    .sheet,.sheet-card,.sheet-option{transition:none}
+  }
 
   #toast{position:fixed;left:50%;bottom:calc(28px + env(safe-area-inset-bottom));
     transform:translateX(-50%) translateY(12px);background:var(--fg);color:var(--bg);padding:10px 16px;
@@ -260,13 +314,14 @@
       <h1>极光音乐</h1>
       <p class="where" id="where">手机遥控</p>
     </div>
-    <span class="link" id="link"><i></i><span id="link-text">连接中</span></span>
+    <span class="link" id="link" role="status" aria-live="polite"><i></i><span id="link-text">连接中</span></span>
   </header>
 
   <p class="status" id="status" hidden></p>
 
   <main class="main">
     <!-- 播放 -->
+    <p class="operation-result" id="connection-help" hidden>暂时无法连接电视，正在重试。请保持同一网络和电视应用前台；会话结束或过期后需重新扫码。</p>
     <section class="panel" id="panel-play" role="tabpanel" aria-labelledby="tab-play">
       <section class="card" id="now-card" hidden>
         <p class="eyebrow"><span class="eq" id="eq" aria-hidden="true"><i></i><i></i><i></i></span><span id="eyebrow">正在播放</span></p>
@@ -365,6 +420,8 @@
           </button>
           <span class="count" id="sources-hint"></span>
         </div>
+        <button class="btn ghost" id="sources-update" type="button">更新全部订阅</button>
+        <div class="operation-result" id="sources-result" role="status" aria-live="polite" hidden></div>
         <div class="src-list" id="sources" hidden></div>
       </section>
 
@@ -378,10 +435,11 @@
           <input id="import-input" name="url" type="url" placeholder="https://…" maxlength="2048" autocomplete="off">
           <button class="btn" type="submit">导入音源/订阅</button>
         </form>
-        <button class="btn" id="plugin-file-pick" type="button">选择本地插件文件</button>
+        <div class="operation-result" id="import-result" role="status" aria-live="polite" hidden></div>
+        <button class="btn ghost" id="plugin-file-pick" type="button">从本地文件导入</button>
         <input id="plugin-file" type="file" accept="*/*" hidden>
         <p class="meta">请自行确认插件来源与内容可信</p>
-        <p class="meta">订阅会带回它自己的音源；移除整个订阅要在电视的设置页里做</p>
+        <p class="meta">订阅可在上方分组中更新或移除；移除不会删除收藏和歌单。</p>
       </section>
 
       <section class="card">
@@ -397,7 +455,8 @@
           <p class="meta" id="sheet-target" hidden></p>
           <button class="btn" type="submit">导入到电视歌单</button>
         </form>
-        <p class="meta">链接交给对应音源自己的导入能力解析；私有歌单需要先在「音源管理」里填好该音源的 Cookie。结果显示在页面顶部</p>
+        <div class="operation-result" id="sheet-result" role="status" aria-live="polite" hidden></div>
+        <p class="meta">链接交给对应音源解析；私有歌单需先配置对应音源的 Cookie。导入结果会保留在这里。</p>
       </section>
     </section>
 
@@ -423,32 +482,32 @@
           主题
         </p>
         <div class="chips" data-group="theme">
-          <button data-value="gold">黑金</button>
-          <button data-value="porcelain">白瓷</button>
-          <button data-value="mono">黑白</button>
+          <button data-value="gold">极夜暖金</button>
+          <button data-value="porcelain">晨光白瓷</button>
+          <button data-value="mono">静谧黑白</button>
         </div>
         <p class="meta">改的是电视界面的主题，本页面跟着同一套配色</p>
       </section>
 
       <section class="card">
         <p class="eyebrow">播放偏好</p>
-        <label class="setting">播放模式<select data-preference="mode"><option value="sequential">顺序播放</option><option value="repeat_all">列表循环</option><option value="repeat_one">单曲循环</option><option value="shuffle">随机播放</option></select></label>
-        <label class="setting">首选音质<select data-preference="quality"><option value="low">流畅</option><option value="standard">标准</option><option value="high">高品</option><option value="super">无损优先</option></select></label>
+        <button type="button" class="setting setting-choice" data-preference="mode" aria-haspopup="dialog"><span class="setting-copy"><b>播放模式</b></span><span class="setting-value"></span></button>
+        <button type="button" class="setting setting-choice" data-preference="quality" aria-haspopup="dialog"><span class="setting-copy"><b>首选音质</b><small>按音源实际提供的档位播放</small></span><span class="setting-value"></span></button>
         <label class="setting">播放失败自动换源<input type="checkbox" data-preference="autoSourceFallback"></label>
         <p class="meta">本源各档音质均不可用时，尝试其他音源的同版本歌曲。切换播放模式会退出电台。</p>
-        <label class="setting">搜索并发<select data-preference="pluginWorkerLimit"><option value="0">自动</option><option value="1">1 个</option><option value="2">2 个</option><option value="3">3 个</option><option value="4">4 个</option></select></label>
+        <button type="button" class="setting setting-choice" data-preference="pluginWorkerLimit" aria-haspopup="dialog"><span class="setting-copy"><b>搜索并发</b><small>同时查询的音源数量</small></span><span class="setting-value"></span></button>
       </section>
       <section class="card">
         <p class="eyebrow">歌词与动效</p>
         <label class="setting">播放条歌词<input type="checkbox" data-preference="miniLyrics"></label>
-        <label class="setting">歌词字号<select data-preference="lyricFontLevel"><option value="小">小</option><option value="标准">标准</option><option value="大">大</option><option value="特大">特大</option></select></label>
+        <button type="button" class="setting setting-choice" data-preference="lyricFontLevel" aria-haspopup="dialog"><span class="setting-copy"><b>歌词字号</b></span><span class="setting-value"></span></button>
         <label class="setting">翻译与注音<input type="checkbox" data-preference="subLyrics"></label>
         <label class="setting">减少动态效果<input type="checkbox" data-preference="reduceMotion"></label>
       </section>
       <section class="card">
         <p class="eyebrow">推荐与首页</p>
-        <label class="setting">推荐歌单<select data-preference="recommendationSource" id="recommendation-source"></select></label>
-        <label class="setting">排行榜<select data-preference="chartSource" id="chart-source"></select></label>
+        <button type="button" class="setting setting-choice" data-preference="recommendationSource" id="recommendation-source" aria-haspopup="dialog"><span class="setting-copy"><b>推荐歌单</b></span><span class="setting-value"></span></button>
+        <button type="button" class="setting setting-choice" data-preference="chartSource" id="chart-source" aria-haspopup="dialog"><span class="setting-copy"><b>排行榜</b></span><span class="setting-value"></span></button>
         <div id="home-shelves"></div>
         <p class="meta">取消勾选即从电视首页隐藏，不删除收藏或歌单。</p>
       </section>
@@ -536,15 +595,18 @@
     ]};
   var pageLabels = {home:"首页", search:"搜索", library:"我的", discover:"发现", plugins:"设置"};
   var modeShort = {sequential:"顺序", repeat_all:"列表", repeat_one:"单曲", shuffle:"随机"};
-  var qualityLabels = {low:"流畅", standard:"标准", high:"高品", super:"无损优先", flac:"无损",
-    flac24bit:"24-bit 无损", hires:"Hi-Res", dolby:"杜比", atmos:"Atmos", atmos_plus:"Atmos+",
-    "64k":"64k", "128k":"128k", "192k":"192k", "320k":"320k", mgg:"MV"};
+  var qualityLabels = {low:"流畅", standard:"标准", high:"高品质", super:"无损优先", flac:"无损 FLAC",
+    flac24bit:"24-bit 无损", hires:"Hi-Res 高解析", dolby:"Dolby 杜比", atmos:"Atmos 全景声", atmos_plus:"Atmos+ 增强档", master:"母带（音源档位）",
+    "64k":"64 kbps", "128k":"128 kbps", "192k":"192 kbps", "320k":"320 kbps", mgg:"OGG 音质"};
   var tabNames = ["play", "search", "sources", "settings"];
   var state = null, tab = "play", booted = false, tabChosen = false;
   var dragging = false, polling = false, openConfig = null, sourcesSignature = "";
   var filtersSignature = "", sheetOpen = false, sheetKind = "", sheetSourcesSignature = "";
-  var searchResultsSignature = "";
+  var searchResultsSignature = "", sheetQueueSignature = "";
   var pendingPreferences = new Set(), shelvesSignature = "";
+  var pendingTasks = new Map(), disconnects = 0, searchActionTarget = null;
+  var dismissedResults = {sources:0, importSheet:0};
+  var sheetReturnFocus = null, sheetPreferenceKey = null, sheetPreferenceSignature = "";
   var restoreSubmitting = false, restoreLocalError = "";
   var replacementReturnFocus = null, replacementScrollX = 0, replacementScrollY = 0;
   var $ = function(id){ return document.getElementById(id); };
@@ -670,12 +732,15 @@
 
   function render(s){
     state = s;
+    settleTasks(s);
+    renderTaskMessages(s);
     document.body.setAttribute("data-theme", s.theme || "gold");
     document.body.setAttribute("data-reduce-motion", s.reduceMotion ? "true" : "false");
     var hasQueue = (s.queueSize || 0) > 0;
     $("where").textContent = "电视在 " + (pageLabels[s.page] || s.page) + (s.playerOpen ? " · 播放器" : "");
-    $("status").textContent = s.status || "";
-    $("status").hidden = !s.status;
+    var scopedStatus = Object.keys(s.tasks || {}).some(function(key){ return s.tasks[key].message === s.status; });
+    $("status").textContent = scopedStatus ? "" : s.status || "";
+    $("status").hidden = !s.status || scopedStatus;
     renderPluginReplacement(s);
 
     $("now-card").hidden = !hasQueue;
@@ -721,7 +786,7 @@
         : '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
       $("play").setAttribute("data-state", s.playing ? "pause" : "play");
       $("quality-text").textContent = s.qualityLabel || qualityName(s.quality || "standard");
-      $("quality").title = "音质：" + $("quality-text").textContent;
+      $("quality").title = "音源档位：" + $("quality-text").textContent + (s.streamFormat ? "；输入：" + s.streamFormat : "");
       $("queue-text").textContent = String(s.queueSize);
       $("queue").title = "播放列表 · " + s.queueSize + " 首";
       $("mode-text").textContent = modeShort[s.mode] || "顺序";
@@ -766,13 +831,19 @@
     if ($("search-result-status").textContent !== message) $("search-result-status").textContent = message;
     var signature = JSON.stringify([s.searchGeneration, music, songs]);
     if (signature !== searchResultsSignature){
-      $("search-results").innerHTML = songs.map(function(song){
-        return '<button type="button" class="search-result' + (song.current ? ' on' : '') + '" data-result-key="' + esc(song.key) + '" data-result-generation="' + Number(s.searchGeneration || 0) + '">'
-          + '<span class="result-copy"><strong>' + esc(song.title) + '</strong><small>' + esc([song.artist,song.source].filter(Boolean).join(" · ")) + '</small></span>'
-          + '<span class="result-duration">' + esc(song.duration) + '</span></button>';
+      $("search-results").innerHTML = songs.map(function(song, index){
+        return '<div class="search-hit"><button type="button" class="search-result' + (song.current ? ' on' : '') + '" data-result-key="' + esc(song.key) + '" data-result-generation="' + Number(s.searchGeneration || 0) + '" aria-label="' + esc('播放：' + song.title + '，' + song.artist) + '">'
+          + '<span class="result-disc" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2"/><path d="M5.5 12a6.5 6.5 0 0 1 6.5-6.5M18.5 12a6.5 6.5 0 0 1-6.5 6.5"/></svg><small>' + String(index + 1).padStart(2,'0') + '</small></span>'
+          + '<span class="result-copy"><strong>' + esc(song.title) + '</strong><span class="result-artist">' + esc(song.artist || '未知歌手') + '</span>'
+          + (song.album ? '<span class="result-album">' + esc(song.album) + '</span>' : '')
+          + '<span class="result-meta">' + (song.current ? '<span class="result-current">' + (s.playing ? '正在播放' : '当前曲目') + '</span>' : '')
+          + (song.source ? '<span class="result-source">' + esc(song.source) + '</span>' : '')
+          + '<span class="result-duration">' + esc(song.duration || '') + '</span></span></span></button>'
+          + '<button type="button" class="search-more-actions" data-song-actions="' + esc(song.key) + '" aria-label="' + esc(song.title + '，更多操作') + '">⋯</button></div>';
       }).join("");
       searchResultsSignature = signature;
     }
+    $("search-results").querySelectorAll(".result-current").forEach(function(node){ node.textContent = s.playing ? "正在播放" : "当前曲目"; });
     $("search-more").hidden = !music || !s.searchHasMore || songs.length >= 200;
     $("search-more").disabled = !!s.searchBusy;
     $("search-more").textContent = s.searchBusy ? "正在加载…" : "加载更多";
@@ -800,29 +871,27 @@
     else if (s.page === "search" || (s.queueSize || 0) <= 0) showTab("search");
     else showTab("play");
   }
-  function online(ok){ $("link").classList.toggle("on", !!ok); $("link-text").textContent = ok ? "已连接" : "已断开"; }
+  function online(ok){
+    disconnects = ok ? 0 : disconnects + 1;
+    $("link").classList.toggle("on", !!ok);
+    $("link-text").textContent = ok ? "已连接" : disconnects < 3 ? "正在重连" : "连接已中断";
+    $("connection-help").hidden = !!ok;
+    if (!ok && disconnects >= 3) pendingTasks.forEach(function(pending){
+      pending.finish({ok:false,error:"连接已中断，无法确认结果。输入已保留，请检查电视后重试"});
+    });
+  }
 
   function renderPreferences(s){
-    [["recommendation-source","supportsRecommendations"],["chart-source","supportsCharts"]].forEach(function(pair){
-      var select = $(pair[0]);
-      var options = (s.sources || []).filter(function(source){ return source.enabled && source[pair[1]]; });
-      var signature = JSON.stringify(options.map(function(source){ return [source.id, source.name]; }));
-      if (select.getAttribute("data-options") !== signature){
-        select.innerHTML = options.length ? options.map(function(source){ return '<option value="' + esc(source.id) + '">' + esc(source.name) + '</option>'; }).join("") : '<option value="">暂无支持的音源</option>';
-        select.setAttribute("data-options", signature);
-      }
-      select.disabled = !options.length || !!s.restoreBusy;
-    });
     document.querySelectorAll("[data-preference]").forEach(function(control){
       var key = control.getAttribute("data-preference");
-      control.disabled = !!s.restoreBusy || ((key === "recommendationSource" || key === "chartSource") && !control.value);
-      if (pendingPreferences.has(key) || !Object.prototype.hasOwnProperty.call(s, key)) return;
-      if (control.type === "checkbox") control.checked = !!s[key];
-      else {
-        if (key === "quality" && !Array.prototype.some.call(control.options, function(option){ return option.value === s[key]; })){
-          var option = document.createElement("option"); option.value = s[key]; option.textContent = qualityName(s[key]); control.appendChild(option);
+      var choices = control.classList.contains("setting-choice") ? preferenceChoices(key, s) : null;
+      control.disabled = !!s.restoreBusy || pendingPreferences.has(key) || (choices && !choices.length);
+      if (!pendingPreferences.has(key) && Object.prototype.hasOwnProperty.call(s, key)) {
+        if (control.type === "checkbox") control.checked = !!s[key];
+        else {
+          var selected = choices.filter(function(option){ return option.id === String(s[key]); })[0];
+          control.querySelector(".setting-value").textContent = selected ? selected.label : choices.length ? "请选择" : "暂无可用音源";
         }
-        control.value = String(s[key]);
       }
     });
     var shelves = s.homeShelves || [];
@@ -832,29 +901,68 @@
       shelvesSignature = signature;
     }
     document.querySelectorAll("[data-shelf]").forEach(function(control){
-      control.disabled = !!s.restoreBusy;
       var id = control.getAttribute("data-shelf");
+      control.disabled = !!s.restoreBusy || pendingPreferences.has("shelf:" + id);
       if (pendingPreferences.has("shelf:" + id)) return;
       var shelf = shelves.filter(function(item){ return item.id === id; })[0];
       control.checked = !!(shelf && shelf.visible);
     });
   }
 
+  function preferenceChoices(key, s){
+    if (key === "mode") return [{id:"sequential",label:"顺序播放"},{id:"repeat_all",label:"列表循环"},{id:"repeat_one",label:"单曲循环"},{id:"shuffle",label:"随机播放"}];
+    if (key === "quality") return Array.from(new Set(["low","standard","high","super"].concat(s.quality || []))).map(function(id){ return {id:id,label:qualityName(id)}; });
+    if (key === "pluginWorkerLimit") return ["0","1","2","3","4"].map(function(id){ return {id:id,label:id === "0" ? "自动" : id + " 个音源"}; });
+    if (key === "lyricFontLevel") return ["小","标准","大","特大"].map(function(id){ return {id:id,label:id}; });
+    var capability = key === "recommendationSource" ? "supportsRecommendations" : key === "chartSource" ? "supportsCharts" : null;
+    return capability ? (s.sources || []).filter(function(source){ return source.enabled && source[capability]; }).map(function(source){ return {id:source.id,label:source.name}; }) : [];
+  }
+  function showPreference(key){
+    if (!state) return;
+    var control = document.querySelector('.setting-choice[data-preference="' + key + '"]');
+    if (!control || control.disabled) return;
+    sheetPreferenceKey = key;
+    var choices = preferenceChoices(key, state), current = String(state[key]);
+    sheetPreferenceSignature = JSON.stringify([current, choices, !!state.restoreBusy]);
+    openSheet(control.querySelector("b").textContent, choices.map(function(choice){
+      var on = choice.id === current;
+      return '<button type="button" class="sheet-option' + (on ? ' on' : '') + '" data-setting-choice="' + esc(choice.id) + '" aria-pressed="' + on + '"><span>' + esc(choice.label) + '</span>' + (on ? tick : '') + '</button>';
+    }).join(""), "preference");
+  }
+
   /* ---- 选项抽屉：音质 / 播放列表 / 播放模式 / 类型 / 音源 ---- */
   function openSheet(title, html, kind){
+    var wasOpen = sheetOpen;
+    var focusIndex = Array.from($("sheet").querySelectorAll("button")).indexOf(document.activeElement);
+    if (!wasOpen) sheetReturnFocus = document.activeElement;
     sheetKind = kind || "";
     $("sheet-title").textContent = title;
     $("sheet-body").innerHTML = html || '<p class="sheet-empty">没有可显示的内容</p>';
     var sheet = $("sheet");
     sheet.hidden = false;
     sheetOpen = true;
-    requestAnimationFrame(function(){ sheet.classList.add("on"); });
+    document.querySelector(".shell").setAttribute("inert", "");
+    document.querySelector(".shell").setAttribute("aria-hidden", "true");
+    requestAnimationFrame(function(){
+      if (!sheetOpen) return;
+      sheet.classList.add("on");
+      var target = wasOpen && focusIndex >= 0 ? sheet.querySelectorAll("button")[focusIndex] : $("sheet-body").querySelector(".on") || $("sheet-body").querySelector("button:not(:disabled)");
+      (target || $("sheet-close")).focus({preventScroll:true});
+    });
   }
   function closeSheet(){
     var sheet = $("sheet");
+    var wasOpen = sheetOpen;
     sheetOpen = false;
     sheetKind = "";
     sheet.classList.remove("on");
+    document.querySelector(".shell").removeAttribute("inert");
+    if ($("plugin-replacement").hidden) document.querySelector(".shell").removeAttribute("aria-hidden");
+    if (wasOpen && $("plugin-replacement").hidden){
+      var target = sheetReturnFocus && sheetReturnFocus.isConnected && !sheetReturnFocus.disabled ? sheetReturnFocus : document.querySelector(".tab.on");
+      if (target) target.focus({preventScroll:true});
+    }
+    sheetReturnFocus = null;
     setTimeout(function(){ if (!sheetOpen) sheet.hidden = true; }, 180);
   }
   function qualityChoices(){
@@ -865,7 +973,8 @@
   }
   function showQuality(){
     var current = (state && state.quality) || "standard";
-    openSheet("音质", qualityChoices().map(function(item){
+    var information = '<p class="meta">音源标称档位' + (state && state.streamFormat ? ' · 输入：' + esc(state.streamFormat) : ' · 实际格式待解析') + '</p>';
+    openSheet("音源档位", information + qualityChoices().map(function(item){
       var on = item.id === current;
       return '<button class="sheet-option' + (on ? " on" : "") + '" data-quality="' + esc(item.id) + '">'
         + "<span>" + esc(item.label || qualityName(item.id)) + "</span>" + (on ? tick : "") + "</button>";
@@ -883,12 +992,29 @@
     var songs = (state && state.queueSongs) || [];
     if (!songs.length){ openSheet("播放列表", '<p class="sheet-empty">当前没有播放列表</p>', "queue"); return; }
     var current = (state.queueIndex || 1) - 1;
-    openSheet("播放列表 · " + ((state.queueSize || songs.length)) + " 首", songs.map(function(song){
+    var start = Number(songs[0].position == null ? songs[0].index : songs[0].position) || 0;
+    var last = songs[songs.length - 1], end = Number(last.position == null ? last.index : last.position) + 1;
+    var html = songs.map(function(song){
       var index = Number(song.index) || 0;
-      return '<button class="sheet-option' + (index === current ? " on" : "") + '" data-queue="' + index + '">'
-        + "<span>" + esc(song.title || "未知歌曲") + "<small>" + esc(song.artist || "") + "</small></span>"
-        + '<span class="sheet-index">' + (index + 1) + "</span></button>";
-    }).join("") + (state.queueSize > songs.length ? '<p class="sheet-empty">只显示前 ' + songs.length + " 首</p>" : ""), "queue");
+      var position = song.position == null ? index : Number(song.position);
+      return '<button class="sheet-option' + (position === current ? " on" : "") + '" data-queue="' + index + '" data-queue-key="' + esc(song.key || "") + '">'
+        + '<span>' + esc(song.title || "未知歌曲") + '<small>' + esc(song.artist || "") + '</small></span>'
+        + '<span class="sheet-index">' + (position + 1) + '</span></button>';
+    }).join("");
+    html += '<div class="group-actions">'
+      + (start > 0 ? '<button data-queue-page="' + Math.max(0, start - 200) + '">上一页</button>' : '')
+      + '<button data-queue-page="-1">定位当前</button>'
+      + (end < state.queueSize ? '<button data-queue-page="' + end + '">下一页</button>' : '') + '</div>';
+    openSheet('播放列表 · ' + (start + 1) + '–' + end + ' / ' + state.queueSize, html, "queue");
+    requestAnimationFrame(function(){ var active = $("sheet-body").querySelector(".on"); if (active) active.scrollIntoView({block:"center"}); });
+  }
+  function showSongActions(key){
+    var song = ((state && state.searchResults) || []).filter(function(item){ return item.key === key; })[0];
+    if (!song) return;
+    searchActionTarget = {key:key, generation:state.searchGeneration};
+    openSheet(song.title, '<p class="sheet-empty">' + esc([song.artist,song.album,song.source].filter(Boolean).join(' · ')) + '</p>'
+      + '<button class="sheet-option" data-song-action="next">下一首播放</button>'
+      + '<button class="sheet-option" data-song-action="last">添加到播放队列</button>', "songActions");
   }
   function showTypes(){
     var types = (state && state.searchTypeOptions) || [];
@@ -913,6 +1039,17 @@
     }).join("") + '<p class="sheet-empty">不选任何音源即全部一起搜</p>', "sources");
   }
   function syncSheet(){
+    if (sheetOpen && sheetKind === "preference" && !pendingPreferences.has(sheetPreferenceKey)){
+      var signature = JSON.stringify([String(state[sheetPreferenceKey]), preferenceChoices(sheetPreferenceKey, state), !!state.restoreBusy]);
+      if (signature !== sheetPreferenceSignature) {
+        var control = document.querySelector('.setting-choice[data-preference="' + sheetPreferenceKey + '"]');
+        if (!control || control.disabled) closeSheet(); else showPreference(sheetPreferenceKey);
+      }
+    }
+    if (sheetOpen && sheetKind === "queue"){
+      var signature = JSON.stringify([state.queueIndex,state.queueSongs]);
+      if (signature !== sheetQueueSignature){ sheetQueueSignature = signature; showQueue(); }
+    }
     if (!sheetOpen || sheetKind !== "sources") return;
     if (JSON.stringify((state && state.searchSources) || []) !== sheetSourcesSignature) showSources();
   }
@@ -940,30 +1077,57 @@
   function renderSources(list){
     var box = $("sources");
     list = list || [];
-    if (!list.length){
+    var subscriptions = (state && state.subscriptions) || [];
+    var descriptions = (state && state.subscriptionDescriptions) || {};
+    if (!list.length && !subscriptions.length){
       if (sourcesSignature !== "empty"){ box.innerHTML = '<p class="empty">还没有音源。用下面的「导入」添加插件或订阅地址</p>'; sourcesSignature = "empty"; }
       return;
     }
     /* Rebuilding the list while someone is typing in a config form would erase it. */
     if (openConfig) return;
-    var signature = JSON.stringify(list.map(function(s){
-      return [s.id, s.name, s.author, s.enabled, s.version, s.canUpdate, s.canRemove, s.capabilities, s.groupId, s.groupName, (s.fields || []).length];
-    }));
+    var signature = JSON.stringify([subscriptions,descriptions,list.map(function(s){
+      return [s.id, s.name, s.author, s.enabled, s.version, s.canUpdate, s.canRemove, s.supportsSearch, s.capabilities, s.groupId, s.groupName, (s.fields || []).length];
+    })]);
     if (signature === sourcesSignature) return;
     sourcesSignature = signature;
+    var focused = document.activeElement;
+    var focusedSource = focused && box.contains(focused) ? focused.closest(".src") : null;
+    var focusedId = focusedSource && focusedSource.getAttribute("data-id");
+    var focusedAction = focusedSource && focused.getAttribute("data-act");
+    var focusedGroup = focused && box.contains(focused) ? focused.closest("[data-source-group]") : null;
+    var focusedGroupId = focusedGroup && focusedGroup.getAttribute("data-source-group");
+    var focusedGroupAction = ["data-sub-search", "data-sub-update", "data-sub-remove"].find(function(name){ return focused && focused.hasAttribute(name); });
     var groups = new Map();
+    subscriptions.forEach(function(url){
+      var host = url; try { host = new URL(url).hostname; } catch(e) {}
+      groups.set(url, {id:url,name:descriptions[url] || host,sources:[]});
+    });
     list.forEach(function(source){
       var id = source.groupId || "";
       if (!groups.has(id)) groups.set(id, {id:id,name:source.groupName || "单独安装",sources:[]});
       groups.get(id).sources.push(source);
+      if (source.groupName) groups.get(id).name = source.groupName;
     });
     box.innerHTML = Array.from(groups.values()).map(function(group){
       var open = Object.prototype.hasOwnProperty.call(sourceGroupStates, group.id) ? sourceGroupStates[group.id] : groups.size === 1 && list.length <= 6;
       var count = group.sources.filter(function(source){ return source.enabled; }).length;
+      var searchable = group.sources.filter(function(source){ return source.enabled && source.supportsSearch; }).length;
       return '<details class="source-group" data-source-group="' + esc(group.id) + '"' + (open ? ' open' : '') + '><summary>'
-        + esc(group.name) + '<small>已启用 ' + count + ' / ' + group.sources.length + '</small></summary>'
+        + '<span class="group-title" title="' + esc(group.name) + '">' + esc(group.name) + '</span><small>启用 ' + count + ' / ' + group.sources.length + '</small></summary>'
+        + (group.id ? '<p class="group-description">' + esc(descriptions[group.id] || group.name) + '<span class="group-address">' + esc(group.id) + '</span></p>' : '')
+        + (group.id ? '<div class="group-actions source-group-actions"><button data-sub-search="' + esc(group.id) + '"' + (searchable ? '' : ' disabled')
+          + ' title="' + (searchable ? '使用组内 ' + searchable + ' 个已启用音源' : '组内没有已启用且支持搜索的音源') + '">使用此组搜索</button>'
+          + '<button data-sub-update="' + esc(group.id) + '">更新订阅</button><button data-sub-remove="' + esc(group.id) + '">移除订阅及其音源</button></div>' : '')
         + group.sources.map(sourceMarkup).join("") + '</details>';
     }).join("");
+    if (focusedId && focusedAction){
+      var row = sourceNode(focusedId), target = row && row.querySelector('[data-act="' + focusedAction + '"]');
+      if (target && !target.disabled) target.focus({preventScroll:true});
+    } else if (focusedGroupId && focusedGroupAction){
+      var groupNode = Array.from(box.querySelectorAll("[data-source-group]")).find(function(node){ return node.getAttribute("data-source-group") === focusedGroupId; });
+      var groupTarget = groupNode && groupNode.querySelector("[" + focusedGroupAction + "]");
+      if (groupTarget) (groupTarget.disabled ? groupNode.querySelector("summary") : groupTarget).focus({preventScroll:true});
+    }
   }
   function sourceMarkup(s){
       return '<div class="src" data-id="' + esc(s.id) + '">'
@@ -1005,6 +1169,17 @@
       input.maxLength = 4096;
       label.appendChild(title);
       label.appendChild(input);
+      if (field.secret){
+        var reveal = document.createElement("button");
+        reveal.type = "button"; reveal.className = "btn ghost"; reveal.textContent = "显示" + (field.title || field.key);
+        reveal.setAttribute("aria-pressed", "false");
+        reveal.addEventListener("click", function(){
+          var visible = input.type === "password"; input.type = visible ? "text" : "password";
+          reveal.textContent = (visible ? "隐藏" : "显示") + (field.title || field.key);
+          reveal.setAttribute("aria-pressed", String(visible));
+        });
+        label.appendChild(reveal);
+      }
       form.appendChild(label);
     });
     if (!(source.fields || []).length){
@@ -1023,10 +1198,13 @@
     cancel.type = "button";
     cancel.className = "btn ghost grow";
     cancel.textContent = "取消";
-    cancel.addEventListener("click", function(){ openConfig = null; sourcesSignature = ""; form.remove(); render(state); });
+    cancel.addEventListener("click", function(){ dismissFeedback(feedback); openConfig = null; sourcesSignature = ""; form.remove(); render(state); });
     row.appendChild(save);
     row.appendChild(cancel);
     form.appendChild(row);
+    var feedback = document.createElement("div"); feedback.className = "operation-result"; feedback.hidden = true;
+    feedback.setAttribute("role", "status"); feedback.setAttribute("aria-live", "polite"); form.appendChild(feedback);
+    form.addEventListener("input", function(){ dismissFeedback(feedback); });
     form.addEventListener("submit", function(event){
       event.preventDefault();
       var values = {};
@@ -1034,10 +1212,8 @@
         var input = form.elements[field.key];
         if (input) values[field.key] = input.value;
       });
-      send("sourceConfig", JSON.stringify({id: source.id, values: values}), function(){
-        openConfig = null;
-        sourcesSignature = "";
-        toast("已提交" + source.name + "的配置");
+      submitAction(form, "sourceConfig", JSON.stringify({id:source.id, values:values}), feedback, function(){
+        openConfig = null; sourcesSignature = ""; form.remove(); render(state);
       });
     });
     node.after(form);
@@ -1045,20 +1221,34 @@
     if (first) first.focus();
   }
   function removeSource(source){
-    var node = sourceNode(source.id);
-    var form = node && node.nextElementSibling;
-    if (form && form.classList.contains("src-form")) form.remove();
-    openConfig = null;
-    sourcesSignature = "";
-    if (preview){
-      sample.sources = sample.sources.filter(function(entry){ return entry.id !== source.id; });
-      render(sample);
-      toast("预览：已删除 " + source.name);
-      return;
-    }
-    send("sourceRemove", source.id, function(){ poll(); toast("已删除 " + source.name); });
+    submitAction(null, "sourceRemove", source.id, $("sources-result"), function(){
+      var node = sourceNode(source.id), form = node && node.nextElementSibling;
+      if (form && form.classList.contains("src-form")) form.remove();
+      openConfig = null; sourcesSignature = ""; poll();
+    });
   }
   $("sources").addEventListener("click", function(event){
+    var groupSearch = event.target.closest("[data-sub-search]");
+    if (groupSearch){
+      if (groupSearch.disabled) return;
+      groupSearch.disabled = true;
+      send("subscriptionSearch", groupSearch.getAttribute("data-sub-search"), function(){
+        tabChosen = true; showTab("search");
+        try { history.replaceState(null, "", "#search"); } catch (e) {}
+        $("search-input").focus(); poll();
+      }).then(function(){ groupSearch.disabled = false; });
+      return;
+    }
+    var subscriptionButton = event.target.closest("[data-sub-update],[data-sub-remove]");
+    if (subscriptionButton){
+      var removing = subscriptionButton.hasAttribute("data-sub-remove");
+      var url = subscriptionButton.getAttribute(removing ? "data-sub-remove" : "data-sub-update");
+      if (removing && !confirm("移除订阅及其安装的所有音源？收藏、歌单和播放记录保留。")) return;
+      submitAction(null, removing ? "subscriptionRemove" : "subscriptionUpdate", url, $("sources-result"), function(){
+        if (removing){ openConfig = null; sourcesSignature = ""; render(state); }
+      });
+      return;
+    }
     var button = event.target.closest("button[data-act]");
     if (!button) return;
     var host = button.closest(".src");
@@ -1068,8 +1258,8 @@
     ((state && state.sources) || []).forEach(function(entry){ if (entry.id === id) source = entry; });
     if (!source) return;
     var action = button.getAttribute("data-act");
-    if (action === "toggle") send("sourceToggle", id, poll);
-    else if (action === "update"){ send("sourceUpdate", id, poll); toast("已请求更新 " + source.name); }
+    if (action === "toggle") submitAction(null, "sourceToggle", id, $("sources-result"));
+    else if (action === "update") submitAction(null, "sourceUpdate", id, $("sources-result"));
     else if (action === "config") openSourceConfig(source);
     else if (action === "remove"){
       if (!confirm("删除音源「" + source.name + "」？收藏与播放记录不会受影响")) return;
@@ -1077,12 +1267,124 @@
     }
   });
 
+  function fetchJson(path, options){
+    var controller = new AbortController();
+    var timer = setTimeout(function(){ controller.abort(); }, 10000);
+    options = options || {}; options.signal = controller.signal; options.cache = "no-store";
+    return fetch(base + path, options).then(function(r){ if (!r.ok && path === "/state") throw new Error("state"); return r.json(); }).then(function(j){
+      clearTimeout(timer); return j;
+    }, function(error){ clearTimeout(timer); throw error; });
+  }
+  function settleTasks(s){
+    pendingTasks.forEach(function(pending, key){
+      var task = s.tasks && s.tasks[key];
+      if (!task || task.revision < pending.revision) return;
+      if (task.revision > pending.revision){ pending.finish({ok:false,error:"操作状态已更新，请查看电视或重新选择"}); return; }
+      if (pending.feedback) setFeedback(pending.feedback, task.message, !!task.failed, !!task.running, task.revision);
+      if (!task.running) pending.finish({ok:!task.failed,error:task.failed ? task.message : "",message:task.message});
+    });
+  }
+  function waitTask(j, feedback){
+    return new Promise(function(resolve){
+      var previous = pendingTasks.get(j.taskKey);
+      if (previous) previous.finish({ok:false,error:"操作状态已更新，请查看电视"});
+      var pending = {revision:j.taskRevision, feedback:feedback};
+      if (feedback) feedback.dataset.revision = String(j.taskRevision);
+      pending.finish = function(result){ clearTimeout(pending.timer); pendingTasks.delete(j.taskKey); resolve(result); };
+      pending.timer = setTimeout(function(){ pending.finish({ok:false,error:"操作尚未确认完成，请查看电视；输入已保留"}); }, 300000);
+      pendingTasks.set(j.taskKey, pending);
+      poll();
+      if (state) settleTasks(state);
+    });
+  }
+  function resultScope(node){ return node.id === "sheet-result" ? "importSheet" : "sources"; }
+  function latestTask(s, scope){
+    return Object.keys(s && s.tasks || {}).filter(function(key){
+      return scope === "importSheet" ? key === "importSheet" : key === "import" || key === "sources" || key.indexOf("source:") === 0;
+    }).map(function(key){ return {key:key,task:s.tasks[key]}; }).sort(function(a,b){ return b.task.revision-a.task.revision; })[0];
+  }
+  function dismissFeedback(node){
+    if (node.dataset.localPending) return;
+    var hadFocus = node.contains(document.activeElement);
+    var scope = resultScope(node), latest = latestTask(state, scope);
+    dismissedResults[scope] = Math.max(dismissedResults[scope], Number(node.dataset.revision) || 0, latest ? latest.task.revision : 0);
+    (scope === "sources" ? [$("sources-result"), $("import-result"), node] : [node]).forEach(function(item){
+      if (!item.dataset.localPending) { item.hidden = true; delete item.dataset.localResult; }
+    });
+    if (hadFocus){
+      var form = node.closest("form") || $(scope === "importSheet" ? "sheet-form" : node.id === "import-result" ? "import-form" : "sources-update");
+      var target = form && (form.tagName === "BUTTON" ? form : form.querySelector('button[type="submit"]'));
+      if (target) target.focus({preventScroll:true});
+    }
+  }
+  function setFeedback(node, message, failed, running, revision){
+    if (!node) return;
+    var copy = node.querySelector(".feedback-copy");
+    if (!copy){
+      node.textContent = "";
+      copy = document.createElement("span"); copy.className = "feedback-copy"; node.appendChild(copy);
+      var close = document.createElement("button"); close.type = "button"; close.className = "feedback-dismiss";
+      close.textContent = "×"; close.setAttribute("aria-label", "关闭操作提示");
+      close.addEventListener("click", function(){ dismissFeedback(node); }); node.appendChild(close);
+    }
+    copy.textContent = message || "";
+    node.hidden = !message;
+    node.classList.toggle("failed", !!failed);
+    node.dataset.running = String(!!running);
+    if (revision) node.dataset.revision = String(revision);
+    node.querySelector(".feedback-dismiss").hidden = !!running;
+  }
+  function renderTaskMessages(s){
+    ["sources", "importSheet"].forEach(function(scope){
+      var latest = latestTask(s, scope);
+      var nodes = scope === "sources" ? [$("sources-result"), $("import-result")] : [$("sheet-result")];
+      var target = scope === "importSheet" ? $("sheet-result") : latest && latest.key === "import" ? $("import-result") : $("sources-result");
+      nodes.forEach(function(node){
+        if (node.dataset.localPending) return;
+        if (node.dataset.localResult && (!latest || latest.task.revision <= Number(node.dataset.revisionFloor || 0))) return;
+        if (!latest || latest.task.revision <= dismissedResults[scope] || node !== target || (openConfig && latest.key === "source:" + openConfig)) { node.hidden = true; return; }
+        setFeedback(node, latest.task.message, latest.task.failed, latest.task.running, latest.task.revision);
+      });
+    });
+  }
+  function submitAction(form, type, value, feedback, onSuccess){
+    if (feedback && feedback.dataset.localPending) return;
+    if (feedback){
+      dismissFeedback(feedback);
+      var latest = latestTask(state, resultScope(feedback));
+      feedback.dataset.revisionFloor = String(latest ? latest.task.revision : 0);
+      delete feedback.dataset.revision;
+      feedback.dataset.localPending = "true"; setFeedback(feedback, "正在提交…", false, true);
+    }
+    var buttons = form ? Array.from(form.querySelectorAll("button")) : [];
+    if (feedback === $("import-result")) buttons = Array.from(new Set(buttons.concat([$("plugin-file-pick"), $("import-form").querySelector("button")])));
+    var disabled = buttons.map(function(button){ return button.disabled; });
+    buttons.forEach(function(button){ button.disabled = true; });
+    return send(type, value, null, feedback).then(function(result){
+      if (feedback){
+        delete feedback.dataset.localPending;
+        feedback.dataset.localResult = "true";
+        setFeedback(feedback, result.ok ? result.message || "电视已接受操作" : result.error || "操作失败，输入已保留", !result.ok, false);
+      }
+      buttons.forEach(function(button,index){ button.disabled = disabled[index]; });
+      if (result.ok && onSuccess) onSuccess(result);
+      return result;
+    });
+  }
+  $("sources-update").addEventListener("click", function(){ submitAction(null, "sourcesUpdate", "", $("sources-result")); });
+
   /* ---- 与电视的往返 ---- */
-  function send(type, value, after){
+  function send(type, value, after, feedback){
     var body = JSON.stringify({type:type, value:value == null ? "" : String(value)});
     if (preview){
       if (type === "preference"){ var preference = JSON.parse(value); sample[preference.key] = preference.value === "true" ? true : preference.value === "false" ? false : preference.value; render(sample); }
       if (type === "homeShelf"){ var shelf = JSON.parse(value); (sample.homeShelves || []).forEach(function(item){ if (item.id === shelf.id) item.visible = shelf.visible; }); render(sample); }
+      if (type === "sourceRemove") sample.sources = sample.sources.filter(function(source){ return source.id !== value; });
+      if (type === "sourceToggle") sample.sources.forEach(function(source){ if (source.id === value) source.enabled = !source.enabled; });
+      if (type === "sourceConfig"){
+        var config = JSON.parse(value);
+        sample.sources.forEach(function(source){ if (source.id === config.id) (source.fields || []).forEach(function(field){ field.value = config.values[field.key]; }); });
+      }
       if (type === "theme"){ sample.theme = value; render(sample); }
       if (type === "mode"){ sample.mode = value; render(sample); }
       if (type === "miniLyrics"){ sample.miniLyrics = !sample.miniLyrics; render(sample); }
@@ -1101,17 +1403,16 @@
       if (after) after();
       return Promise.resolve({ok:true});
     }
-    return fetch(base + "/action", {method:"POST", headers:{"Content-Type":"application/json"}, body:body, cache:"no-store"})
-      .then(function(r){ return r.json(); })
-      .then(function(j){ if (!j.ok) toast(j.error || "操作失败"); else if (after) after(j); setTimeout(poll, 120); return j; })
-      .catch(function(){ online(false); toast("电视未响应"); return {ok:false,error:"电视未响应，请确认仍在同一网络后重试。"}; });
+    return fetchJson("/action", {method:"POST", headers:{"Content-Type":"application/json"}, body:body})
+      .then(function(j){ return j.ok && j.taskKey ? waitTask(j, feedback) : j; })
+      .then(function(j){ if (!j.ok) { if (!feedback) toast(j.error || "操作失败"); } else if (after) after(j); setTimeout(poll, 120); return j; })
+      .catch(function(){ online(false); if (!feedback) toast("电视未响应"); return {ok:false,error:"电视未响应，请确认仍在同一网络后重试。"}; });
   }
   function poll(){
-    if (polling) return;
+    if (polling || document.hidden) return;
     if (preview){ render(sample); return; }
     polling = true;
-    fetch(base + "/state", {cache:"no-store"})
-      .then(function(r){ if (!r.ok) throw new Error("state"); return r.json(); })
+    fetchJson("/state")
       .then(function(s){ render(s); })
       .catch(function(){ online(false); })
       .then(function(){ polling = false; });
@@ -1119,6 +1420,8 @@
 
   $("prev").addEventListener("click", function(){ send("prev"); });
   $("search-results").addEventListener("click", function(event){
+    var actions = event.target.closest("[data-song-actions]");
+    if (actions){ showSongActions(actions.getAttribute("data-song-actions")); return; }
     var button = event.target.closest("[data-result-key]");
     if (!button) return;
     send("playSearchResult", JSON.stringify({key:button.getAttribute("data-result-key"),generation:Number(button.getAttribute("data-result-generation"))}));
@@ -1178,10 +1481,23 @@
     if (!key && shelf === null) return;
     var pending = key || "shelf:" + shelf;
     pendingPreferences.add(pending);
+    control.disabled = true;
     var value = control.type === "checkbox" ? String(control.checked) : control.value;
     var command = key ? "preference" : "homeShelf";
     var payload = key ? {key:key,value:value} : {id:shelf,visible:control.checked};
-    send(command, JSON.stringify(payload)).then(function(){ pendingPreferences.delete(pending); poll(); });
+    send(command, JSON.stringify(payload)).then(function(result){
+      pendingPreferences.delete(pending);
+      if (result.ok && state){
+        if (key) state[key] = control.checked;
+        else (state.homeShelves || []).forEach(function(item){ if (item.id === shelf) item.visible = control.checked; });
+      }
+      if (state) renderPreferences(state);
+      poll();
+    });
+  });
+  $("panel-settings").addEventListener("click", function(event){
+    var control = event.target.closest(".setting-choice");
+    if (control) showPreference(control.getAttribute("data-preference"));
   });
   document.querySelectorAll("[data-page]").forEach(function(button){
     button.addEventListener("click", function(){ send("page", button.getAttribute("data-page"), poll); });
@@ -1190,12 +1506,40 @@
   $("sheet-close").addEventListener("click", closeSheet);
   $("sheet").addEventListener("click", function(event){ if (event.target === this) closeSheet(); });
   $("sheet-body").addEventListener("click", function(event){
+    var setting = event.target.closest("[data-setting-choice]");
+    if (setting && sheetPreferenceKey){
+      var key = sheetPreferenceKey, value = setting.getAttribute("data-setting-choice");
+      if (pendingPreferences.has(key) || state.restoreBusy || !preferenceChoices(key, state).some(function(choice){ return choice.id === value; })) return;
+      pendingPreferences.add(key);
+      $("sheet-body").querySelectorAll("button").forEach(function(button){ button.disabled = true; });
+      send("preference", JSON.stringify({key:key,value:value})).then(function(result){
+        pendingPreferences.delete(key);
+        if (result.ok) state[key] = key === "pluginWorkerLimit" ? Number(value) : value;
+        renderPreferences(state);
+        if (result.ok && sheetOpen && sheetKind === "preference" && sheetPreferenceKey === key){ closeSheet(); toast("已更新设置"); }
+        else if (sheetOpen && sheetKind === "preference" && sheetPreferenceKey === key) showPreference(key);
+        poll();
+      });
+      return;
+    }
+    var songAction = event.target.closest("[data-song-action]");
+    if (songAction && searchActionTarget){
+      var placement = songAction.getAttribute("data-song-action"), payload = {key:searchActionTarget.key,generation:searchActionTarget.generation};
+      payload.placement = placement;
+      send("queueSearchResult", JSON.stringify(payload), function(){
+        closeSheet(); toast(placement === "next" ? "已设为下一首" : "已添加到播放队列");
+      });
+      return;
+    }
+    var queuePage = event.target.closest("[data-queue-page]");
+    if (queuePage){ send("queuePage", queuePage.getAttribute("data-queue-page"), function(){ poll(); }); return; }
+
     var quality = event.target.closest("[data-quality]");
     if (quality){ send("quality", quality.getAttribute("data-quality"), function(){ closeSheet(); poll(); }); return; }
     var mode = event.target.closest("[data-mode]");
     if (mode){ send("mode", mode.getAttribute("data-mode"), function(){ closeSheet(); poll(); }); return; }
     var song = event.target.closest("[data-queue]");
-    if (song){ send("queuePlay", song.getAttribute("data-queue"), function(){ closeSheet(); poll(); }); return; }
+    if (song){ send("queuePlay", JSON.stringify({index:Number(song.getAttribute("data-queue")),key:song.getAttribute("data-queue-key")}), function(){ closeSheet(); poll(); }); return; }
     var type = event.target.closest("[data-search-type]");
     if (type){ send("searchType", type.getAttribute("data-search-type"), function(){ closeSheet(); poll(); }); return; }
     var source = event.target.closest("[data-search-source]");
@@ -1205,28 +1549,30 @@
     }
   });
   document.addEventListener("keydown", function(event){
-    if (event.key === "Escape" && sheetOpen) closeSheet();
+    if (!sheetOpen) return;
+    if (event.key === "Escape"){ event.preventDefault(); closeSheet(); return; }
+    if (event.key === "Tab"){
+      var buttons = Array.from($("sheet").querySelectorAll("button:not(:disabled)")).filter(function(button){ return !button.hidden; });
+      var first = buttons[0], last = buttons[buttons.length - 1];
+      if (event.shiftKey && document.activeElement === first){ event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last){ event.preventDefault(); first.focus(); }
+    }
+  });
+  ["import-form", "sheet-form"].forEach(function(id){
+    $(id).addEventListener("input", function(){ dismissFeedback($(id === "import-form" ? "import-result" : "sheet-result")); });
   });
 
   $("search-form").addEventListener("submit", function(event){
     event.preventDefault();
-    var input = $("search-input");
-    var q = input.value.trim();
+    var input = $("search-input"), q = input.value.trim();
     if (!q){ input.focus(); return; }
-    send("search", q, poll);
-    input.value = "";
-    input.blur();
-    toast("已发送搜索：" + q);
+    send("search", q, function(){ input.blur(); });
   });
   $("import-form").addEventListener("submit", function(event){
     event.preventDefault();
-    var input = $("import-input");
-    var url = input.value.trim();
+    var input = $("import-input"), url = input.value.trim();
     if (!url){ input.focus(); return; }
-    send("import", url, poll);
-    input.value = "";
-    input.blur();
-    toast("已发送导入，结果看顶部状态");
+    submitAction(this, "import", url, $("import-result"), function(){ if (input.value.trim() === url) input.value = ""; input.blur(); });
   });
   $("plugin-file-pick").addEventListener("click", function(){ $("plugin-file").click(); });
   $("plugin-file").addEventListener("change", function(){
@@ -1238,9 +1584,7 @@
     if (file.size > maxPluginBytes){ toast("插件文件超过 " + (maxPluginBytes / 1024) + " KiB"); input.value = ""; return; }
     var reader = new FileReader();
     reader.onload = function(){
-      send("importFile", JSON.stringify({name:file.name, source:String(reader.result || "")}), poll);
-      input.value = "";
-      toast("已发送插件文件，结果看顶部状态");
+      submitAction(null, "importFile", JSON.stringify({name:file.name, source:String(reader.result || "")}), $("import-result"), function(){ input.value = ""; });
     };
     reader.onerror = function(){ toast("无法读取插件文件"); input.value = ""; };
     reader.readAsText(file, "UTF-8");
@@ -1287,13 +1631,13 @@
   $("sheet-form").addEventListener("submit", function(event){
     event.preventDefault();
     if (this.querySelector("button").disabled) return;
-    var url = $("sheet-url");
-    var link = url.value.trim();
-    if (!link){ url.focus(); return; }
-    send("importSheet", JSON.stringify({url: link, name: $("sheet-name").value.trim()}), poll);
-    url.value = "";
-    url.blur();
-    toast("已提交歌单导入，结果看顶部状态");
+    var input = $("sheet-url"), link = input.value.trim(), name = $("sheet-name").value.trim();
+    if (!link){ input.focus(); return; }
+    submitAction(this, "importSheet", JSON.stringify({url:link,name:name}), $("sheet-result"), function(){
+      if (input.value.trim() === link) input.value = "";
+      if ($("sheet-name").value.trim() === name) $("sheet-name").value = "";
+      input.blur();
+    });
   });
 
   function backupName(){

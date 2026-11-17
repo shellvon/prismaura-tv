@@ -41,11 +41,15 @@ data class Plugin(
         }.getOrDefault("")
     }
     val name get() = metadata.optString("platform", "未知插件")
-    val platform get() = SourcePlatforms.get(id) ?: MusicPlatform.identify(name, url)
+    val platform get() = SourcePlatforms.get(id) ?: MusicPlatform.identify(name, metadata.optString("name"), url)
     /* Plugins name themselves inconsistently ("QQ_music", "qqmusic", "QQ音乐"). The platform is
        the identity users recognise; anything unknown is at least made readable. */
-    val displayName get() = if (platform != MusicPlatform.OTHER) platform.label
-        else name.replace('_', ' ').replace('-', ' ').replace(Regex("\\s+"), " ").trim().ifBlank { "未命名音源" }
+    val displayName: String get() {
+        val detected = platform
+        if (detected != MusicPlatform.OTHER && detected != MusicPlatform.AGGREGATE) return detected.label
+        val title = if (detected == MusicPlatform.AGGREGATE) metadata.optString("name").ifBlank { name } else name
+        return title.replace('_', ' ').replace('-', ' ').replace(Regex("\\s+"), " ").trim().ifBlank { "未命名音源" }
+    }
 }
 
 /* Mask potentially sensitive configuration fields in the TV and phone interfaces. */

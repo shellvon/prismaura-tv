@@ -49,11 +49,19 @@ import androidx.compose.ui.graphics.Path
         }))
         else Canvas(Modifier.fillMaxSize(.62f)) {
             val stroke = 2.dp.toPx()
-            if (platform == MusicPlatform.WEBDAV) {
+            if (platform == MusicPlatform.AGGREGATE) {
+                val nodes = listOf(Offset(size.width * .2f, size.height * .2f), Offset(size.width * .8f, size.height * .2f),
+                    Offset(size.width * .2f, size.height * .8f), Offset(size.width * .8f, size.height * .8f))
+                nodes.forEach { point ->
+                    drawLine(c.accent.copy(alpha = .6f), center, point, stroke, StrokeCap.Round)
+                    drawCircle(c.accent, radius = size.minDimension * .10f, center = point)
+                }
+                drawCircle(c.accent, radius = size.minDimension * .14f, center = center)
+            } else if (platform == MusicPlatform.WEBDAV) {
                 drawCircle(c.accent, radius = size.minDimension * .22f, center = Offset(size.width * .42f, size.height * .43f), style = Stroke(stroke))
                 drawLine(c.accent, Offset(size.width * .16f, size.height * .72f), Offset(size.width * .86f, size.height * .72f), stroke)
                 drawLine(c.accent, Offset(size.width * .67f, size.height * .43f), Offset(size.width * .86f, size.height * .72f), stroke)
-            } else if (platform == MusicPlatform.OTHER) {
+            } else if (platform != MusicPlatform.LOCAL && platform != MusicPlatform.CUSTOM) {
                 drawLine(c.accent, Offset(size.width * .62f, size.height * .16f), Offset(size.width * .62f, size.height * .68f), stroke, StrokeCap.Round)
                 drawLine(c.accent, Offset(size.width * .62f, size.height * .16f), Offset(size.width * .86f, size.height * .10f), stroke, StrokeCap.Round)
                 drawCircle(c.accent, radius = size.minDimension * .16f, center = Offset(size.width * .46f, size.height * .72f))

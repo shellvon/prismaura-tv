@@ -15,14 +15,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
@@ -30,6 +34,7 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -39,6 +44,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import coil.request.ImageRequest
@@ -58,6 +70,96 @@ data class PrismColors(
 
 val LocalPrismColors = staticCompositionLocalOf { prismColors("gold") }
 val LocalAuraMotion = staticCompositionLocalOf { true }
+internal val LocalPlaybackActive = staticCompositionLocalOf { false }
+
+internal enum class PrismQrState { Loading, Waiting, Saving, Confirmed, Expired, Failed }
+
+/** The entrance light stays outside the code and stops after one pass. */
+@Composable
+internal fun PrismQrFrame(
+    state: PrismQrState = PrismQrState.Waiting, modifier: Modifier = Modifier,
+    onConfirmationFinished: (() -> Unit)? = null, content: @Composable () -> Unit,
+) {
+    val c = LocalPrismColors.current
+    val motion = LocalAuraMotion.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val rim = remember { Animatable(1f) }
+    LaunchedEffect(state, motion) {
+        if (motion && state == PrismQrState.Waiting) {
+            rim.snapTo(0f)
+            rim.animateTo(1f, tween(560, easing = LinearEasing))
+        } else rim.snapTo(1f)
+    }
+    val completion = remember { Animatable(0f) }
+    val onFinished by rememberUpdatedState(onConfirmationFinished)
+    val veilAlpha by animateFloatAsState(if (state == PrismQrState.Expired || state == PrismQrState.Failed) .66f else 0f,
+        tween(if (motion) 280 else 0), label = "二维码失效")
+    LaunchedEffect(state, motion, lifecycle) {
+        if (state != PrismQrState.Confirmed) completion.snapTo(0f)
+        else {
+            var delivered = false
+            lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                if (motion) completion.animateTo(1f, tween((880 * (1f - completion.value)).toInt(), easing = LinearEasing))
+                else completion.snapTo(1f)
+                if (!delivered) {
+                    delay(if (motion) 220L else 450L)
+                    delivered = true
+                    onFinished?.invoke()
+                }
+            }
+        }
+    }
+    val shape = RoundedCornerShape(12.dp)
+    Box(modifier.drawWithCache {
+        val inset = 14.dp.toPx()
+        val radius = CornerRadius(inset)
+        val outline = Path().apply {
+            if (size.minDimension > 2 * inset)
+                addRoundRect(RoundRect(inset, inset, size.width - inset, size.height - inset, radius))
+        }
+        val edge = PathMeasure().apply { setPath(outline, true) }
+        val streak = Path()
+        val haze = Stroke(5.dp.toPx(), cap = StrokeCap.Round)
+        val core = Stroke(1.5.dp.toPx(), cap = StrokeCap.Round)
+        onDrawBehind {
+            val t = rim.value
+            if (t > 0f && t < 1f && edge.length > 0f) {
+                val tip = t * 1.23f
+                streak.reset()
+                edge.getSegment((tip - .23f).coerceAtLeast(0f) * edge.length,
+                    tip.coerceAtMost(1f) * edge.length, streak, true)
+                drawPath(streak, Color(0x40ECD3A7), style = haze)
+                drawPath(streak, lerp(Color.White, Color(0xFFE6C99A), t), style = core)
+            }
+        }
+    }.padding(16.dp).graphicsLayer().clip(shape)
+        .border(1.dp, c.accent.copy(alpha = .32f), shape).drawWithCache {
+            val paper = Brush.verticalGradient(listOf(lerp(Color.White, c.accent, .045f), lerp(Color.White, c.accent, .10f)))
+            val check = Path().apply {
+                moveTo(size.width * .31f, size.height * .52f)
+                lineTo(size.width * .46f, size.height * .66f)
+                lineTo(size.width * .70f, size.height * .36f)
+            }
+            val measure = PathMeasure().apply { setPath(check, false) }
+            val segment = Path()
+            val checkStroke = Stroke(4.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+            onDrawWithContent {
+                drawContent()
+                val elapsed = completion.value * 880f
+                val cover = ((elapsed - 260f) / 240f).coerceIn(0f, 1f)
+                if (cover > 0f) drawRect(paper, alpha = cover)
+                val progress = ((elapsed - 500f) / 380f).coerceIn(0f, 1f)
+                if (progress > 0f) {
+                    segment.reset()
+                    measure.getSegment(0f, measure.length * progress, segment, true)
+                    drawPath(segment, Color.Black.copy(alpha = .86f), style = checkStroke)
+                }
+                if (veilAlpha > 0f) drawRect(Color(0xFF120E08).copy(alpha = veilAlpha))
+            }
+        }, contentAlignment = Alignment.Center) {
+        Box(Modifier.graphicsLayer()) { content() }
+    }
+}
 
 /* The marker for the track that is actually playing. Equalizer bars rather than a static
    note: the list already has one row highlighted, and this says the highlight is live. */
@@ -72,7 +174,7 @@ fun NowPlayingBars(color: Color, modifier: Modifier = Modifier, height: Dp = 14.
           改层属性不重画、不重组、不重排，只是让 GPU 挪一下已画好的像素。
        2) 用帧时钟按 BARS_FPS 步进，曲线用余弦，所以在任何帧率下看上去都在连续呼吸，
           而不是「跳一格、停一下」。 */
-    val moving = LocalAuraMotion.current && active
+    val moving = LocalAuraMotion.current && LocalPlaybackActive.current && active
     val idle = floatArrayOf(.55f, 1f, .35f)
     val levels = remember { List(3) { mutableFloatStateOf(idle[it]) } }
     LaunchedEffect(moving) {
@@ -80,10 +182,10 @@ fun NowPlayingBars(color: Color, modifier: Modifier = Modifier, height: Dp = 14.
         val stepNanos = 1_000_000_000L / BARS_FPS
         val periods = longArrayOf(820, 1240, 660)
         val phase = doubleArrayOf(.10, .55, .82)
-        var last = Long.MIN_VALUE
+        var last = 0L
         while (true) {
             withFrameNanos { now ->
-                if (now - last >= stepNanos) {
+                if (last == 0L || now - last >= stepNanos) {
                     last = now
                     for (i in 0 until 3) {
                         val seconds = now / 1_000_000_000.0

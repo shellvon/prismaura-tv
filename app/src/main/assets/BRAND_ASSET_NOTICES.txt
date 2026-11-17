@@ -1,0 +1,68 @@
+Brand artwork used solely to identify the corresponding audio source.
+These assets are not relicensed as MIT. Brand names and trademarks remain
+with their respective owners; their display does not imply endorsement.
+
+Apple Music (Apple Inc.)
+Resource: res/drawable/platform_applemusic.xml
+Source: https://commons.wikimedia.org/wiki/File:Apple_Music_icon.svg
+Original: https://upload.wikimedia.org/wikipedia/commons/5/5f/Apple_Music_icon.svg
+The source file page marks the artwork PD-textlogo (public domain, simple
+geometric shapes) and Trademarked. Converted from SVG to Android VectorDrawable;
+the two paths, original colours, proportions and gradient are retained.
+
+Huawei Music (Huawei)
+Resource: res/drawable-nodpi/platform_huawei_music.webp
+Source: https://commons.wikimedia.org/wiki/File:Huawei_Music_logo.webp
+Original: https://upload.wikimedia.org/wikipedia/commons/3/34/Huawei_Music_logo.webp
+The source file page marks the artwork PD-textlogo (public domain, simple
+geometric shapes). The original 300 x 300 WebP is included unchanged.
+
+Qingting FM (蜻蜓FM)
+Resource: res/drawable-nodpi/platform_qingting.png
+Official page: https://www.qtfm.cn/
+Original: https://sss.qtfm.cn/favicon.ico
+The official favicon response is a 32 x 32 PNG. Included byte-for-byte under
+its actual file type. The trademark and artwork remain with the brand owner;
+no MIT or public-domain license is asserted for this asset.
+
+Ximalaya (喜马拉雅)
+Resource: res/drawable-nodpi/platform_ximalaya.png
+Official page: https://www.ximalaya.com/
+Original: https://imagev2.xmcdn.com/storages/29b2-audiofreehighqps/DB/CF/GKwRINsKNfIZAAAKWwLdiQKb.png
+The official page uses this 142 x 142 PNG as its download QR branding icon.
+Included unchanged. The trademark and artwork remain with the brand owner;
+no MIT or public-domain license is asserted for this asset.
+
+Additional official-source identification artwork (res/drawable-nodpi):
+
+platform_lizhi.webp — 荔枝FM
+Original: https://www.lizhi.fm/favicon.ico
+Converted from the official ICO to PNG, then lossless WebP; resized from
+256 x 248 to 128 x 124 with the aspect ratio preserved.
+
+platform_qianqian.png — 千千音乐
+Official page: https://91q.com/download
+Original: https://91q.com/favicon.ico
+The gzip HTTP representation was decoded; ICO converted to 32 x 32 PNG.
+
+platform_fanqie.png — 番茄畅听
+Official page: https://novelfm.changdunovel.com/
+Original: https://lf-fe.fqnovelstatic.com/obj/novel-fanqie-fe/growth/incentive-h5-monorepo/apps/novelfm-ssr/app-logo.png
+Included unchanged (80 x 80 PNG).
+
+platform_streetvoice.png — StreetVoice 街聲
+Official page: https://streetvoice.com/
+Original: https://akstatic.streetvoice.com/asset/images/sv-icon@2x.png
+Included unchanged (160 x 160 PNG).
+
+platform_missevan.png — 猫耳FM
+Official page: https://www.missevan.com/
+Original: https://s1.maoercdn.com/assets/images/index/144.png
+Included unchanged (144 x 144 PNG).
+
+For these additional official-source assets, all copyright and trademark
+rights remain with their owners. Their presence on the official websites
+is not an MIT or public-domain grant. They are not relicensed by this project.
+
+Copyright-status descriptions checked on 2026-11-16. Public-domain copyright
+status does not grant trademark rights or supersede brand usage guidelines.

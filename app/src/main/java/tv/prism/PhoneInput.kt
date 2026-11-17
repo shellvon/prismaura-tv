@@ -8,6 +8,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import org.json.JSONObject
 import java.net.Inet4Address
+import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
@@ -31,6 +32,9 @@ class PhoneInput(
     private val fields: List<Pair<String, String>> = emptyList(),
     private val snapshot: (() -> String)? = null,
     private val command: ((String) -> String)? = null,
+    private val initialValues: Map<String, String> = emptyMap(),
+    private val formTitle: String = "填写配置",
+    private val formMessage: String = "留空的配置项不修改。填写后回到电视确认并保存。",
     private val submit: (Map<String, String>) -> Unit = {},
 ) : AutoCloseable {
     init { require(fields.size <= 30) { "扫码输入最多支持 30 个字段" } }
@@ -38,12 +42,19 @@ class PhoneInput(
         .filter { it.isUp && !it.isLoopback }.flatMap { Collections.list(it.inetAddresses).asSequence() }
         .filterIsInstance<Inet4Address>().firstOrNull { it.isSiteLocalAddress && !it.isLoopbackAddress }
         ?.hostAddress ?: throw IllegalStateException("未找到局域网地址，请先连接 Wi-Fi")
-    private val socket = ServerSocket(0).apply { soTimeout = 1000 }
+    private val remote = snapshot != null
+    // Debug sessions have separate, stable ADB ports; a form never interrupts the remote.
+    private val socket = ServerSocket().apply {
+        try {
+            reuseAddress = true
+            bind(InetSocketAddress(if (BuildConfig.DEBUG) { if (remote) DEBUG_REMOTE_PORT else DEBUG_FORM_PORT } else 0))
+            soTimeout = 1000
+        } catch (e: Exception) { close(); throw e }
+    }
     /* One held polling connection must not block the play button. */
     private val workers = Executors.newFixedThreadPool(4)
     private val main = Handler(Looper.getMainLooper())
     private val used = AtomicBoolean(false)
-    private val remote = snapshot != null
     private val template = context.applicationContext.assets.open(if (remote) "phone_remote.html" else "phone_input.html")
         .bufferedReader().use { it.readText() }
     private val token = ByteArray(24).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it.toInt() and 255) }
@@ -101,7 +112,7 @@ class PhoneInput(
             }
             val request = line().split(' ')
             val path = request.getOrNull(1) ?: ""
-            require(request.size >= 2 && (path == "/$token" || path == "/$token/state" || path == "/$token/action")) { "无效地址" }
+            require(request.size >= 2) { "无效请求" }
             val headers = mutableMapOf<String, String>()
             while (true) { val h = line(); if (h.isEmpty()) break; require(headers.size < 64) { "请求头过多" }; val i = h.indexOf(':'); if (i > 0) headers[h.substring(0, i).lowercase()] = h.substring(i + 1).trim() }
             val hostHeader = headers["host"]
@@ -109,6 +120,10 @@ class PhoneInput(
             require(hostHeader == "$address:${socket.localPort}" || forwarded) { "无效主机" }
             val origin = headers["origin"]
             require(origin == null || origin == "http://$hostHeader") { "无效来源" }
+            // A stable local entry for an explicitly opened debug session. LAN clients and
+            // release builds still need the random token; only GET may use this alias.
+            val debugEntry = BuildConfig.DEBUG && forwarded && path == "/" && request[0] == "GET"
+            require(debugEntry || path == "/$token" || path == "/$token/state" || path == "/$token/action") { "无效地址" }
             authorized = true
 
             val isState = path == "/$token/state"
@@ -127,12 +142,13 @@ class PhoneInput(
                 request[0] == "GET" && !isAction -> {
                     val html = if (remote) template.replace("{{base}}", JSONObject.quote("/$token"))
                     else {
-                        val inputs = fields.joinToString("") { (key, label) ->
+                        val inputs = fields.mapIndexed { index, (key, label) ->
                             val secret = listOf("password", "cookie", "token", "secret").any { key.contains(it, ignoreCase = true) }
-                            "<label>${escape(label)}<input type=\"${if (secret) "password" else "text"}\" name=\"${escape(key)}\" maxlength=\"4096\" autocomplete=\"off\"></label>"
-                        }
-                        inputPage("发送到电视", "填写后发送，再回到电视确认并保存配置。",
-                            "<form method=\"post\" action=\"/$token\">$inputs<button type=\"submit\">发送到电视</button></form>")
+                            "<label>${escape(label)}<input id=\"field-$index\" type=\"${if (secret) "password" else "text"}\" name=\"${escape(key)}\" maxlength=\"4096\" autocomplete=\"off\" value=\"${if (secret) "" else escape(initialValues[key].orEmpty().take(4096))}\"></label>" +
+                                if (secret) "<button type=\"button\" class=\"reveal\" data-secret-toggle=\"field-$index\" aria-pressed=\"false\">显示内容</button>" else ""
+                        }.joinToString("")
+                        inputPage(formTitle, formMessage,
+                            "<form method=\"post\" action=\"/$token\">$inputs<button type=\"submit\">填写到电视</button></form>")
                     }
                     reply(client, 200, "text/html; charset=utf-8", html)
                 }
@@ -156,7 +172,7 @@ class PhoneInput(
                     require(data.values.all { it.length <= 4096 })
                     require(used.compareAndSet(false, true)) { "输入已完成" }
                     try {
-                        reply(client, 200, "text/html; charset=utf-8", inputPage("已发送到电视", "请回到电视确认并保存配置，可以关闭此页面。",
+                        reply(client, 200, "text/html; charset=utf-8", inputPage("已发送到电视", "已回填电视输入框，尚未执行操作。请回到电视确认，可以关闭此页面。",
                             "<div class=\"result-mark\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><path d=\"m5 12 4 4 10-10\"/></svg></div>"))
                     } finally {
                         // The submit callback shuts the input service down: send the result
@@ -181,6 +197,7 @@ class PhoneInput(
     }
 
     private fun inputPage(title: String, message: String, content: String): String = template
+        .replace("{{nonce}}", token)
         .replace("{{title}}", escape(title))
         .replace("{{message}}", escape(message))
         .replace("{{content}}", content)
@@ -191,7 +208,7 @@ class PhoneInput(
         val csp = if (remote)
             "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
         else
-            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-$token'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
         client.getOutputStream().apply {
             write("HTTP/1.1 $code $status\r\nContent-Type: $type\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: $csp\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray())
             write(bytes); flush()
@@ -202,7 +219,11 @@ class PhoneInput(
         runCatching { socket.close() }
         workers.shutdownNow()
     }
-    companion object { private fun escape(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;") }
+    companion object {
+        private const val DEBUG_REMOTE_PORT = 8765
+        private const val DEBUG_FORM_PORT = 8766
+        private fun escape(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+    }
 }
 
 /** Rendered locally so a TV can show a login link without the phone having to be on the same LAN. */

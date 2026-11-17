@@ -873,10 +873,10 @@ fun PrismPlayer(
                 }
                 Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        PlayerIcon("list", "播放列表", onQueue,
+                        PlayerIcon("list", "接下来播放", onQueue,
                             modifier = Modifier.focusRequester(queueFocus)
                                 .focusProperties { left = nextFocus; right = dotsFocus; up = railFocus },
-                            onFocused = { hint = "播放列表 · $queueSize 首" })
+                            onFocused = { hint = "接下来播放 · 查看队列" })
                         MoreDots(
                             onClick = { interaction++; menuOpen = true },
                             modifier = Modifier.focusRequester(dotsFocus)
@@ -942,10 +942,10 @@ fun PrismPlayer(
 @Composable
 private fun ClockText(clock: State<Long>, duration: Long, forward: Boolean) {
     val c = LocalPrismColors.current
-    val ms by remember(clock, duration, forward) {
-        derivedStateOf { if (forward) clock.value.coerceAtLeast(0) else duration }
+    val seconds by remember(clock, duration, forward) {
+        derivedStateOf(structuralEqualityPolicy()) { (if (forward) clock.value.coerceAtLeast(0) else duration) / 1000 }
     }
-    Text(time(ms), color = c.muted, fontSize = 11.sp)
+    Text(time(seconds * 1000), color = c.muted, fontSize = 11.sp)
 }
 
 @Composable
@@ -1970,11 +1970,14 @@ private fun ActiveLyricText(line: LyricLine, position: State<Long>, textSize: Te
     LyricText(line, position.value, Modifier.fillMaxWidth(), textSize, lineHeight, align)
 }
 
+/** One clock sample for the mini player's progress and optional current lyric. */
+data class MiniProgress(val position: Long, val duration: Long, val lyric: String)
+
 /* One target, one verdict: this capsule says what is playing and opens the player. Every
    transport button that used to live here split focus into five stops for one job. */
 @Composable
 fun PrismMiniPlayer(
-    song: Song?, playing: Boolean, position: Long, duration: Long, lyric: String, showLyric: Boolean,
+    song: Song?, playing: Boolean, progress: () -> MiniProgress, showLyric: Boolean,
     onOpen: () -> Unit, onToggle: () -> Unit,
     openFocus: FocusRequester,
     upTarget: FocusAnchor? = null,
@@ -1982,6 +1985,7 @@ fun PrismMiniPlayer(
     upRestore: (() -> Boolean)? = null,
     playbackSource: Song? = null,
 ) {
+    val (position, duration, lyric) = progress()
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
     var focused by remember { mutableStateOf(false) }
@@ -2078,17 +2082,15 @@ private fun ProgressRail(progress: () -> Float, focused: Boolean, playing: Boole
     val motion = LocalAuraMotion.current
     val thick by animateDpAsState(if (focused) 3.dp else 2.dp, tween(if (motion) 180 else 0), label = "rail thickness")
     val knob by animateDpAsState(if (focused) 13.dp else 7.dp, tween(if (motion) 180 else 0), label = "rail knob")
-    /* 播放时钟一秒一跳，直画会一格一格地窜；让它用 300ms 追过去，读数才对得上「连续」。 */
-    val shown by animateFloatAsState(
-        progress().coerceIn(0f, 1f), tween(if (motion) 300 else 0, easing = LinearEasing), label = "rail progress",
-    )
     val beat = rememberInfiniteTransition(label = "rail")
     val cycle by if (motion && playing) beat.animateFloat(
         0f, 1f, infiniteRepeatable(tween(5600, easing = LinearEasing)), label = "rail cycle",
     ) else remember { mutableFloatStateOf(0f) }
     Canvas(modifier.fillMaxHeight()) {
         val y = size.height / 2f
-        val end = size.width * shown
+        // The controller already supplies a continuous playhead. Observe it in drawing,
+        // without recomposing this component or repeatedly retargeting a lagging tween.
+        val end = size.width * progress().coerceIn(0f, 1f)
         val w = thick.toPx()
         val breath = 1f + .16f * sin(cycle * 4f * PI.toFloat())
         val tick = 2.dp.toPx() to 5.dp.toPx()
