@@ -51,7 +51,8 @@ internal object TtmlLyrics {
                         require(name == "tt" && parser.namespace in listOf("", TTML, "http://www.w3.org/2006/10/ttaf1"))
                         absolute = (0 until parser.getNamespaceCount(parser.depth)).any {
                             val uri = parser.getNamespaceUri(it)
-                            uri.contains("apple.com/") || uri == "http://www.example.com/ns/amll"
+                            uri.contains("apple.com/") || uri == "http://www.example.com/ns/amll" ||
+                                uri == "http://lrc.red/lyric-ttml-internal"
                         }
                     }
                     fun attr(name: String): String? = parser.getAttributeValue(null, name)
@@ -135,7 +136,8 @@ internal object TtmlLyrics {
             LyricLine(source.start, words.joinToString("") { it.text }, translations.firstOrNull(),
                 words.takeIf { source.timed }?.mapIndexed { index, word ->
                     word.copy(endMs = word.endMs ?: words.getOrNull(index + 1)?.startMs ?: source.end)
-                }, (translations.drop(1) + roman + listOf(ruby) + background).filter { it.isNotBlank() }.distinct())
+                }, (translations.drop(1) + roman + listOf(ruby) + background).filter { it.isNotBlank() }.distinct(),
+                endMs = source.end.takeIf { !source.timed })
         }
     } catch (_: Exception) { emptyList() }
 

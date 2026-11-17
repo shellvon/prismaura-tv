@@ -11,9 +11,36 @@ data class LyricLine(
     val translation: String? = null,
     val words: List<LyricWord>? = null,
     val additionalLines: List<String> = emptyList(),
+    val endMs: Long? = null,
 ) {
     val supportingLines: List<String> get() = (listOfNotNull(translation) + additionalLines)
         .filter { it.isNotBlank() && it != text }.distinct()
+
+    // A next-line timestamp is not evidence that the current singer has stopped.
+    internal val knownEndMs: Long? get() = endMs ?: words
+        ?.takeIf { it.lastOrNull()?.endMs != null }
+        ?.maxOfOrNull { it.endMs ?: it.startMs }
+}
+
+/** Display cues keep instrumental intervals separate from the lyric text and translations. */
+internal sealed interface LyricCue {
+    val timeMs: Long
+    data class Line(override val timeMs: Long, val index: Int) : LyricCue
+    data class Gap(override val timeMs: Long, val endMs: Long) : LyricCue
+}
+
+internal fun lyricCues(lines: List<LyricLine>): List<LyricCue> = buildList {
+    var latestKnownEnd = 0L
+    var precedingEndKnown = true
+    lines.forEachIndexed { index, line ->
+        if (precedingEndKnown && line.timeMs - latestKnownEnd >= 4_000L) {
+            add(LyricCue.Gap(latestKnownEnd, line.timeMs))
+        }
+        add(LyricCue.Line(line.timeMs, index))
+        val end = line.knownEndMs?.takeIf { it > line.timeMs }
+        precedingEndKnown = end != null
+        if (end != null) latestKnownEnd = maxOf(latestKnownEnd, end)
+    }
 }
 
 object Lyrics {
@@ -52,7 +79,8 @@ object Lyrics {
         .filter { it.text.isNotBlank() && !isCredit(it.text) }
         .sortedBy { it.timeMs }.groupBy { it.timeMs }.values.map { group ->
             val main = group.firstOrNull { !it.words.isNullOrEmpty() } ?: group.first()
-            main.copy(additionalLines = group.flatMap { listOf(it.text) + it.supportingLines }
+            main.copy(endMs = group.mapNotNull { it.knownEndMs }.maxOrNull(),
+                additionalLines = group.flatMap { listOf(it.text) + it.supportingLines }
                 .filter { it != main.text && it != main.translation }.distinct())
         }
 
@@ -157,7 +185,11 @@ object Lyrics {
             LyricWord((word.startMs + adjustment).coerceAtLeast(0), word.text,
                 word.endMs?.plus(adjustment)?.coerceAtLeast(0))
         }
-        return listOf(LyricLine((lineStart + adjustment).coerceAtLeast(0), text, words = adjusted))
+        val lineEnd = header.groupValues[2].toLongOrNull()
+            ?.takeIf { it > 0 && lineStart <= Long.MAX_VALUE - it }
+            ?.let { runCatching { Math.addExact(lineStart + it, adjustment) }.getOrNull()?.coerceAtLeast(0) }
+        return listOf(LyricLine((lineStart + adjustment).coerceAtLeast(0), text, words = adjusted,
+            endMs = lineEnd.takeIf { adjusted == null }))
     }
 
     private fun parseYrcWords(rest: String, tags: List<MatchResult>): List<LyricWord> {

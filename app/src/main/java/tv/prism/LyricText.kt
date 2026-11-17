@@ -17,14 +17,17 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.ResolvedTextDirection
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 
-internal fun lyricWordProgress(word: LyricWord, nextStart: Long?, position: Long): Float {
+internal fun lyricWordProgress(word: LyricWord, nextStart: Long?, position: Long, previousEnd: Long? = null): Float {
     val end = word.endMs ?: nextStart ?: (word.startMs + 400)
-    return ((position - word.startMs).toFloat() / (end - word.startMs).coerceAtLeast(1)).coerceIn(0f, 1f)
+    val gap = previousEnd?.let { word.startMs - it }
+    val lead = if (gap != null && gap in 1L..180L)
+        minOf(gap, 100L, (end - word.startMs).coerceAtLeast(0) / 10) else 0L
+    val visualStart = word.startMs - lead
+    return ((position - visualStart).toFloat() / (end - visualStart).coerceAtLeast(1)).coerceIn(0f, 1f)
 }
 
 private data class LyricRegion(val word: Int, val rect: Rect, val before: Float, val width: Float, val rtl: Boolean)
@@ -73,7 +76,7 @@ internal fun LyricText(
                 val completed = Path()
                 regions.forEach { region ->
                     val word = words[region.word]
-                    val progress = lyricWordProgress(word, words.getOrNull(region.word + 1)?.startMs, now)
+                    val progress = lyricWordProgress(word, words.getOrNull(region.word + 1)?.startMs, now, words.getOrNull(region.word - 1)?.endMs)
                     val filled = (progress * region.width - region.before).coerceIn(0f, region.rect.width)
                     if (filled >= region.rect.width) completed.addRect(region.rect)
                 }
@@ -81,8 +84,8 @@ internal fun LyricText(
                 regions.forEach { region ->
                     val word = words[region.word]
                     val end = word.endMs ?: words.getOrNull(region.word + 1)?.startMs
-                    if (now < word.startMs || (end != null && now >= end)) return@forEach
-                    val progress = lyricWordProgress(word, end, now)
+                    if (end != null && now >= end) return@forEach
+                    val progress = lyricWordProgress(word, end, now, words.getOrNull(region.word - 1)?.endMs)
                     val filled = (progress * region.width - region.before).coerceIn(0f, region.rect.width)
                     if (filled <= 0f) return@forEach
                     val feather = fontPx * .24f
@@ -106,6 +109,6 @@ internal fun LyricText(
     }
     Text(text, color = colors.foreground.copy(alpha = if (words.isEmpty()) 1f else resting),
         fontSize = fontSize, lineHeight = lineHeight, fontWeight = FontWeight.SemiBold,
-        maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = textAlign,
+        textAlign = textAlign,
         onTextLayout = { layout = it }, modifier = modifier.then(paint))
 }

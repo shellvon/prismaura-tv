@@ -4,13 +4,16 @@ import android.app.Activity
 import android.graphics.drawable.BitmapDrawable
 import androidx.palette.graphics.Palette
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -32,7 +35,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
-import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
@@ -80,10 +82,12 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -107,6 +111,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.tv.material3.Text
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
 import coil.imageLoader
@@ -125,8 +131,52 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.sin
+import kotlin.math.roundToInt
 
 private fun time(ms: Long): String = "%02d:%02d".format(ms / 60_000, (ms / 1000) % 60)
+
+private fun isLyricLoading(status: String) = status.contains("加载中") || status.contains("正在")
+
+private const val LYRIC_GAP_EXIT_MS = 350L
+private const val LYRIC_GAP_COLLAPSE_MS = 500L
+private const val LYRIC_GAP_LEAD_MS = 200L // Static cue with reduced motion.
+private const val LYRIC_GAP_PEAK_SCALE = 1.2f
+private const val LYRIC_GAP_BREATH_MIN_SCALE = .85f
+private const val LYRIC_GAP_BREATH_MAX_SCALE = 1.12f
+private const val LYRIC_GAP_BREATH_HALF_CYCLE_MS = 4000L
+
+private fun lyricGapHandoffStart(gap: LyricCue.Gap, motion: Boolean): Long =
+    gap.endMs - if (motion) LYRIC_GAP_COLLAPSE_MS else LYRIC_GAP_LEAD_MS
+
+private fun lyricGapExitStart(gap: LyricCue.Gap, motion: Boolean): Long =
+    lyricGapHandoffStart(gap, motion) - if (motion) LYRIC_GAP_EXIT_MS else 0L
+
+private fun smoothGapFraction(fraction: Float): Float {
+    val t = fraction.coerceIn(0f, 1f)
+    return t * t * (3f - 2f * t)
+}
+
+private fun lyricGapExitProgress(gap: LyricCue.Gap, position: Long): Float =
+    ((position - lyricGapExitStart(gap, true)).toFloat() / LYRIC_GAP_EXIT_MS).coerceIn(0f, 1f)
+
+private fun lyricGapFade(exit: Float) = smoothGapFraction((exit - .35f) / .65f)
+
+private fun lyricGapScale(exit: Float): Float =
+    if (exit < .35f) LYRIC_GAP_BREATH_MIN_SCALE + (LYRIC_GAP_PEAK_SCALE - LYRIC_GAP_BREATH_MIN_SCALE) *
+        smoothGapFraction(exit / .35f)
+    else LYRIC_GAP_PEAK_SCALE * (1f - lyricGapFade(exit))
+
+private fun lyricGapBreathScale(gap: LyricCue.Gap, position: Long): Float {
+    // End the breath at its small size so the final swell starts without a scale jump.
+    val phase = (position - lyricGapExitStart(gap, true)) % (LYRIC_GAP_BREATH_HALF_CYCLE_MS * 2)
+    val mix = ((1.0 - cos(phase.toDouble() * PI / LYRIC_GAP_BREATH_HALF_CYCLE_MS)) * .5).toFloat()
+    return LYRIC_GAP_BREATH_MIN_SCALE + (LYRIC_GAP_BREATH_MAX_SCALE - LYRIC_GAP_BREATH_MIN_SCALE) * mix
+}
+
+private fun lyricGapDotProgress(gap: LyricCue.Gap, dot: Int, position: Long, motion: Boolean): Float {
+    val finish = lyricGapExitStart(gap, motion)
+    return (((position - gap.timeMs).toFloat() / (finish - gap.timeMs)) * 3f - dot).coerceIn(0f, 1f)
+}
 
 @Composable
 private fun rememberLyricPosition(songKey: String?, position: Long, playing: Boolean, readPosition: () -> Long): State<Long> {
@@ -441,8 +491,8 @@ fun PrismPlayer(
     val offFocus = remember { FocusRequester() }
     val l2Focus = remember { FocusRequester() }
 
-    val rawLyricPosition = if (lyrics.isNotEmpty()) rememberLyricPosition(song?.key, position, playing, readPosition)
-        else rememberUpdatedState(position)
+    // Transport and lyrics share the actual playhead, including tracks without lyrics.
+    val rawLyricPosition = rememberLyricPosition(song?.key, position, playing, readPosition)
     // Calibration affects lyric timing only; transport controls use the playback clock.
     val lyricPosition = remember(rawLyricPosition, lyricOffsetMs) {
         derivedStateOf { rawLyricPosition.value - lyricOffsetMs }
@@ -596,7 +646,7 @@ fun PrismPlayer(
         val h = maxHeight
         /* While the lyric request is still out the two-column layout stands as it is; the layout
            only moves once the answer is known to be "no lyrics", never while it is still coming. */
-        val lyricPending = lyricStatus.contains("加载中") || lyricStatus.contains("正在")
+        val lyricPending = isLyricLoading(lyricStatus)
         val noLyrics = lyrics.isEmpty() && !lyricPending
         val sleeveBig = minOf(w * .29f, h * .50f)
         // Reserve measured title height without changing the column width.
@@ -612,7 +662,7 @@ fun PrismPlayer(
         val textWidth = with(LocalDensity.current) { textPx.toDp() }
         val lockupText = if (textWidth > 0.dp) textWidth else textMax * .7f
         /* The sleeve breathes: it sits a screen-fraction in from the edge, not glued to it. */
-        val identityMargin = w * .146f
+        val identityMargin = w * .10f
         val identityX by animateDpAsState(
             if (noLyrics) (w - (sleeveBig + 40.dp + lockupText)) / 2 else identityMargin,
             tween(if (motion) 460 else 0, easing = FastOutSlowInEasing), label = "identity x",
@@ -624,7 +674,7 @@ fun PrismPlayer(
         val freeLeft = identityMargin + columnWidth
         val freeRight = w - padX
         val freeWidth = (freeRight - freeLeft).coerceAtLeast(160.dp)
-        val lyricWidth = minOf(freeWidth * .88f, w * .47f)
+        val lyricWidth = minOf(freeWidth * .94f, w * .56f)
         val lyricLeft = freeLeft + (freeWidth - lyricWidth) / 2
         val lyricTop = h * .16f
         val lyricHeight = h * .62f
@@ -742,7 +792,7 @@ fun PrismPlayer(
                         translationX = 14.dp.toPx() * (1f - eased)
                         translationY = 18.dp.toPx() * (1f - eased)
                     },
-                centered = true, fade = .20f,
+                centered = true, fade = .20f, animateLoading = !immersive,
             )
         }
 
@@ -1070,7 +1120,7 @@ private fun Immersion(
 ) {
     val c = LocalPrismColors.current
     val barAlpha by animateFloatAsState(if (barVisible) 1f else 0f, tween(if (motion) 240 else 0), label = "immersion bar")
-    val noLyrics = lyrics.isEmpty()
+    val noLyrics = lyrics.isEmpty() && !isLyricLoading(lyricStatus)
     val identityAlpha by animateFloatAsState(if (level > 1) .38f else 1f, tween(if (motion) 900 else 0), label = "immersion identity")
     val enter = remember { Animatable(if (motion) 0f else 1f) }
     LaunchedEffect(Unit) { if (motion) enter.animateTo(1f, tween(820, easing = LinearEasing)) }
@@ -1094,7 +1144,6 @@ private fun Immersion(
         } else lamp.animateTo(0f, tween(if (motion) 260 else 0))
     }
     val note = when {
-        lyricStatus.contains("加载中") || lyricStatus.contains("正在") -> "正在找这首歌的歌词"
         lyricStatus.contains("本地") -> "本地文件没有歌词"
         else -> "纯音乐 · 暂无歌词"
     }
@@ -1655,17 +1704,34 @@ private fun RollingLyrics(
     lyrics: List<LyricLine>, active: Int, status: String, position: State<Long>,
     textSp: Int, lineSp: Int, supportSp: Int, subLyrics: Boolean,
     modifier: Modifier = Modifier, centered: Boolean = false, fade: Float = .12f,
+    animateLoading: Boolean = true,
 ) {
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
     if (lyrics.isEmpty()) {
         Box(modifier, contentAlignment = Alignment.Center) {
-            Text(status.ifBlank { "暂无歌词" }, color = c.muted, fontSize = if (centered) 20.sp else 15.sp,
+            if (isLyricLoading(status)) LyricLoadingSkeleton(motion && animateLoading)
+            else Text(status.ifBlank { "暂无歌词" }, color = c.muted, fontSize = if (centered) 20.sp else 15.sp,
                 textAlign = TextAlign.Center, maxLines = 8, overflow = TextOverflow.Ellipsis)
         }
         return
     }
-    val targetIndex = active.coerceAtLeast(0)
+    val cues = remember(lyrics) { lyricCues(lyrics) }
+    val playingCueIndex by remember(cues, position) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            val found = cues.binarySearch { it.timeMs.compareTo(position.value) }
+            (if (found >= 0) found else -found - 2).coerceAtLeast(0)
+        }
+    }
+    val targetIndex by remember(cues, position, motion) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            val gap = cues[playingCueIndex] as? LyricCue.Gap
+            // Let the dots grow and hold in place. Move the lyrics only as they shrink away.
+            if (gap != null && position.value >= lyricGapHandoffStart(gap, motion)) playingCueIndex + 1
+            else playingCueIndex
+        }
+    }
+    val inGap = cues[playingCueIndex] is LyricCue.Gap
     // New lyrics get their own scroll state instead of inheriting the previous song's index.
     val state = remember(lyrics) { LazyListState(firstVisibleItemIndex = targetIndex) }
     val cut = remember(lyrics) { Animatable(0f) }
@@ -1687,11 +1753,27 @@ private fun RollingLyrics(
             state = state,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(vertical = maxHeight / 2),
-            verticalArrangement = Arrangement.spacedBy(if (centered) 20.dp else 12.dp),
             userScrollEnabled = false,
         ) {
-            itemsIndexed(lyrics) { index, line ->
-                RollingLyricRow(line, index, active, position, textSp, lineSp, supportSp, subLyrics, centered)
+            itemsIndexed(cues, key = { _, cue -> when (cue) {
+                is LyricCue.Line -> "line-${cue.index}"
+                is LyricCue.Gap -> "gap-${cue.endMs}"
+            } }) { index, cue ->
+                when (cue) {
+                    is LyricCue.Line -> Box(Modifier.padding(vertical = if (centered) 10.dp else 6.dp)) {
+                        RollingLyricRow(lyrics[cue.index], cue.index, active, position, textSp, lineSp,
+                            supportSp, subLyrics, centered, cues[targetIndex], cues[playingCueIndex])
+                    }
+                    is LyricCue.Gap -> AnimatedVisibility(
+                        visible = index == playingCueIndex,
+                        enter = expandVertically(tween(if (motion) 400 else 0), expandFrom = Alignment.CenterVertically) +
+                            fadeIn(tween(if (motion) 240 else 0)),
+                        // The playhead completes the exit inside the row, ahead of the vocal.
+                        exit = ExitTransition.None,
+                    ) {
+                        LyricWaitingDots(cue, position, textSp, lineSp, centered)
+                    }
+                }
             }
         }
         LaunchedEffect(targetIndex, lyrics, textSp, lineSp, subLyrics, maxHeight, motion) {
@@ -1711,9 +1793,30 @@ private fun RollingLyrics(
             val item = info.visibleItemsInfo.firstOrNull { it.index == targetIndex } ?: return@LaunchedEffect
             val center = (info.viewportStartOffset + info.viewportEndOffset) / 2f
             val delta = item.offset + item.size / 2f - center
-            if (sequential && motion) {
+            val gapResizing = inGap || cues.getOrNull(previous) is LyricCue.Gap
+            if (motion && (sequential || gapResizing)) {
+                val handoffGap = if (cues[targetIndex] is LyricCue.Line)
+                    (cues[playingCueIndex] as? LyricCue.Gap) ?: (cues.getOrNull(previous) as? LyricCue.Gap)
+                    else null
+                val scrollMs = handoffGap?.let {
+                    (it.endMs - position.value).coerceIn(0L, LYRIC_GAP_COLLAPSE_MS).toInt()
+                } ?: 620
                 cut.snapTo(1f)
-                state.animateScrollBy(delta, tween(620, easing = FastOutSlowInEasing))
+                // Expansion/collapse changes row heights during the scroll. Re-read the layout
+                // each frame so the target finishes at the centre instead of drifting afterward.
+                state.scroll {
+                    var previousFraction = 0f
+                    animate(0f, 1f, animationSpec = tween(scrollMs, easing = FastOutSlowInEasing)) { fraction, _ ->
+                        val layout = state.layoutInfo
+                        layout.visibleItemsInfo.firstOrNull { it.index == targetIndex }?.let { target ->
+                            val error = target.offset + target.size / 2f -
+                                (layout.viewportStartOffset + layout.viewportEndOffset) / 2f
+                            val portion = (fraction - previousFraction) / (1f - previousFraction).coerceAtLeast(.00001f)
+                            scrollBy(error * portion.coerceIn(0f, 1f))
+                        }
+                        previousFraction = fraction
+                    }
+                }
             } else {
                 state.scrollBy(delta)
                 // This effect owns both fades, so a cancelled seek cannot leave lyrics dimmed.
@@ -1724,16 +1827,102 @@ private fun RollingLyrics(
 }
 
 @Composable
+private fun LyricLoadingSkeleton(animate: Boolean) {
+    val c = LocalPrismColors.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val phase = remember { Animatable(0f) }
+    val shine = remember(c.foreground) {
+        Brush.horizontalGradient(listOf(Color.Transparent, c.foreground.copy(alpha = .16f), Color.Transparent))
+    }
+    LaunchedEffect(animate, lifecycle) {
+        if (animate) lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            phase.snapTo(0f)
+            phase.animateTo(1f, infiniteRepeatable(tween(1800, easing = LinearEasing), RepeatMode.Restart))
+        }
+    }
+    Column(
+        Modifier.widthIn(max = 340.dp).fillMaxWidth(.8f).semantics { contentDescription = "歌词加载中" },
+        verticalArrangement = Arrangement.spacedBy(22.dp), horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        listOf(.72f, .92f, .54f).forEach { width ->
+            Box(Modifier.fillMaxWidth(width).height(14.dp).clip(RoundedCornerShape(7.dp))
+                .background(c.foreground.copy(alpha = .075f))) {
+                if (animate) Box(Modifier.fillMaxSize().graphicsLayer {
+                    // Cache only this small strip. A frame changes its transform, not its
+                    // gradient, layout or text. The parent clips it to the rounded placeholder.
+                    compositingStrategy = CompositingStrategy.Offscreen
+                    translationX = (phase.value * 2f - 1f) * size.width
+                }.background(shine))
+            }
+        }
+    }
+}
+
+@Composable
+private fun LyricWaitingDots(
+    gap: LyricCue.Gap, position: State<Long>, textSp: Int, lineSp: Int, centered: Boolean,
+) {
+    val color = LocalPrismColors.current.foreground
+    val motion = LocalAuraMotion.current
+    val density = LocalDensity.current
+    val radius = with(density) { (textSp.sp.toPx() * .10f).coerceIn(6.dp.toPx(), 8.dp.toPx()) }
+    val step = radius * 3f
+    val height = with(density) { lineSp.sp.toDp() } + if (centered) 20.dp else 12.dp
+    val exit = remember(gap, position, motion) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            if (motion) lyricGapExitProgress(gap, position.value)
+            else if (position.value >= lyricGapExitStart(gap, false)) 1f else 0f
+        }
+    }
+    val collapse = remember(exit, gap, position, motion) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            if (motion) smoothGapFraction((position.value - lyricGapHandoffStart(gap, true)).toFloat() / LYRIC_GAP_COLLAPSE_MS)
+            else exit.value
+        }
+    }
+    Canvas(Modifier.fillMaxWidth().layout { measurable, constraints ->
+        val child = measurable.measure(constraints)
+        val remainingHeight = (child.height * (1f - collapse.value)).roundToInt()
+        layout(child.width, remainingHeight) {
+            child.placeRelative(0, (remainingHeight - child.height) / 2)
+        }
+    }.graphicsLayer {
+        val scale = when {
+            !motion -> if (collapse.value < 1f) 1f else 0f
+            exit.value > 0f -> lyricGapScale(exit.value)
+            else -> lyricGapBreathScale(gap, position.value)
+        }
+        scaleX = scale; scaleY = scale; alpha = 1f - lyricGapFade(exit.value)
+        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(
+            if (centered) .5f else ((radius + step) / size.width.coerceAtLeast(1f)).coerceIn(0f, 1f), .5f)
+        compositingStrategy = CompositingStrategy.ModulateAlpha
+    }.height(height).semantics {
+        contentDescription = if (gap.timeMs == 0L) "即将开唱" else "间奏"
+    }) {
+        // Use the existing calibrated playhead: pausing, seeking and lyric offsets all agree.
+        // Only drawing observes the per-frame position; the list is not rebuilt for each dot.
+        val start = if (centered) center.x - step else radius
+        repeat(3) { dot ->
+            val fill = lyricGapDotProgress(gap, dot, position.value, motion)
+            drawCircle(color.copy(alpha = .25f + .75f * fill), radius, Offset(start + step * dot, center.y))
+        }
+    }
+}
+
+@Composable
 private fun RollingLyricRow(
     line: LyricLine, index: Int, active: Int, position: State<Long>,
     textSp: Int, lineSp: Int, supportSp: Int, subLyrics: Boolean, centered: Boolean,
+    focusCue: LyricCue, playingCue: LyricCue,
 ) {
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
     // Show the first line during the intro without advancing its word highlighting.
-    val stage = active.coerceAtLeast(0)
-    val current = index == stage
-    val waiting = active < 0 && index == stage
+    val inGap = playingCue is LyricCue.Gap
+    val stage = (focusCue as? LyricCue.Line)?.index ?: (active + 1).coerceAtLeast(0)
+    val current = index == stage && focusCue is LyricCue.Line
+    val waiting = active < 0 && index == stage && !inGap
+    val settleMs = if (!motion) 0 else if (inGap) LYRIC_GAP_COLLAPSE_MS.toInt() else 620
     val handoff by animateFloatAsState(
         if (waiting && !line.words.isNullOrEmpty()) 1f else 0f,
         tween(if (motion) 420 else 0), label = "first line handoff",
@@ -1742,13 +1931,13 @@ private fun RollingLyricRow(
     val leading = lineSp.sp
     val distance = abs(index - stage)
     val scale = animateFloatAsState(if (current) 1f else if (distance <= 1) .84f else .78f,
-        tween(if (motion) 620 else 0, easing = FastOutSlowInEasing), label = "lyric scale")
+        tween(settleMs, easing = FastOutSlowInEasing), label = "lyric scale")
     val opacity = animateFloatAsState(when {
         current -> 1f
         index < stage -> if (distance == 1) .28f else .16f
         distance <= 1 -> if (c.background.luminance() > .5f) .56f else .36f
         else -> if (c.background.luminance() > .5f) .38f else .22f
-    }, tween(if (motion) 620 else 0), label = "lyric opacity")
+    }, tween(settleMs), label = "lyric opacity")
     val align = if (centered) TextAlign.Center else TextAlign.Start
     Column(Modifier.fillMaxWidth().graphicsLayer {
         scaleX = scale.value; scaleY = scale.value; alpha = opacity.value
