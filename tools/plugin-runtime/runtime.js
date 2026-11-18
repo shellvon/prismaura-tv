@@ -7,6 +7,31 @@ const modules = {
   he: require('he'),
   cheerio: require('cheerio'),
 };
+/* 二进制响应从桥上下来是 base64 字符串。这里自己解，不去要宿主的 atob：
+   WebView 天生有、Node 测试壳没有，靠它等于让运行时依赖一个没人承诺的全局。
+   插件代码在 new Function 里跑，看不到这里的函数，所以这也不构成给插件新增 API。 */
+const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const BASE64_VALUES = (() => {
+  const table = new Uint8Array(256);
+  for (let index = 0; index < BASE64.length; index++) table[BASE64.charCodeAt(index)] = index;
+  return table;
+})();
+const decodeBase64 = input => {
+  const text = String(input == null ? '' : input).replace(/[^A-Za-z0-9+/=]/g, '');
+  const out = new Uint8Array((text.length * 3) >> 2);
+  let size = 0;
+  let buffer = 0;
+  let bits = 0;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code === 61) break; /* '='：后面只剩填充 */
+    buffer = (buffer << 6) | BASE64_VALUES[code];
+    bits += 6;
+    if (bits >= 8) { bits -= 8; out[size++] = (buffer >> bits) & 0xff; }
+  }
+  /* 带填充时 (n*3)>>2 会多出零字节；调用方拿 .buffer 当 ArrayBuffer 用时尾巴会被算进内容。 */
+  return size === out.length ? out : out.slice(0, size);
+};
 let networkId = 0;
 const pending = new Map();
 axios.defaults.adapter = config => new Promise((resolve, reject) => {
@@ -50,7 +75,7 @@ const prismResponse = payload => {
   const lower = {};
   Object.keys(raw).forEach(key => { lower[key.toLowerCase()] = String(raw[key]); });
   let body = payload.body;
-  if (payload.binary) body = Uint8Array.from(atob(body), ch => ch.charCodeAt(0));
+  if (payload.binary) body = decodeBase64(body);
   const asText = () => typeof body === 'string' ? body : new TextDecoder().decode(body);
   const response = {
     ok: payload.status >= 200 && payload.status < 300,
@@ -174,10 +199,7 @@ window.PrismEngine = {
     if (!payload.ok) { p.reject(new Error(payload.error || '网络请求失败')); return; }
     if (p.fetch) { p.resolve(prismResponse(payload)); return; }
     let body = payload.body;
-    if (payload.binary) {
-      const bytes = atob(body);
-      body = Uint8Array.from(bytes, c => c.charCodeAt(0)).buffer;
-    }
+    if (payload.binary) body = decodeBase64(body).buffer;
     /* responseUrl 是 Node axios 的字段（response.request.res.responseUrl）：真实浏览器/Node 里
        重定向后的地址就在这里，插件靠它把手机分享的短链还原成歌单链接。桥接层没给就留空。 */
     const response = {

@@ -6,7 +6,7 @@ const path = require('node:path');
 
 function runtime(onRequest, onCookie = () => ({ok:true,value:true})) {
   const waiters = new Map();
-  const context = {console, setTimeout, clearTimeout, URL, URLSearchParams, TextEncoder, TextDecoder, atob, btoa,
+  const context = {console, setTimeout, clearTimeout, URL, URLSearchParams, TextEncoder, TextDecoder,
     PrismBridge: {
       request(id, request) { onRequest(id, JSON.parse(request), context); },
       result(id, result) { waiters.get(id)?.(JSON.parse(result)); },
@@ -48,12 +48,12 @@ test('describe keeps standard import hints and drops non-string entries', async 
 
 test('Optional extensions declare quality and resolve MV with headers', async () => {
   const r = runtime(() => assert.fail('unexpected HTTP'));
-  const meta = JSON.parse(r.context.PrismEngine.load(`module.exports={platform:'bili',supportedQualities:['128k','flac'],getMvSource(song){return {url:'https://example.test/'+btoa(song.mvId),headers:{Referer:'https://video.example.test/'}}}}`, {}));
+  const meta = JSON.parse(r.context.PrismEngine.load(`module.exports={platform:'bili',supportedQualities:['128k','flac'],getMvSource(song){return {url:'https://example.test/'+song.mvId,headers:{Referer:'https://video.example.test/'}}}}`, {}));
   assert.equal(meta.mvSource, true);
   assert.deepEqual(meta.supportedQualities, ['128k','flac']);
   const result = await r.call('getMvSource', [{mvId:'BV1'}]);
   assert.equal(result.value.headers.Referer, 'https://video.example.test/');
-  assert.match(result.value.url, /QlYx$/);
+  assert.match(result.value.url, /BV1$/);
 });
 
 test('scan login is advertised only when both session and poll methods exist', async () => {

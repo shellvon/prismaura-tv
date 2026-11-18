@@ -117,7 +117,7 @@ function probe(url, headers) {
 
 const context = {
   console: console, setTimeout: setTimeout, clearTimeout: clearTimeout,
-  URL: URL, URLSearchParams: URLSearchParams, TextEncoder: TextEncoder, TextDecoder: TextDecoder, atob: atob,
+  URL: URL, URLSearchParams: URLSearchParams, TextEncoder: TextEncoder, TextDecoder: TextDecoder,
   PrismBridge: {
     request: function (id, spec) { request(id, spec); },
     result: function (id, raw) {

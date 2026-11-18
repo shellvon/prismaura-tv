@@ -31846,6 +31846,30 @@
     he: require_he(),
     cheerio: require_lib11()
   };
+  var BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  var BASE64_VALUES = (() => {
+    const table = new Uint8Array(256);
+    for (let index = 0; index < BASE64.length; index++) table[BASE64.charCodeAt(index)] = index;
+    return table;
+  })();
+  var decodeBase64 = (input) => {
+    const text = String(input == null ? "" : input).replace(/[^A-Za-z0-9+/=]/g, "");
+    const out = new Uint8Array(text.length * 3 >> 2);
+    let size = 0;
+    let buffer = 0;
+    let bits = 0;
+    for (let index = 0; index < text.length; index++) {
+      const code = text.charCodeAt(index);
+      if (code === 61) break;
+      buffer = buffer << 6 | BASE64_VALUES[code];
+      bits += 6;
+      if (bits >= 8) {
+        bits -= 8;
+        out[size++] = buffer >> bits & 255;
+      }
+    }
+    return size === out.length ? out : out.slice(0, size);
+  };
   var networkId = 0;
   var pending = /* @__PURE__ */ new Map();
   axios.defaults.adapter = (config) => new Promise((resolve, reject) => {
@@ -31908,7 +31932,7 @@
       lower[key.toLowerCase()] = String(raw[key]);
     });
     let body = payload.body;
-    if (payload.binary) body = Uint8Array.from(atob(body), (ch) => ch.charCodeAt(0));
+    if (payload.binary) body = decodeBase64(body);
     const asText = () => typeof body === "string" ? body : new TextDecoder().decode(body);
     const response = {
       ok: payload.status >= 200 && payload.status < 300,
@@ -32067,10 +32091,7 @@
         return;
       }
       let body = payload.body;
-      if (payload.binary) {
-        const bytes = atob(body);
-        body = Uint8Array.from(bytes, (c) => c.charCodeAt(0)).buffer;
-      }
+      if (payload.binary) body = decodeBase64(body).buffer;
       const response = {
         data: body,
         status: payload.status,
