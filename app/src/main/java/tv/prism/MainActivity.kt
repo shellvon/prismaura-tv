@@ -117,6 +117,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -519,6 +520,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Parse installed scripts alongside library and preference restoration; the first UI needs both.
+        val appContext = applicationContext
+        val pluginLoad = java.util.concurrent.FutureTask { AppPlugins.get(appContext) }
+        Dispatchers.IO.asExecutor().execute(pluginLoad)
         /* A fresh task launch replays the intro even in a warm process; a config-change
            recreation (saved state present) keeps it quiet. */
         if (savedInstanceState == null) PrismLaunch.played = false
@@ -528,7 +533,6 @@ class MainActivity : ComponentActivity() {
         }
         SourcePlatforms.initialize(this)
         appUpdates = (application as PrismApplication).appUpdates
-        plugins = AppPlugins.get(this)
         library = MusicLibrary(this)
         resumeStore = ResumeStore(this)
         quality = getSharedPreferences("playback", MODE_PRIVATE).getString("quality", "standard") ?: "standard"
@@ -561,6 +565,7 @@ class MainActivity : ComponentActivity() {
             positionMs = saved.position
             resumePending = saved.position
         }
+        plugins = pluginLoad.get()
         setContent { MaterialTheme { Screen() } }
         // Let the first home frame draw before starting services and background maintenance.
         window.decorView.doOnPreDraw { view ->
@@ -2488,24 +2493,18 @@ class MainActivity : ComponentActivity() {
         val pluginSignature = remember(state.plugins) { state.plugins.joinToString("|") {
             "${it.id}:${it.enabled}:${it.source.hashCode()}:${it.metadata}:${it.variables}"
         } }
-        val activePlugins = state.plugins.filter { it.enabled }
+        val activePlugins = remember(state.plugins) { state.plugins.filter { it.enabled } }
         /* 徽标只承诺能兑现的能力：有 mv 字段但没有 getMvSource 的插件不亮 MV。 */
         val mvCapableIds = remember(state.plugins) { state.plugins.filter { it.capabilities.has("mvSource") }.mapTo(HashSet()) { it.id } }
-        val recommendationSource = Discovery.select(activePlugins, recommendationPluginId) { it.recommendations }
-        val chartSource = Discovery.select(activePlugins, chartPluginId) { it.charts }
+        val recommendationSource = remember(activePlugins, recommendationPluginId) {
+            Discovery.select(activePlugins, recommendationPluginId) { it.recommendations }
+        }
+        val chartSource = remember(activePlugins, chartPluginId) {
+            Discovery.select(activePlugins, chartPluginId) { it.charts }
+        }
         val artistSeeds = remember(libraryState, state.plugins) { Discovery.artists(libraryState, state.plugins) }
         val savedArtists = libraryState.subjects.filter { it.kind == "artist" }
         val savedAlbums = libraryState.subjects.filter { it.kind == "album" }
-        val hiddenShelves = homeShelfHidden
-        val frequent = remember(libraryState.listens, page) { libraryState.frequent(System.currentTimeMillis()) }
-        val homeShelves = buildList {
-            if (frequent.isNotEmpty() && "frequent" !in hiddenShelves) add(HomeShelf("frequent", "近四周常听", frequent))
-            if ("favorites" !in hiddenShelves) add(HomeShelf("favorites", "我的收藏", libraryState.favorites))
-            if ("recent" !in hiddenShelves) add(HomeShelf("recent", "最近播放", libraryState.recent))
-            libraryState.playlists.filterNot { it.id in hiddenShelves }.forEach { list ->
-                add(HomeShelf(list.id, list.name, list.songs, MusicPlatform.identify(list.platform)))
-            }
-        }
         var keyword by remember { mutableStateOf("") }
         LaunchedEffect(searchTerm) { if (searchTerm.isNotBlank()) keyword = searchTerm }
         var subscription by remember { mutableStateOf("") }
@@ -3736,16 +3735,26 @@ class MainActivity : ComponentActivity() {
                     if (state.error != null || libraryState.error != null) Text(state.error ?: libraryState.error.orEmpty(), fontSize = 12.sp, color = c.accent, modifier = Modifier.padding(bottom = 8.dp), maxLines = 2)
                     Box(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
                         Box(Modifier.fillMaxSize()) {
-                        /* 首页每一行都是独立的横向行，而几何搜索只看得到视口里的节点：下一行
-                           还在屏幕外时按「下」，它找不到正下方的候选，就横向落到同排最右侧
-                           那张卡片上——方向键看起来"崩了"。所以行与行之间的上下落点在这里
-                           点名：列号相同，下一行更短时取它的最后一列。 */
-                        val visibleShelves = homeShelves.filter { it.songs.isNotEmpty() }
-                        val shelfCards = visibleShelves.map { shelf ->
-                            shelf.songs.take(20).map { detailFocus("home:${shelf.id}:${it.key}") }
-                        }
                         when (page) {
                             "home" -> {
+                                val hiddenShelves = homeShelfHidden
+                                val frequent = remember(libraryState.listens) { libraryState.frequent(System.currentTimeMillis()) }
+                                val homeShelves = remember(libraryState, frequent, hiddenShelves) { buildList {
+                                    if (frequent.isNotEmpty() && "frequent" !in hiddenShelves) add(HomeShelf("frequent", "近四周常听", frequent))
+                                    if ("favorites" !in hiddenShelves) add(HomeShelf("favorites", "我的收藏", libraryState.favorites))
+                                    if ("recent" !in hiddenShelves) add(HomeShelf("recent", "最近播放", libraryState.recent))
+                                    libraryState.playlists.filterNot { it.id in hiddenShelves }.forEach { list ->
+                                        add(HomeShelf(list.id, list.name, list.songs, MusicPlatform.identify(list.platform)))
+                                    }
+                                } }
+                                /* 首页每一行都是独立的横向行，而几何搜索只看得到视口里的节点：下一行
+                                   还在屏幕外时按「下」，它找不到正下方的候选，就横向落到同排最右侧
+                                   那张卡片上——方向键看起来"崩了"。所以行与行之间的上下落点在这里
+                                   点名：列号相同，下一行更短时取它的最后一列。 */
+                                val visibleShelves = homeShelves.filter { it.songs.isNotEmpty() }
+                                val shelfCards = visibleShelves.map { shelf ->
+                                    shelf.songs.take(20).map { detailFocus("home:${shelf.id}:${it.key}") }
+                                }
                                 val focusScope = rememberCoroutineScope()
                                 val rowStates = remember { mutableMapOf<String, LazyListState>() }
                                 fun focusCard(row: Int, column: Int) {
