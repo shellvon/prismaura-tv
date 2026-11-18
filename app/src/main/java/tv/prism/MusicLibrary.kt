@@ -19,7 +19,8 @@ internal fun primaryKeys(root: JSONObject): List<String> {
 }
 
 private fun itemIdentity(data: JSONObject, keys: List<String>, fallback: String): String =
-    if (keys == listOf("id")) data.optString("id").ifBlank { fallback }
+    if (keys == listOf("id") || keys.all { data.isNull(it) || data.optString(it).isBlank() })
+        data.optString("id").takeUnless { data.isNull("id") || it.isBlank() } ?: fallback
     else "composite:" + JSONArray().apply { keys.forEach { put(JSONArray().put(it).put(data.opt(it) ?: JSONObject.NULL)) } }
 
 data class Song(val pluginId: String, val data: JSONObject, val sourceName: String = "", val primaryKey: List<String> = listOf("id")) {
@@ -61,13 +62,22 @@ data class SavedSubject(val pluginId: String, val kind: String, val data: JSONOb
     val key get() = "$pluginId:$kind:${itemIdentity(data, primaryKey, title)}"
     val kindLabel get() = when (kind) { "artist" -> "歌手"; "album" -> "专辑"; else -> "歌单" }
 }
+private const val DAY_MS = 86_400_000L
+data class ListenedTrack(val song: Song, val days: Map<Long, Int>, val lastPlayed: Long)
+
 data class LibraryState(
     val favorites: List<Song> = emptyList(),
     val recent: List<Song> = emptyList(),
     val playlists: List<MusicPlaylist> = emptyList(),
     val subjects: List<SavedSubject> = emptyList(),
     val error: String? = null,
-)
+    val listens: List<ListenedTrack> = emptyList(),
+) {
+    fun frequent(now: Long): List<Song> = listens.map { track ->
+        track to track.days.filterKeys { it in (now / DAY_MS - 27)..(now / DAY_MS) }.values.sum()
+    }.filter { it.second > 0 }.sortedWith(compareByDescending<Pair<ListenedTrack, Int>> { it.second }
+        .thenByDescending { it.first.lastPlayed }).take(20).map { it.first.song }
+}
 
 /** MusicFree's original item JSON must survive storage because plugins may add their own fields. */
 class MusicLibrary(context: Context) {
@@ -83,6 +93,7 @@ class MusicLibrary(context: Context) {
     private fun parse(root: JSONObject): LibraryState {
         val lists = root.optJSONArray("playlists") ?: JSONArray()
         val subjects = root.optJSONArray("subjects") ?: JSONArray()
+        val history = root.optJSONArray("listens") ?: JSONArray()
         return LibraryState(
             songs(root.optJSONArray("favorites")), songs(root.optJSONArray("recent")),
             (0 until lists.length()).map { i ->
@@ -93,15 +104,26 @@ class MusicLibrary(context: Context) {
                 val item = subjects.getJSONObject(i)
                 SavedSubject(item.getString("pluginId"), item.getString("kind"), item.getJSONObject("data"), item.optString("sourceName"), primaryKeys(item))
             },
+            listens = (0 until history.length()).mapNotNull { index ->
+                val entry = history.getJSONObject(index)
+                val days = entry.optJSONObject("days") ?: return@mapNotNull null
+                ListenedTrack(readSong(entry), days.keys().asSequence().associate { it.toLong() to days.getInt(it) },
+                    entry.getLong("lastPlayed"))
+            },
         )
     }
 
     private fun songs(array: JSONArray?): List<Song> = if (array == null) emptyList() else
-        (0 until array.length()).map { index -> array.getJSONObject(index).let { Song(it.getString("pluginId"), it.getJSONObject("data"), it.optString("sourceName"), primaryKeys(it)) } }
+        (0 until array.length()).map { index -> readSong(array.getJSONObject(index)) }
+
+    private fun readSong(it: JSONObject) = Song(it.getString("pluginId"), it.getJSONObject("data"), it.optString("sourceName"), primaryKeys(it))
 
     private fun json(songs: List<Song>) = JSONArray().also { out ->
-        songs.forEach { out.put(JSONObject().put("pluginId", it.pluginId).put("data", it.data).put("sourceName", it.sourceName).put("primaryKey", JSONArray(it.primaryKey))) }
+        songs.forEach { out.put(songJson(it)) }
     }
+
+    private fun songJson(song: Song) = JSONObject().put("pluginId", song.pluginId).put("data", song.data)
+        .put("sourceName", song.sourceName).put("primaryKey", JSONArray(song.primaryKey))
 
     private suspend fun change(transform: (LibraryState) -> LibraryState) = mutex.withLock {
         val old = mutable.value
@@ -114,6 +136,7 @@ class MusicLibrary(context: Context) {
             next.subjects.forEach { out.put(JSONObject().put("pluginId", it.pluginId).put("kind", it.kind).put("data", it.data).put("sourceName", it.sourceName).put("primaryKey", JSONArray(it.primaryKey))) }
         }
         val root = JSONObject().put("favorites", json(next.favorites)).put("recent", json(next.recent)).put("playlists", lists).put("subjects", subjects)
+        root.put("listens", JSONArray(next.listens.map { songJson(it.song).put("days", JSONObject(it.days.mapKeys { day -> day.key.toString() })).put("lastPlayed", it.lastPlayed) }))
         withContext(Dispatchers.IO) {
             val stream = file.startWrite()
             try { stream.write(root.toString().toByteArray(Charsets.UTF_8)); file.finishWrite(stream) }
@@ -154,6 +177,16 @@ class MusicLibrary(context: Context) {
                 definitions[subject.pluginId]?.takeIf { it != subject.primaryKey }?.let { subject.copy(primaryKey = it) } ?: subject
             }.distinctBy { it.key })
     }
+    suspend fun recordListen(song: Song, now: Long) = change { state ->
+        val retained = state.listens.mapNotNull { track ->
+            val days = track.days.filterKeys { it in (now / DAY_MS - 27)..(now / DAY_MS) }
+            if (days.isEmpty()) null else track.copy(days = days)
+        }
+        val previous = retained.firstOrNull { it.song.key == song.key }
+        state.copy(listens = retained.filterNot { it.song.key == song.key } +
+            ListenedTrack(song, previous?.days.orEmpty() + (now / DAY_MS to ((previous?.days?.get(now / DAY_MS) ?: 0) + 1)), now))
+    }
+
     suspend fun record(song: Song) = change { state ->
         state.copy(recent = (listOf(song) + state.recent.filterNot { it.key == song.key }).take(100))
     }

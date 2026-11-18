@@ -520,8 +520,8 @@ internal fun PrismConfirmDialog(
     val cancelFocus = remember { FocusRequester() }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; cancelFocus.requestFocus() }
-        Column(Modifier.width(420.dp).clip(RoundedCornerShape(20.dp)).background(c.panel)
-            .border(1.dp, c.line, RoundedCornerShape(20.dp)).padding(24.dp)) {
+        Column(Modifier.width(420.dp).clip(RoundedCornerShape(24.dp)).background(c.panel)
+            .border(1.dp, c.line, RoundedCornerShape(24.dp)).padding(24.dp)) {
             Text(title, color = c.foreground, fontSize = 20.sp, fontWeight = FontWeight.Medium)
             Text(message, color = c.muted, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
             Row(Modifier.fillMaxWidth().padding(top = 24.dp),

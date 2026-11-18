@@ -12,7 +12,7 @@
 | --- | :---: | --- |
 | CommonJS / default 导出 | ✅ | 接受 module.exports / module.exports.default；platform 必须非空 |
 | search(query, page, type) | ✅ | 歌曲、歌手、专辑、歌单；按 supportedSearchType 提供入口 |
-| getMediaSource(item, quality) | ✅ | 透传有效 headers / userAgent；缺少方法时使用歌曲 url |
+| getMediaSource(item, quality) | ✅ | 支持 QMC2 的顶层 ekey，透传有效 headers / userAgent；缺少方法时使用歌曲 url |
 | getLyric(item) | ✅ | LRC、YRC、QRC 明文与常见 TTML；支持逐字高亮、译文及注音；支持歌曲 rawLrc，缺少方法时读取 lrc URL |
 | getRecommendSheetTags() | ✅ | 可选分类；场景入口仅映射插件实际返回的标签 |
 | getRecommendSheetsByTag(tag, page) | ✅ | 首页和发现页展示；需同时提供 getMusicSheetInfo 才列入推荐选源 |
@@ -26,7 +26,7 @@
 | cacheControl | ✅ | cache / no-cache / no-store，仅缓存解析结果 |
 | getMusicInfo(item) | ➖ | TV 暂不补全单曲详情，必要字段随搜索／歌单结果返回 |
 | getMusicComments(item) | ➖ | TV 暂不提供评论界面 |
-| hints | ✅ | 导入分组展示在导入弹窗与音源信息；其它分组忽略 |
+| hints | ✅ | 导入提示用于导入弹窗和音源信息；音源信息还展示静态搜索说明 |
 | appVersion | ➖ | 不按 MusicFree 版本号限制客户端 |
 | webdav、任意 RN / Node 原生模块 | ❌ | 不在内置模块表中的 require 会报错 |
 | 加密 QRC、QRC XML 容器、KRC | ❌ | 插件需自行解密、提取或转换，返回下文支持的纯文本格式 |
@@ -45,7 +45,7 @@
 | `srcUrl` | string | 更新地址；相对路径按最初安装地址解析，缺省使用安装地址 |
 | `cacheControl` | `'cache' \| 'no-cache' \| 'no-store'` | 缺省／未知值按 no-cache 处理 |
 | `userVariables` | `{ key, title?, name?, hint? }[]` | 展示名称优先 name，其次 title，再次 key；hint 是输入提示 |
-| `hints` | `{ importMusicSheet?: string[], importMusicItem?: string[] }` | 纯文本提示；导入弹窗与音源信息展示导入分组，未声明时不显示 |
+| `hints` | `{ importMusicSheet?: string[], importMusicItem?: string[], search?: string[] }` | 纯文本提示；导入弹窗与音源信息展示导入分组，可选的 search 分组仅在音源信息中展示 |
 
 用户变量通过 `env.getUserVariables()` 读取。配置字段含 password、cookie、token、secret 等敏感键名时界面会遮罩；遮罩不意味着变量已加密，见 [安全说明](../SECURITY.md)。
 
@@ -82,7 +82,7 @@
 | 方法与参数 | 返回值 | 用途 |
 | --- | --- | --- |
 | `search(query: string, page: number, type: SearchType)` | `{ data: Entity[], isEnd?: boolean }` | type 决定实体种类 |
-| `getMediaSource(song: MusicItem, quality: string)` | `{ url, headers?, userAgent? } \| null` | 默认音质参数为 low / standard / high / super |
+| `getMediaSource(song: MusicItem, quality: string)` | `{ url, headers?, userAgent?, ekey?: string } \| null` | 默认音质参数为 low / standard / high / super |
 | `getLyric(song)` | `{ rawLrc?, translation? } \| null` | 返回下文支持的歌词纯文本，含逐字时间戳时自动逐字高亮；翻译按相邻时间戳匹配 |
 | `getRecommendSheetTags()` | `{ pinned?: Tag[], data?: { title, data: Tag[] }[] }` | 分类项至少带 id 与 title |
 | `getRecommendSheetsByTag(tag, page)` | `{ data: SheetItem[], isEnd? }` | tag 是完整原始分类对象 |
@@ -93,6 +93,8 @@
 | `getArtistWorks(item, page, type)` | `{ data, isEnd? }` | type 为 music 或 album；album 本身是标准能力 |
 | `importMusicSheet(urlLike: string)` | `MusicItem[]` 或 `{ musicList, title?, artwork?, worksNum? }` | 两种写法都接受；歌单名优先用插件给的 title |
 | `importMusicItem(urlLike: string)` | MusicItem | 导入单曲 |
+
+Prism 扩展：QMC2 音频的密钥通过顶层字符串 `ekey` 返回，与 `url` 同级。请求头和密钥按歌曲传递。非空字符串 `cek` 表示 CENC，当前播放器会提示此加密方式不受支持。普通音频可省略密钥字段。
 
 链接导入先尝试匹配平台的启用插件，再尝试其它有导入能力的插件；同一插件先尝试歌单接口，再尝试单曲接口。第一个返回歌曲的结果胜出，单曲也保存为本机歌单。每次最多保存 5000 首；短链、编号或私有链接能否解析由插件负责。导入不写回平台账号。
 
@@ -143,7 +145,6 @@ TTML 文本同样放入 `rawLrc`，支持 `<p>` 行、`<span>` 词时间、`begi
 | qs | 6.17.1 | 查询／表单序列化 |
 | he | 1.2.0 | HTML 实体处理 |
 | cheerio | 1.0.0-rc.12 | HTML 解析 |
-| buffer | 6.0.3 | Buffer；同时注入全局 Buffer |
 
 **Cookie 兼容适配单独说明：** 没有打包 React Native 或完整的 `@react-native-cookies/cookies` 包。为兼容使用该模块名的插件，宿主提供同名的有限桥接适配；这不代表支持其它 RN 模块。
 
@@ -153,6 +154,7 @@ TTML 文本同样放入 `rawLrc`，支持 `<p>` 行、`<span>` 词时间、`begi
 
 axios 和 fetch 共享原生桥，支持 GET / HEAD / POST / PUT / PATCH / DELETE。不会使用 WebView 的直接跨源网络请求。
 
+- 二进制数据可使用 ArrayBuffer、Uint8Array 或 DataView。运行环境不提供 Node.js Buffer。
 - axios 支持常用配置、请求头、状态校验与 arraybuffer；最终重定向地址可从 `response.request.res.responseUrl` 获取。
 - fetch 接受 URL 和 method／headers／body／signal 等常用参数；返回 `ok/status/statusText/url`、headers 的 get/has/forEach，以及 text/json/arrayBuffer/clone。4xx/5xx 正常 resolve；二进制经桥按字节返回。
 - fetch 不提供完整 Request/Response 流、FormData/Blob 上传和运行中的 AbortSignal 取消；只在开始前检查 aborted。其它浏览器 API 不能据此假定存在。

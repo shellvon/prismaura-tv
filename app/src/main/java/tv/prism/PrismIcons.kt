@@ -191,7 +191,7 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
             /* 音质不是信号强度：递增的柱子只会被读成 Wi-Fi 信号格。改成推子——三根暗轨各挂
                一个滑块，滑块高低错开，读作「在调声音的那一档」。轨道压到 w*.55 且不做端点，
                滑块才占主导，整块形状是横竖交织的，不会退化成柱状图。 */
-            "fader" -> {
+            "settings", "fader" -> {
                 val knobs = listOf(.60f, .30f, .47f)
                 listOf(.24f, .50f, .76f).forEachIndexed { i, x ->
                     drawLine(color.copy(alpha = .34f), p(x, .13f), p(x, .87f), w * .55f, StrokeCap.Round)
@@ -267,7 +267,11 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
                 drawLine(color, p(.72f, .28f), p(.28f, .72f), w, StrokeCap.Round)
             }
             /* One stroke, no frame: the selection control already draws the box around it. */
-            "check" -> drawPath(path {
+            "disabled" -> {
+                drawCircle(color, s * .35f, style = Stroke(w))
+                drawLine(color, p(.34f, .5f), p(.66f, .5f), w, StrokeCap.Round)
+            }
+            "enabled", "check" -> drawPath(path {
                 moveTo(s * .26f, s * .53f); lineTo(s * .43f, s * .71f); lineTo(s * .75f, s * .29f)
             }, color, style = Stroke(w, cap = StrokeCap.Round, join = StrokeJoin.Round))
             /* Four corner brackets: "give this the whole screen". */

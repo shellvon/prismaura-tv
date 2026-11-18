@@ -96,8 +96,11 @@ internal fun PrismActionMenu(
         val changed = previousCount != actions.size
         previousCount = actions.size
         if (!closing && focusedRow >= 0 && (changed || focusedRow !in enabledRows)) {
-            withFrameNanos { }
-            if (!closing) (first?.let { rowFocus[it] } ?: closeFocus).requestFocus()
+            /* 条目数量变了，rowFocus 就是新建的一批 FocusRequester，要等这一帧的重组+布局
+               把它们挂上去。withFrameNanos 的回调跑在重组之前，只等一帧会拿到未初始化的
+               requester（IllegalStateException），所以等两帧。 */
+            repeat(2) { withFrameNanos { } }
+            if (!closing) (first?.let { rowFocus.getOrNull(it) } ?: closeFocus).requestFocus()
         }
     }
     // Actions own their state transition: close, navigate, or replace this menu with a confirmation.

@@ -434,6 +434,7 @@ fun PrismQueueRow(song: Song, index: Int, current: Boolean, modifier: Modifier =
     Row(modifier.fillMaxWidth().height(52.dp).onFocusChanged { focused = it.isFocused }
         .clip(RoundedCornerShape(8.dp)).background(c.accent.copy(alpha = emphasis * .12f))
         .drawBehind { if (emphasis > 0f) drawRect(c.accent.copy(alpha = emphasis), size = Size(2.dp.toPx(), size.height)) }
+        .border(2.dp, if (focused) c.accent else Color.Transparent, RoundedCornerShape(8.dp))
         .tvClickable(onClick, onLongPress).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         if (current) Box(Modifier.width(28.dp)) { NowPlayingBars(c.accent) }
         else Text("%02d".format(index + 1), Modifier.width(28.dp), color = if (focused) c.accent else c.muted, fontSize = 12.sp)
@@ -569,7 +570,7 @@ fun PrismTrackHeader(modifier: Modifier = Modifier, managing: Boolean = false) {
 @Composable
 fun PrismTrackRow(song: Song, index: Int, onClick: () -> Unit, modifier: Modifier = Modifier, current: Boolean = false,
                   qualityTag: String? = null, showMv: Boolean = true, onFocus: () -> Unit = {}, onLongPress: (() -> Unit)? = null,
-                  selected: Boolean? = null) {
+                  selected: Boolean? = null, showAlbum: Boolean = true) {
     val c = LocalPrismColors.current
     var focused by remember { mutableStateOf(false) }
     val emphasis by animateFloatAsState(if (focused) 1f else if (current) .45f else 0f, tween(if (LocalAuraMotion.current) 170 else 0), label = "row light")
@@ -589,7 +590,10 @@ fun PrismTrackRow(song: Song, index: Int, onClick: () -> Unit, modifier: Modifie
         if (selected != null) Box(Modifier.width(ColIndex)) { PrismCheckmark(selected, Modifier.align(Alignment.CenterStart)) }
         else if (current) Box(Modifier.width(ColIndex)) { NowPlayingBars(c.accent) }
         else Text("%02d".format(index + 1), Modifier.width(ColIndex), color = if (emphasis > 0f) c.accent else c.muted, fontSize = 11.sp)
-        CoverArt(song, Modifier.size(ColCover), 8.dp)
+        CoverArt(song, Modifier.size(ColCover).graphicsLayer {
+            val scale = 1f + .07f * emphasis
+            scaleX = scale; scaleY = scale
+        }, 8.dp)
         Spacer(Modifier.width(ColGap))
         Column(Modifier.weight(1.5f).padding(end = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -599,7 +603,7 @@ fun PrismTrackRow(song: Song, index: Int, onClick: () -> Unit, modifier: Modifie
             }
             Text(song.artist.ifBlank { "未知" }, color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Text(song.album.ifBlank { "—" }, Modifier.weight(1f), color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (showAlbum) Text(song.album.ifBlank { "—" }, Modifier.weight(1f), color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Box(Modifier.width(ColSource), contentAlignment = Alignment.CenterStart) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 PlatformIcon(song.platform, Modifier.size(18.dp))
