@@ -7,11 +7,11 @@
 | 工具 | 当前项目使用 |
 | --- | --- |
 | JDK | 17 |
-| Gradle Wrapper | 8.9 |
-| Android Gradle Plugin | 8.5.2 |
-| Kotlin | 1.9.24 |
-| Android SDK | compile / target 34，最低 23 |
-| Compose 编译器 | 1.5.14 |
+| Gradle Wrapper | 9.3.1 |
+| Android Gradle Plugin | 9.1.1 |
+| Kotlin | 2.2.10 |
+| Android SDK | compile 37，target 34，最低 23 |
+| Compose 编译器 | Kotlin Compose 插件 2.2.10 |
 | Node.js | 推荐 22+；用于运行时打包和测试 |
 
 通过 `ANDROID_HOME` 或本机 `local.properties` 配置 SDK。不要提交本机 SDK 路径、签名文件、凭据、依赖目录或构建产物。
@@ -31,6 +31,21 @@ adb -s <设备序列号> install -r app/build/outputs/apk/debug/app-debug.apk
 adb -s <设备序列号> shell am start -n tv.prism/.MainActivity
 ```
 
+## 手机 H5 联调
+
+手机遥控和扫码代填由电视 APK 内置提供。在电视打开对应二维码后，用同一局域网内的手机扫码。页面资源随 APK 更新，网站目录 `site/` 是项目展示页。
+
+本机浏览器调试 debug 包时，可将设备的固定端口转发到电脑：
+
+```sh
+adb -s <设备序列号> forward tcp:8765 tcp:8765
+adb -s <设备序列号> forward tcp:8766 tcp:8766
+```
+
+8765 是手机遥控，8766 是扫码代填。浏览器访问时，将二维码 URL 的主机换成 `127.0.0.1`，保留端口、会话路径和片段。Release 包的端口由系统分配，使用实际二维码地址。
+
+变更手机页面或遥控协议时，用准备发布的 APK 复查扫码打开、搜索点歌、播放控制和一次输入回填。若有反馈链接变更，也检查能否打开对应的邮件应用和 GitHub 页面。
+
 ## 修改插件运行时
 
 源码位于 `tools/plugin-runtime/runtime.js`，Android 加载 `app/src/main/assets/plugin-runtime.js`。修改源码或依赖后执行：
@@ -44,8 +59,6 @@ npm test --prefix tools/plugin-runtime
 提交源码、lockfile、生成的 bundle 与 `THIRD_PARTY_NOTICES.txt`。不要手改 bundle，也不要只测试未重建的旧产物。当前打包目标是 Chrome 66；第三方插件在设备上直接执行，其语法要求由插件作者负责。
 
 ## 验证
-
-真机性能验收使用与已安装应用同签名的 release 包；debug 包不作为启动速度基准。Android 9–11 侧载测试时，按 [Android 官方流程](https://developer.android.com/topic/performance/baselineprofiles/manually-create-measure) 安装对应的 Dex Metadata，确认预编译状态后测量冷启动；只把旧任务切回前台的 `0 ms` 不算冷启动。
 
 Node 测试加载真实 bundle，模拟桥接响应，覆盖模块、元数据、标准方法、原始字段、扫码方法及网络 API。Android 集成测试经过真实 WebView、Binder、网络桥和播放器，使用 MockWebServer 与程序生成的音频：
 
@@ -111,7 +124,7 @@ apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
 
 Release 正文自动取自 Unreleased，客户端用 GitHub 返回的 body 显示更新说明，html_url 是 GitHub 自动生成的发布页。无需每次手动创建 Release。标签与源码版本不一致、密钥缺失或产物可调试时发布会失败。已发布版本不要覆盖附件；失败留下的草稿需维护者处理后再重试。
 
-附件为 `PrismAura.apk` 和 `latest.json`。工作流仅由版本标签触发，未配置密钥或未推送标签时不会发布。
+附件为 `PrismAura.apk`、`latest.json` 和同次构建的 `mapping.txt.gz`。工作流仅由版本标签触发，未配置密钥或未推送标签时不会发布。
 
 ## 更新与网络回退
 

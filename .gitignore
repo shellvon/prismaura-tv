@@ -1,5 +1,6 @@
 # Android / IDE / generated local state
 .gradle/
+.kotlin/
 **/build/
 local.properties
 .idea/

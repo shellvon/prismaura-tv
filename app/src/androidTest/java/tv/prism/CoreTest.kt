@@ -1,5 +1,37 @@
 package tv.prism
 
+import tv.prism.sources.Plugin
+
+import tv.prism.catalog.matchesSearchHistory
+
+import tv.prism.updates.AppUpdates
+import tv.prism.catalog.Discovery
+import tv.prism.library.LibraryState
+import tv.prism.lyrics.LyricWord
+import tv.prism.lyrics.Lyrics
+import tv.prism.library.MusicLibrary
+import tv.prism.sources.MusicPlatform
+import tv.prism.remote.PhoneInput
+import tv.prism.playback.PlaybackService
+import tv.prism.sources.PluginClient
+import tv.prism.sources.PluginCookies
+import tv.prism.sources.Plugins
+import tv.prism.playback.ResumeStore
+import tv.prism.library.SavedSubject
+import tv.prism.catalog.SearchResultsPage
+import tv.prism.catalog.SearchSession
+import tv.prism.catalog.SearchSuggestions
+import tv.prism.catalog.SearchUpdate
+import tv.prism.ui.SearchViewModel
+import tv.prism.library.Song
+import tv.prism.sources.SourcePlatforms
+import tv.prism.playback.audioMediaItem
+import tv.prism.updates.compareVersions
+import tv.prism.ui.playback.lyricWordProgress
+import tv.prism.playback.qualityAttempts
+import tv.prism.playback.qualityOptions
+import tv.prism.playback.videoSource
+
 import android.content.ComponentName
 import android.content.Context
 import android.content.ContextWrapper
@@ -126,8 +158,12 @@ class CoreTest {
                 throw AssertionError("Expected $description; focused=$focus; visible=${visible.mapNotNull { it.text }.take(40)}", e)
             }
         }
+        fun hasLabel(node: android.view.accessibility.AccessibilityNodeInfo, label: String): Boolean {
+            val labels = nodes(node).mapNotNull { (it.text ?: it.contentDescription)?.toString() }
+            return label in labels || labels.joinToString(" ") == label
+        }
         suspend fun focused(label: String) = awaitNode("focus on $label") { node ->
-            node.isFocused && nodes(node).any { it.text?.toString() == label || it.contentDescription?.toString() == label }
+            node.isFocused && hasLabel(node, label)
         }
         suspend fun key(code: Int, label: String) {
             instrumentation.sendKeyDownUpSync(code)
@@ -139,16 +175,13 @@ class CoreTest {
                 state.value = original.copy(subjects = (0 until 14).map { index ->
                     SavedSubject("fixture", "album", JSONObject().put("id", index).put("title", "验证专辑 $index"))
                 })
-                MainActivity::class.java.getDeclaredMethod("setPage", String::class.java).apply { isAccessible = true }.invoke(activity, "library")
+                (activity as MainActivity).page = "library"
             }
-            val tab = awaitNode("album tab") { node -> node.isFocusable && nodes(node).any { it.text?.toString() == "专辑 14" } }
+            val tab = awaitNode("album tab") { node -> node.isFocusable && hasLabel(node, "专辑 14") }
             assertTrue(tab.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_FOCUS))
             focused("专辑 14")
-            key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "管理")
-            key(android.view.KeyEvent.KEYCODE_DPAD_UP, "专辑 14")
-            key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "管理")
             key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "验证专辑 0")
-            key(android.view.KeyEvent.KEYCODE_DPAD_UP, "管理")
+            key(android.view.KeyEvent.KEYCODE_DPAD_UP, "专辑 14")
             key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "验证专辑 0")
             for (i in 1..5) key(android.view.KeyEvent.KEYCODE_DPAD_RIGHT, "验证专辑 $i")
             key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "验证专辑 11")
@@ -159,17 +192,21 @@ class CoreTest {
             } }
             key(android.view.KeyEvent.KEYCODE_DPAD_UP, "验证专辑 13")
             key(android.view.KeyEvent.KEYCODE_DPAD_UP, "验证专辑 7")
+            // Enter the page first, then deliver the results while the search field owns focus.
             instrumentation.runOnMainSync {
-                fun set(name: String, type: Class<*>, value: Any) {
-                    MainActivity::class.java.getDeclaredMethod(name, type).apply { isAccessible = true }.invoke(activity, value)
-                }
-                set("setSearchTerm", String::class.java, "验证歌曲")
-                set("setResults", List::class.java, (0 until 15).map {
+                (activity as MainActivity).page = "search"
+            }
+            val searchField = awaitNode("search input") { it.className == "android.widget.EditText" }
+            assertTrue(searchField.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_FOCUS))
+            awaitNode("focus on search input") { it.className == "android.widget.EditText" && it.isFocused }
+            instrumentation.runOnMainSync {
+                val search = androidx.lifecycle.ViewModelProvider.create(activity as MainActivity)[SearchViewModel::class]
+                search.setTerm("验证歌曲")
+                search.setPage(SearchResultsPage(songs = (0 until 15).map {
                     Song("fixture", JSONObject().put("id", it).put("title", "验证歌曲 $it"))
-                })
-                set("setHasMore", Boolean::class.javaPrimitiveType!!, false)
-                set("setFocusSearchResults", Boolean::class.javaPrimitiveType!!, true)
-                set("setPage", String::class.java, "search")
+                }))
+                MainActivity::class.java.getDeclaredMethod("setFocusSearchResults", Boolean::class.javaPrimitiveType!!)
+                    .apply { isAccessible = true }.invoke(activity, true)
             }
             focused("验证歌曲 0")
             for (i in 1..14) key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "验证歌曲 $i")
@@ -179,8 +216,8 @@ class CoreTest {
             } }
             key(android.view.KeyEvent.KEYCODE_DPAD_UP, "验证歌曲 14")
             instrumentation.runOnMainSync {
-                MainActivity::class.java.getDeclaredMethod("setHasMore", Boolean::class.javaPrimitiveType!!)
-                    .apply { isAccessible = true }.invoke(activity, true)
+                val search = androidx.lifecycle.ViewModelProvider.create(activity as MainActivity)[SearchViewModel::class]
+                search.setPage(SearchResultsPage(search.state.value.songs, nextPages = mapOf("fixture" to 2)))
             }
             delay(100) // Let Compose apply the injected pagination state before the next key.
             key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "加载更多")
@@ -281,6 +318,70 @@ class CoreTest {
                 assertEquals(400, it.code)
             }
         } finally { phone.close() }
+    }
+
+    @Test fun phoneHubCommandsUpdateLiveTvStateAndRejectStaleResults() = runBlocking {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val activity = instrumentation.startActivitySync(
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+        try {
+            val button = withTimeout(10_000) {
+                fun findRemote(node: android.view.accessibility.AccessibilityNodeInfo?): android.view.accessibility.AccessibilityNodeInfo? {
+                    if (node == null) return null
+                    if (node.text?.toString() == "手机遥控") return if (node.isClickable) node else node.parent
+                    for (i in 0 until node.childCount) findRemote(node.getChild(i))?.let { return it }
+                    return null
+                }
+                var node = findRemote(instrumentation.uiAutomation.rootInActiveWindow)
+                while (node == null) {
+                    delay(50)
+                    node = findRemote(instrumentation.uiAutomation.rootInActiveWindow)
+                }
+                node
+            }
+            assertTrue(button.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK))
+            var remote: PhoneInput? = null
+            withTimeout(5_000) {
+                while (remote == null) {
+                    instrumentation.runOnMainSync { remote = (activity as MainActivity).phoneSessions.remoteSession }
+                    if (remote == null) delay(50)
+                }
+            }
+            val url = requireNotNull(remote).url
+            val client = OkHttpClient()
+            fun state(): JSONObject = client.newCall(Request.Builder().url("$url/state").build()).execute().use {
+                assertEquals(200, it.code)
+                JSONObject(it.body!!.string())
+            }
+            fun command(type: String, value: String): JSONObject {
+                val body = JSONObject().put("type", type).put("value", value).toString()
+                return client.newCall(Request.Builder().url("$url/action")
+                    .post(body.toRequestBody("application/json".toMediaType())).build()).execute().use {
+                    assertEquals(200, it.code)
+                    JSONObject(it.body!!.string())
+                }
+            }
+            val before = state()
+            assertTrue(before.has("sources"))
+            assertTrue(before.has("queueSongs"))
+            assertTrue(before.has("tasks"))
+            assertTrue(command("page", "search").getBoolean("ok"))
+            assertEquals("search", state().getString("page"))
+            assertTrue(command("player", "").getBoolean("ok"))
+            assertTrue(state().getBoolean("playerOpen"))
+            assertTrue(command("closePlayer", "").getBoolean("ok"))
+            assertFalse(state().getBoolean("playerOpen"))
+            val stale = JSONObject()
+                .put("generation", before.getInt("searchGeneration") - 1)
+                .put("key", "missing")
+            assertEquals("搜索结果已更新，请重新选择",
+                command("playSearchResult", stale.toString()).getString("error"))
+            assertEquals("音源不存在", command("sourceToggle", "missing").getString("error"))
+            assertEquals("未知操作", command("unknown", "").getString("error"))
+        } finally {
+            instrumentation.runOnMainSync { activity.finish() }
+        }
     }
 
     @Test fun cookiesPersistAndAreIsolatedByPlugin() = runBlocking {
@@ -748,6 +849,43 @@ class CoreTest {
         assertFalse(restored.data.has("artwork"))
     }
 
+    @Test fun searchSessionPaginatesDeduplicatesAndReusesNavigationCache() = runBlocking(Dispatchers.Main) {
+        val plugin = Plugin(
+            "fixture", "", """
+                module.exports = { platform: "Search Fixture", version: "1", search(q, page) {
+                    const first = { id: 1, title: q };
+                    return { data: page === 1 ? [first] : [first, { id: 2, title: "More" }], isEnd: page > 1 };
+                }};
+            """.trimIndent(), JSONObject(), JSONObject(),
+        )
+        val preferences = context.getSharedPreferences("search-fixture-${UUID.randomUUID()}", Context.MODE_PRIVATE)
+        var page = SearchResultsPage()
+        var notice = ""
+        var finished = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val session = SearchSession(this, PluginClient(context), preferences) { update ->
+            when (update) {
+                is SearchUpdate.Page -> page = update.value
+                is SearchUpdate.Notice -> notice = update.value
+                is SearchUpdate.Running -> if (!update.value) finished.complete(Unit)
+                else -> Unit
+            }
+        }
+        suspend fun search(append: Boolean = false, navigating: Boolean = false) {
+            finished = kotlinx.coroutines.CompletableDeferred()
+            session.search("Fixture", "music", listOf(plugin), append, navigating, false, page) {}
+            withTimeout(20_000) { finished.await() }
+        }
+        search()
+        assertEquals(notice, listOf("Fixture"), page.songs.map { it.title })
+        assertEquals(mapOf("fixture" to 2), page.nextPages)
+        search(append = true)
+        assertEquals(listOf("Fixture", "More"), page.songs.map { it.title })
+        assertTrue(page.nextPages.isEmpty())
+        search(navigating = true)
+        assertEquals(listOf("Fixture", "More"), page.songs.map { it.title })
+        assertFalse(session.isRunning)
+    }
+
     @Test fun pluginSearchAndSubscriptionRollback() = runBlocking {
         val server = MockWebServer(); server.start()
         try {
@@ -799,6 +937,40 @@ class CoreTest {
             assertTrue(repository.syncAll().failed)
             assertEquals("2", repository.state.value.plugins.single().metadata.getString("version"))
         } finally { server.shutdown() }
+    }
+
+    // Fixture: two seconds of synthetic 440 Hz AAC, packaged as fragmented MP4 with
+    // Shaka Packager v3.4.2, --protection_systems CommonSystem and --clear_lead 0.
+    @Test fun playsSingleKeyCencAudioThroughController() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val tone = instrumentation.context.assets.open("cenc-tone.mp4").use { it.readBytes() }
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setHeader("Content-Type", "audio/mp4").setBody(Buffer().write(tone)))
+        server.start()
+        lateinit var future: ListenableFuture<MediaController>
+        instrumentation.runOnMainSync {
+            future = MediaController.Builder(context, SessionToken(context, ComponentName(context, PlaybackService::class.java))).buildAsync()
+        }
+        try {
+            val player = future.get(15, TimeUnit.SECONDS)
+            val ended = CountDownLatch(1)
+            val source = JSONObject().put("url", server.url("/tone.mp4").toString())
+                .put("cek", "ffeeddccbbaa99887766554433221100")
+            instrumentation.runOnMainSync {
+                player.addListener(object : Player.Listener {
+                    override fun onPlaybackStateChanged(state: Int) {
+                        if (state == Player.STATE_ENDED) ended.countDown()
+                    }
+                })
+                player.setMediaItem(audioMediaItem(Song("test", JSONObject().put("title", "Test tone")), source))
+                player.prepare()
+                player.play()
+            }
+            assertTrue("CENC test tone did not finish", ended.await(15, TimeUnit.SECONDS))
+        } finally {
+            instrumentation.runOnMainSync { MediaController.releaseFuture(future) }
+            server.shutdown()
+        }
     }
 
     @Test fun playerAcceptsAudioAndForwardsPluginHeaders() {

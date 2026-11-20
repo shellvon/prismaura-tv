@@ -14,8 +14,16 @@ export interface Entity {
   title?: string;
   /** 歌手等实体的名称，作为 title 的回退。 */
   name?: string;
-  /** 封面或头像 URL；缺失时显示占位图。 */
+  /** 封面 URL；缺失时显示占位图。 */
   artwork?: string;
+  /** 歌手头像 URL。 */
+  avatar?: string;
+  /** 粉丝数；缺失或为 0 时不展示。 */
+  fans?: number;
+  /** 作品数；缺失或为 0 时不展示。 */
+  worksNum?: number;
+  /** 专辑发行日期。 */
+  date?: string;
   /** 表演者或歌手的显示名称。 */
   artist?: string;
   /** 详情页简介。 */

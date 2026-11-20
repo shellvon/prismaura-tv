@@ -1,5 +1,17 @@
 package tv.prism
 
+import tv.prism.sources.Plugin
+
+import tv.prism.library.LibraryBackup
+import tv.prism.library.MusicLibrary
+import tv.prism.sources.PluginClient
+import tv.prism.sources.Plugins
+import tv.prism.playback.ResumeStore
+import tv.prism.library.Song
+import tv.prism.playback.SourceRecovery
+import tv.prism.playback.recoveryQualities
+import tv.prism.playback.sameRecording
+
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent

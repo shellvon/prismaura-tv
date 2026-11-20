@@ -21,8 +21,8 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
-        <service android:name=".PluginService" android:process=":plugins" android:exported="false" />
-        <service android:name=".PlaybackService" android:process=":player" android:exported="false" android:foregroundServiceType="mediaPlayback">
+        <service android:name=".sources.PluginService" android:process=":plugins" android:exported="false" />
+        <service android:name=".playback.PlaybackService" android:process=":player" android:exported="false" android:foregroundServiceType="mediaPlayback">
             <intent-filter><action android:name="androidx.media3.session.MediaSessionService" /></intent-filter>
         </service>
     </application>

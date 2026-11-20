@@ -12,7 +12,7 @@
 | --- | :---: | --- |
 | CommonJS / default 导出 | ✅ | 接受 module.exports / module.exports.default；platform 必须非空 |
 | search(query, page, type) | ✅ | 歌曲、歌手、专辑、歌单；按 supportedSearchType 提供入口 |
-| getMediaSource(item, quality) | ✅ | 支持 QMC2 的顶层 ekey，透传有效 headers / userAgent；缺少方法时使用歌曲 url |
+| getMediaSource(item, quality) | ✅ | 支持顶层 QMC2 ekey 和 CENC cek，透传有效 headers / userAgent；缺少方法时使用歌曲 url |
 | getLyric(item) | ✅ | LRC、YRC、QRC 明文与常见 TTML；支持逐字高亮、译文及注音；支持歌曲 rawLrc，缺少方法时读取 lrc URL |
 | getRecommendSheetTags() | ✅ | 可选分类；场景入口仅映射插件实际返回的标签 |
 | getRecommendSheetsByTag(tag, page) | ✅ | 首页和发现页展示；需同时提供 getMusicSheetInfo 才列入推荐选源 |
@@ -53,7 +53,7 @@
 
 ### 实体与标识
 
-歌曲使用 `id`、`title`、`artist`、`album`、`artwork`、`duration`（**秒**）、`url?`、`rawLrc?`、`lrc?`。封面兼容 `coverImg` 回退。歌手、专辑和歌单使用相应的 id、title/name、artwork、description 等字段。
+歌曲使用 `id`、`title`、`artist`、`album`、`artwork`、`duration`（**秒**）、`url?`、`rawLrc?`、`lrc?`。封面兼容 `coverImg` 回退。歌手使用 `id`、`name`、`avatar`、`description`、`fans?`、`worksNum?`；专辑使用 `id`、`title`、`artist`、`artwork`、`date`、`worksNum`、`description`；歌单使用 `id`、`title`、`artwork`、`description`、`worksNum`。缺失字段不展示，不伪造。
 
 默认标识为“本机插件 ID + id”。复合主键按声明顺序将字段名和值编码为标识，不使用无分隔符的字符串拼接。例如 `['id', 'cid']` 会让相同 id、不同 cid 的歌曲分别收藏。已有曲库保留原始 JSON，重新识别插件后会对已有记录应用声明；已经合并丢失的数据无法凭空恢复。
 
@@ -94,7 +94,7 @@
 | `importMusicSheet(urlLike: string)` | `MusicItem[]` 或 `{ musicList, title?, artwork?, worksNum? }` | 两种写法都接受；歌单名优先用插件给的 title |
 | `importMusicItem(urlLike: string)` | MusicItem | 导入单曲 |
 
-Prism 扩展：QMC2 音频的密钥通过顶层字符串 `ekey` 返回，与 `url` 同级。请求头和密钥按歌曲传递。非空字符串 `cek` 表示 CENC，当前播放器会提示此加密方式不受支持。普通音频可省略密钥字段。
+Prism 扩展：QMC2 音频的密钥通过顶层字符串 `ekey` 返回，与 `url` 同级。请求头和密钥按歌曲传递。单密钥 CENC（ClearKey）音频通过顶层字符串 `cek` 提供 16 字节内容密钥，接受 32 位十六进制、Base64 或 Base64URL。与 `ekey` 互斥。可返回带 Common System PSSH 的分片 MP4 音频，或带 ClearKey 兼容初始化数据和 KID 的 DASH MPD 地址（.mpd）。播放器按该曲目的本地密钥响应设备的 ClearKey 请求。普通音频可省略密钥字段。
 
 链接导入先尝试匹配平台的启用插件，再尝试其它有导入能力的插件；同一插件先尝试歌单接口，再尝试单曲接口。第一个返回歌曲的结果胜出，单曲也保存为本机歌单。每次最多保存 5000 首；短链、编号或私有链接能否解析由插件负责。导入不写回平台账号。
 

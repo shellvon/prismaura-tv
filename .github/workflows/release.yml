@@ -33,7 +33,7 @@ jobs:
         run: |
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
       - name: Install Android SDK components
-        run: $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
+        run: $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0'
       - name: Restore existing app signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.PRISM_KEYSTORE_BASE64 }}
@@ -53,18 +53,20 @@ jobs:
             -PupdateMirrorBase="$UPDATE_MIRROR_BASE"
       - name: Verify APK
         run: |
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify app/build/outputs/apk/release/app-release.apk
-          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging app/build/outputs/apk/release/app-release.apk > "$RUNNER_TEMP/prism-badging.txt"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging app/build/outputs/apk/release/app-release.apk > "$RUNNER_TEMP/prism-badging.txt"
           if grep -q '^application-debuggable' "$RUNNER_TEMP/prism-badging.txt"; then
             echo 'Refusing to publish a debuggable APK'
             exit 1
           fi
+      - name: Compress release mapping
+        run: gzip -c app/build/outputs/mapping/release/mapping.txt > app/build/release-assets/mapping.txt.gz
       - name: Publish release
         run: |
           gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
             --title "PrismAura $RELEASE_TAG" --notes-file app/build/release-assets/notes.md
           gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            app/build/release-assets/PrismAura.apk app/build/release-assets/latest.json
+            app/build/release-assets/PrismAura.apk app/build/release-assets/latest.json app/build/release-assets/mapping.txt.gz
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
       - name: Remove signing key
         if: always()
