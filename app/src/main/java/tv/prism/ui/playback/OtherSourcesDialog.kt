@@ -40,30 +40,34 @@ internal fun OtherSourcesDialog(
     onPlay: (Song) -> Unit,
 ) {
     val closeFocus = remember { FocusRequester() }
-    var candidates by remember { mutableStateOf(emptyList<AlternateSong>()) }
-    var complete by remember { mutableIntStateOf(0) }
-    var failed by remember { mutableIntStateOf(0) }
-    var loading by remember { mutableStateOf(true) }
+    var candidates by remember(original.key, sources) { mutableStateOf(emptyList<AlternateSong>()) }
+    var complete by remember(original.key, sources) { mutableIntStateOf(0) }
+    var failed by remember(original.key, sources) { mutableIntStateOf(0) }
+    var loading by remember(original.key, sources) { mutableStateOf(true) }
 
     LaunchedEffect(original.key, sources) {
-        val collected = mutableListOf<AlternateSong>()
+        val collected = linkedMapOf<String, AlternateSong>()
         withTimeoutOrNull(15_000) {
             findAlternateSongs(original, sources, plugins) { result ->
-                if (result == null) failed++ else collected.addAll(result)
+                if (result == null) {
+                    failed++
+                } else {
+                    result.forEach { collected.getOrPut(it.song.key) { it } }
+                    candidates = collected.values.toList()
+                }
                 complete++
             }
         }
-        candidates = collected.distinctBy { it.song.key }
         failed += sources.size - complete
         loading = false
     }
 
     val c = LocalPrismColors.current
     val (matched, uncertain) = candidates.partition { it.matchesRecording }
-    val showGroups = matched.isNotEmpty() && uncertain.isNotEmpty()
     PrismContentDialog("其他音源", "${original.title} · ${original.artist}", onDismiss,
         initialFocus = closeFocus, closeFocus = closeFocus) {
         val status = when {
+            loading && candidates.isNotEmpty() -> "可立即播放 · 仍在查找 $complete/${sources.size}"
             loading -> "正在查找音源 $complete/${sources.size}"
             failed > 0 -> "$failed 个音源未返回结果"
             matched.isEmpty() && uncertain.isNotEmpty() -> "相似版本 · 确定键试听"
@@ -76,8 +80,8 @@ internal fun OtherSourcesDialog(
         Box(Modifier.fillMaxWidth().height(226.dp), contentAlignment = Alignment.TopStart) {
             when {
                 candidates.isNotEmpty() -> LazyColumn(Modifier.matchParentSize()) {
-                    alternateSourceGroup(matched, "相同版本".takeIf { showGroups }, 0, closeFocus, favoriteKeys, onPlay)
-                    alternateSourceGroup(uncertain, "相似版本".takeIf { showGroups }, matched.size, closeFocus, favoriteKeys, onPlay)
+                    alternateSourceGroup(matched, "相同版本".takeIf { matched.isNotEmpty() }, 0, closeFocus, favoriteKeys, onPlay)
+                    alternateSourceGroup(uncertain, "相似版本".takeIf { uncertain.isNotEmpty() }, matched.size, closeFocus, favoriteKeys, onPlay)
                 }
                 loading -> PrismLoadingSkeleton("正在查找其他音源")
                 else -> Text(if (failed == sources.size) "暂时无法查询其他音源" else "没有找到同名同歌手的歌曲",

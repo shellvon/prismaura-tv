@@ -905,6 +905,21 @@ class MainActivity : ComponentActivity() {
         playAt(ActiveQueue.placeForImmediatePlayback(song))
     }
 
+    internal fun playAlternateSource(song: Song) {
+        if (controller == null) {
+            reportPlayback("播放器未连接")
+            return
+        }
+        radioAdvanceJob?.cancel()
+        if (queue.isEmpty()) {
+            playQueue(listOf(song), radio = ActiveQueue.radio)
+            return
+        }
+        val inserted = ActiveQueue.enqueue(song, next = true)
+        val target = if (inserted) queue.indexOfFirst { it.key == song.key } else queueIndex
+        playAt(target)
+    }
+
     internal fun enqueueSong(song: Song, next: Boolean) {
         if (!ActiveQueue.enqueue(song, next)) {
             status = "这首歌已是当前曲目"

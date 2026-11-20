@@ -46,7 +46,9 @@ internal object ActiveQueue {
         val current = songs.getOrNull(index)?.key
         if (current == song.key) return false
         val updated = songs.filterNot { it.key == song.key }.toMutableList()
-        val currentIndex = updated.indexOfFirst { it.key == current }
+        val currentIndex = if (current == null) -1 else {
+            index - songs.take(index).count { it.key == song.key }
+        }
         val at = if (next && currentIndex >= 0) currentIndex + 1 else updated.size
         updated.add(at, song)
         songs = updated

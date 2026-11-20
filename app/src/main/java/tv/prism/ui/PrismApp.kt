@@ -2010,7 +2010,7 @@ internal fun MainActivity.PrismApp() {
                 OtherSourcesDialog(song, sources, plugins, alternateFavoriteKeys, onDismiss = { playerSourceChooser = null },
                     onPlay = { selected ->
                         playerSourceChooser = null
-                        playSingle(selected)
+                        playAlternateSource(selected)
                     })
             }
             trackMenu?.let { target ->
@@ -2023,7 +2023,7 @@ internal fun MainActivity.PrismApp() {
                         onPlay = { song ->
                             trackMenu = null
                             queueOpen = false
-                            playSingle(song)
+                            playAlternateSource(song)
                         })
                 } else TrackActionsMenu(target, libraryState, activePlugins,
                     openOtherSources = if (available.isEmpty()) null else ({ choosingSource = true }),
