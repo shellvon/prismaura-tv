@@ -155,6 +155,15 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
                     drawLine(color, p(.54f, y), p(.86f, y), w, StrokeCap.Round)
                 }
             }
+            "trendUp" -> drawPath(path {
+                moveTo(s * .14f, s * .74f)
+                lineTo(s * .39f, s * .49f)
+                lineTo(s * .55f, s * .62f)
+                lineTo(s * .85f, s * .30f)
+                moveTo(s * .60f, s * .30f)
+                lineTo(s * .85f, s * .30f)
+                lineTo(s * .85f, s * .55f)
+            }, color, style = Stroke(w, cap = StrokeCap.Round, join = StrokeJoin.Round))
             "list" -> for (y in listOf(.28f, .5f, .72f)) drawLine(color, p(.22f, y), p(.78f, y), w, StrokeCap.Round)
             "queueNext" -> {
                 drawLine(color, p(.12f, .23f), p(.55f, .23f), w, StrokeCap.Round)

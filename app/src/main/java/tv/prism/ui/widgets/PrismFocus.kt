@@ -3,13 +3,15 @@ package tv.prism.ui.widgets
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.relocation.BringIntoViewRequester
-import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
@@ -41,7 +43,6 @@ import androidx.compose.ui.relocation.bringIntoView
 import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -163,6 +164,36 @@ internal fun rememberVerticalFocusSearch(): Pair<Modifier, (Key, () -> FocusRequ
     return modifier to request
 }
 
+/** A card row has one vertical reveal when entered. Child requests belong to its own axis. */
+@OptIn(ExperimentalFoundationApi::class)
+internal class FocusRowRevealSpec(
+    private val delegate: BringIntoViewSpec,
+    private val isRowFocused: () -> Boolean,
+) : BringIntoViewSpec by delegate {
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float =
+        if (isRowFocused()) 0f else delegate.calculateScrollDistance(offset, size, containerSize)
+}
+
+internal suspend fun LazyListState.revealFocusRow(index: Int, motion: Boolean) {
+    val layout = layoutInfo
+    val shelf = layout.visibleItemsInfo.firstOrNull { it.index == index }
+    if (shelf == null) {
+        if (motion) animateScrollToItem(index) else scrollToItem(index)
+        return
+    }
+    val distance = when {
+        shelf.offset < layout.viewportStartOffset -> shelf.offset - layout.viewportStartOffset
+        shelf.offset + shelf.size > layout.viewportEndOffset ->
+            (shelf.offset + shelf.size - layout.viewportEndOffset)
+                .coerceAtMost((shelf.offset - layout.viewportStartOffset).coerceAtLeast(0))
+        else -> 0
+    }
+    if (distance != 0) {
+        if (motion) animateScrollBy(distance.toFloat())
+        else scrollBy(distance.toFloat())
+    }
+}
+
 /** Reveal a lazy item before retrying; leave composition changes time to attach its target. */
 internal suspend fun FocusRequester.requestAfterScroll(scroll: suspend () -> Unit): Boolean {
     if (runCatching { requestFocus() }.getOrDefault(false)) return true
@@ -205,19 +236,6 @@ fun FocusProperties.rightTo(vararg candidates: FocusAnchor?) {
 fun Modifier.rememberFocus(memory: MutableState<FocusRequester?>): Modifier {
     val requester = remember { FocusRequester() }
     return then(Modifier.focusRequester(requester).onFocusChanged { if (it.isFocused) memory.value = requester })
-}
-
-/* A card inside a horizontal LazyRow never asks the page's vertical scroller to reveal it:
-   its bringIntoView request is consumed by the row's own scrollable. The row itself carries
-   the requester, and a focused card calls reveal() so the page scrolls the whole row into
-   view (fully visible border included) — e.g. the last shelf above the mini bar. */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun rememberRowRevealer(scope: CoroutineScope): Pair<Modifier, () -> Unit> {
-    val requester = remember { BringIntoViewRequester() }
-    val modifier = Modifier.bringIntoViewRequester(requester)
-    val reveal: () -> Unit = { scope.launch { requester.bringIntoView() } }
-    return modifier to reveal
 }
 
 /** Remote and pointer activation share one gesture owner, including cancellation and key release. */

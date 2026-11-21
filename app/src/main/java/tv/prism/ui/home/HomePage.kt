@@ -1,5 +1,7 @@
 package tv.prism.ui.home
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -7,6 +9,9 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -29,7 +34,10 @@ import kotlinx.coroutines.launch
 import tv.prism.library.LibraryState
 import tv.prism.library.Song
 import tv.prism.ui.widgets.FocusAnchor
+import tv.prism.ui.widgets.FocusRowRevealSpec
 import tv.prism.ui.widgets.LocalPrismColors
+import tv.prism.ui.widgets.LocalAuraMotion
+import tv.prism.ui.widgets.revealFocusRow
 import tv.prism.ui.widgets.requestAfterScroll
 import tv.prism.ui.widgets.requestIfAttached
 import tv.prism.ui.widgets.focusAnchor
@@ -40,7 +48,6 @@ import tv.prism.ui.widgets.PrismHero
 import tv.prism.ui.widgets.AuraRadioCard
 import tv.prism.ui.widgets.AuraHotCard
 import tv.prism.ui.widgets.upTo
-import tv.prism.ui.widgets.rememberRowRevealer
 import tv.prism.ui.widgets.PrismShelfHeader
 import tv.prism.ui.widgets.LocalListScrolling
 import tv.prism.ui.widgets.PrismCoverCard
@@ -61,7 +68,6 @@ internal data class HomePageState(
     val chartLoading: Boolean,
     val chartTitle: String,
     val chartStatus: String,
-    val chartSongs: List<Song>,
 )
 
 internal data class HomePageFocus(
@@ -87,7 +93,6 @@ internal data class HomePageActions(
     val startRadio: () -> Unit,
     val openRadioMenu: () -> Unit,
     val openChart: () -> Unit,
-    val openChartMenu: () -> Unit,
     val discover: () -> Unit,
     val manageShelves: () -> Unit,
     val playShelf: (List<Song>) -> Unit,
@@ -101,6 +106,7 @@ private data class HomeShelf(val id: String, val title: String, val songs: List<
 
 private val builtInShelves = setOf("favorites", "recent", "frequent")
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun HomePage(
     state: HomePageState,
@@ -140,6 +146,12 @@ internal fun HomePage(
                 .map { focus.card("home:${shelf.id}:${it.key}") }
         }
     val focusScope = rememberCoroutineScope()
+    val motion = LocalAuraMotion.current
+    suspend fun scrollToShelf(index: Int) {
+        if (motion) focus.list.animateScrollToItem(index)
+        else focus.list.scrollToItem(index)
+    }
+
     fun focusCard(row: Int, column: Int) {
         val cards = shelfCards.getOrNull(row).orEmpty()
         if (cards.isEmpty()) return
@@ -147,15 +159,11 @@ internal fun HomePage(
         val rowState = focus.rows.getOrPut(visibleShelves[row].id) { LazyListState() }
         focusScope.coroutineContext.cancelChildren()
         focusScope.launch {
-            if (
-                !cards[col].requestAfterScroll {
-                    if (focus.list.layoutInfo.visibleItemsInfo.none { it.index == row + 1 }) {
-                        focus.list.scrollToItem(row + 1)
-                    }
-                    rowState.scrollToItem(col)
-                }
-            )
+            // A prefetched row can accept focus before it is visible. Reveal it first.
+            focus.list.revealFocusRow(row + 1, motion)
+            if (!cards[col].requestAfterScroll { rowState.scrollToItem(col) }) {
                 focus.entry().requestIfAttached()
+            }
         }
     }
     fun downToCard(row: Int, column: Int) =
@@ -169,6 +177,18 @@ internal fun HomePage(
                 true
             } else false
         }
+    var focusedShelfId by remember { mutableStateOf<String?>(null) }
+    val defaultReveal = LocalBringIntoViewSpec.current
+    val verticalReveal = remember(defaultReveal) {
+        FocusRowRevealSpec(defaultReveal) { focusedShelfId != null }
+    }
+    LaunchedEffect(focusedShelfId) {
+        val id = focusedShelfId ?: return@LaunchedEffect
+        withFrameNanos {}
+        val index = visibleShelves.indexOfFirst { it.id == id }
+        if (index >= 0) focus.list.revealFocusRow(index + 1, motion)
+    }
+    CompositionLocalProvider(LocalBringIntoViewSpec provides verticalReveal) {
     LazyColumn(
         modifier =
             Modifier.fillMaxSize()
@@ -305,7 +325,6 @@ internal fun HomePage(
                             )
                             AuraHotCard(
                                 title = state.chartTitle,
-                                songs = state.chartSongs,
                                 onOpen = actions.openChart,
                                 status =
                                     if (!state.hasChartSource) "添加支持榜单的音源"
@@ -315,7 +334,6 @@ internal fun HomePage(
                                     Modifier.weight(1f)
                                         .focusProperties { upTo(focus.radio) }
                                         .then(downToCard(0, 0)),
-                                onLongPress = actions.openChartMenu,
                             )
                         }
                     }
@@ -335,7 +353,7 @@ internal fun HomePage(
             ->
             Column {
                 val shelfActionFocus = remember(shelf.id) { FocusRequester() }
-                val (shelfReveal, revealShelf) = rememberRowRevealer(scope)
+                var returnCard by remember(shelf.id) { mutableStateOf<Pair<String, Int>?>(null) }
                 val rowState =
                     rememberSaveable(shelf.id, saver = LazyListState.Saver) {
                         focus.rows[shelf.id] ?: LazyListState()
@@ -344,37 +362,51 @@ internal fun HomePage(
                 PrismShelfHeader(
                     shelf.title,
                     shelf.songs.size,
-                    "全部播放",
+                    "播放全部",
                     { actions.playShelf(shelf.songs) },
                     actionFocus = shelfActionFocus,
-                    /* 页头按钮在行尾：按「下」先回自己这一行的首卡，
-                    而不是横着跳到最右边那张。 */
-                    actionEdges =
-                        downToCard(shelfIndex, 0).onPreviewKeyEvent { event ->
-                            if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionUp)
-                                return@onPreviewKeyEvent false
-                            if (shelfIndex > 0) focusCard(shelfIndex - 1, 0)
-                            else
-                                focusScope.launch {
-                                    focus.list.scrollToItem(0)
-                                    withFrameNanos {}
-                                    focus.entry().requestIfAttached()
+                    actionIcon = "play",
+                    actionEdges = Modifier
+                        .onFocusChanged { if (!it.isFocused) returnCard = null }
+                        .onPreviewKeyEvent { event ->
+                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            when (event.key) {
+                                Key.DirectionDown -> {
+                                    val index = returnCard?.let { (songKey, oldIndex) ->
+                                        shelf.covers.indexOfFirst { it.key == songKey }
+                                            .takeIf { it >= 0 } ?: oldIndex
+                                    } ?: 0
+                                    focusCard(shelfIndex, index)
+                                    true
                                 }
-                            true
+                                Key.DirectionUp -> {
+                                    if (shelfIndex > 0) focusCard(shelfIndex - 1, 0)
+                                    else focusScope.launch {
+                                        focus.entry()?.requester?.requestAfterScroll { scrollToShelf(0) }
+                                    }
+                                    true
+                                }
+                                else -> false
+                            }
                         },
                 )
                 CompositionLocalProvider(
+                    LocalBringIntoViewSpec provides defaultReveal,
                     LocalListScrolling provides
                         {
                             rowState.isScrollInProgress || focus.list.isScrollInProgress
                         }
                 ) {
                     LazyRow(
-                        shelfReveal.focusRestorer(),
+                        Modifier
+                            .onFocusChanged {
+                                if (it.hasFocus) focusedShelfId = shelf.id
+                                else if (focusedShelfId == shelf.id) focusedShelfId = null
+                            }
+                            .focusRestorer()
+                            .focusGroup(),
                         state = rowState,
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        /* 垂直 8dp 留给聚焦放大（1.035 倍约溢出 3dp）：焦点把行带到
-                        视口底边时，卡片缩放后的完整边框仍留在裁剪区内。 */
                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                     ) {
                         itemsIndexed(shelf.covers, key = { _, song -> song.key }) { index, song ->
@@ -389,15 +421,17 @@ internal fun HomePage(
                                         if (shelfIndex == shelfCards.lastIndex && state.hasQueue)
                                             down = focus.mini
                                     }
-                                    .then(downToCard(shelfIndex + 1, index))
-                                    /* 迷你条按上要回到此前卡片，而不是页面入口；同时让页面
-                                    滚出整行，卡片边框完整可见（横向行的 bringIntoView
-                                    请求会被行自身吃掉，必须从行触发）。 */
-                                    .onFocusChanged {
-                                        if (it.isFocused) {
-                                            onCardFocused(cardFocus)
-                                            revealShelf()
+                                    .onPreviewKeyEvent { event ->
+                                        if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionUp)
+                                            return@onPreviewKeyEvent false
+                                        returnCard = song.key to index
+                                        shelfActionFocus.requestFocus().also {
+                                            if (!it) returnCard = null
                                         }
+                                    }
+                                    .then(downToCard(shelfIndex + 1, index))
+                                    .onFocusChanged {
+                                        if (it.isFocused) onCardFocused(cardFocus)
                                     },
                                 current = state.song?.key == song.key,
                                 onLongPress = {
@@ -415,5 +449,6 @@ internal fun HomePage(
                 Spacer(Modifier.height(24.dp))
             }
         }
+    }
     }
 }

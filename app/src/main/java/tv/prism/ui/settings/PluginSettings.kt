@@ -277,7 +277,7 @@ internal fun PluginConfig(
             Modifier.weight(1f)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(vertical = 12.dp),
+                .padding(horizontal = 6.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (canLoginQr || hasFields) {
@@ -543,7 +543,7 @@ internal fun PluginConfig(
                         Modifier.weight(1f, fill = false)
                             .fillMaxWidth()
                             .verticalScroll(rememberScrollState())
-                            .padding(vertical = 12.dp),
+                            .padding(horizontal = 6.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         entries.forEachIndexed { position, (field, key) ->
@@ -1112,8 +1112,9 @@ internal fun <T> ChoicePopup(
                 .clip(shape)
                 .background(c.panel)
                 .border(1.dp, c.line, shape)
-                .padding(6.dp)
-                .verticalScroll(rememberScrollState()),
+                .padding(horizontal = 6.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             if (options.isEmpty())

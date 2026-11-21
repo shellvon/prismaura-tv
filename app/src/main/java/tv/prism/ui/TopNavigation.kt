@@ -1,6 +1,7 @@
 package tv.prism.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -30,7 +31,6 @@ internal fun TopNavigation(
     page: String,
     navTabs: List<Pair<String, FocusRequester>>,
     pageEntryFocus: FocusAnchor?,
-    readPage: () -> String,
     onPreviewPage: (String) -> Unit,
     onEnterPage: (String) -> Unit,
     onNavFocusChanged: (Boolean) -> Unit,
@@ -40,6 +40,7 @@ internal fun TopNavigation(
     val pageScope = rememberCoroutineScope()
     val remotePillFocus = remember { FocusRequester() }
     var navBarFocused by remember { mutableStateOf(false) }
+    var focusedTab by remember { mutableStateOf<String?>(null) }
     var remotePillFocused by remember { mutableStateOf(false) }
     var pendingTab by remember { mutableStateOf<String?>(null) }
     var tabPreview by remember { mutableStateOf<Job?>(null) }
@@ -52,8 +53,15 @@ internal fun TopNavigation(
         clearTabPreview()
         onEnterPage(page)
     }
-    fun navModifier(requester: FocusRequester) = Modifier.focusRequester(requester)
-        .focusProperties { pageEntryFocus?.takeIf { it.attached }?.let { down = it.requester } }
+    fun navModifier(index: Int): Modifier {
+        val (tab, requester) = navTabs[index]
+        return Modifier.focusRequester(requester)
+            .onFocusChanged {
+                if (it.isFocused) focusedTab = tab
+                else if (focusedTab == tab) focusedTab = null
+            }
+            .focusProperties { pageEntryFocus?.takeIf { it.attached }?.let { down = it.requester } }
+    }
 
     Row(Modifier.fillMaxWidth().onFocusChanged { state ->
             navBarFocused = state.hasFocus
@@ -71,7 +79,7 @@ internal fun TopNavigation(
                 if (step < 0) navTabs.firstOrNull { it.first == page }?.second?.requestFocus()
                 return@onPreviewKeyEvent true
             }
-            val index = navTabs.indexOfFirst { it.first == (pendingTab ?: page) }
+            val index = navTabs.indexOfFirst { it.first == (focusedTab ?: page) }
             val next = navTabs.getOrNull(index + step)
             if (next == null) {
                 if (step > 0 && index == navTabs.lastIndex) {
@@ -81,31 +89,30 @@ internal fun TopNavigation(
                 }
                 return@onPreviewKeyEvent index >= 0
             }
-            val from = page
             clearTabPreview()
-            if (event.nativeKeyEvent.repeatCount == 0) {
-                onPreviewPage(next.first)
-            } else {
+            if (next.second.requestFocus()) {
                 pendingTab = next.first
+                val repeating = event.nativeKeyEvent.repeatCount > 0
                 tabPreview = pageScope.launch {
-                    delay(150)
-                    if (navBarFocused && readPage() == from) onPreviewPage(next.first)
+                    if (repeating) delay(150)
+                    // Render the focus indicator before composing the next page.
+                    repeat(2) { withFrameNanos {} }
+                    if (navBarFocused && focusedTab == next.first) onPreviewPage(next.first)
                     pendingTab = null
                 }
             }
-            next.second.requestFocus()
             true
-        }, verticalAlignment = Alignment.CenterVertically) {
+        }.focusGroup(), verticalAlignment = Alignment.CenterVertically) {
         AuraBrand()
         Spacer(Modifier.width(38.dp))
-        PrismNav("首页", page == "home", { commitPage("home") }, navModifier(navTabs[0].second))
-        PrismNav("搜索", page == "search", { commitPage("search") }, navModifier(navTabs[1].second))
-        PrismNav("我的", page == "library", { commitPage("library") }, navModifier(navTabs[2].second))
-        PrismNav("发现", page == "discover", { commitPage("discover") }, navModifier(navTabs[3].second))
+        PrismNav("首页", (focusedTab ?: page) == "home", { commitPage("home") }, navModifier(0), focused = focusedTab == "home")
+        PrismNav("搜索", (focusedTab ?: page) == "search", { commitPage("search") }, navModifier(1), focused = focusedTab == "search")
+        PrismNav("我的", (focusedTab ?: page) == "library", { commitPage("library") }, navModifier(2), focused = focusedTab == "library")
+        PrismNav("发现", (focusedTab ?: page) == "discover", { commitPage("discover") }, navModifier(3), focused = focusedTab == "discover")
         Spacer(Modifier.width(9.dp))
         Box(Modifier.width(1.dp).height(13.dp).background(c.foreground.copy(alpha = .12f)))
         Spacer(Modifier.width(9.dp))
-        PrismNav("设置", page == "plugins", { commitPage("plugins") }, navModifier(navTabs[4].second), quiet = true)
+        PrismNav("设置", (focusedTab ?: page) == "plugins", { commitPage("plugins") }, navModifier(4), focused = focusedTab == "plugins", quiet = true)
         Spacer(Modifier.weight(1f))
         AuraRemotePill(Modifier.focusRequester(remotePillFocus)
             .onFocusChanged { remotePillFocused = it.isFocused }

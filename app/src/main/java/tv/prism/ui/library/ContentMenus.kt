@@ -99,8 +99,10 @@ internal fun MainActivity.SubjectActionsMenu(
             if (plugin != null) add(PrismMenuAction(detailLabel, detailIcon, navigates = true) {
                 val origin = readOrigin()
                 onDismiss()
-                if (subject.kind == "chart") discoverySession.openChart(plugin, subject.data)
-                else openBrowse(plugin, subject.data, subject.kind, origin)
+                if (subject.kind == "chart") {
+                    page = "discover"
+                    discoverySession.openChart(plugin, subject.data)
+                } else openBrowse(plugin, subject.data, subject.kind, origin)
             })
             if (subject.kind != "chart") add(PrismMenuAction(if (favoritePending) "正在保存…" else if (saved) "取消收藏" else "收藏", if (saved) "heartFilled" else "heart", active = saved, keepOpen = true) {
                 if (!favoritePending) {

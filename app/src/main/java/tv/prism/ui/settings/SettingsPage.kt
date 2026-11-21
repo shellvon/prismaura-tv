@@ -58,7 +58,7 @@ import tv.prism.ui.playback.LYRIC_HEADING_HINT
 
 @Composable
 internal fun SettingsPage(
-    currentSection: () -> String,
+    sectionName: String,
     sections: List<String>,
     settingsScroll: ScrollState,
     navFocus: FocusRequester,
@@ -71,7 +71,6 @@ internal fun SettingsPage(
             edgeToRail: Modifier, entryUpScrollsBack: Modifier, entryEdge: Modifier,
         ) -> Unit,
 ) {
-    val sectionName = currentSection()
     val pageScope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     Column(Modifier.fillMaxSize()) {
@@ -81,7 +80,7 @@ internal fun SettingsPage(
         remote. Every left edge names the open section. */
         val edgeToRail =
             Modifier.focusProperties {
-                val anchor = sectionFocus.getValue(currentSection())
+                val anchor = sectionFocus.getValue(sectionName)
                 if (anchor.attached) left = anchor.requester
             }
         /* Walking back up only half-reveals a scrolled section:
@@ -105,7 +104,7 @@ internal fun SettingsPage(
         to the bar instead, like every other page. */
         val entryEdge =
             Modifier.focusProperties {
-                    val anchor = sectionFocus.getValue(currentSection())
+                    val anchor = sectionFocus.getValue(sectionName)
                     if (anchor.attached) left = anchor.requester
                     up = navFocus
                 }
@@ -137,18 +136,11 @@ internal fun SettingsPage(
                             }
                         },
                         Modifier.focusAnchor(sectionFocus.getValue(section))
-                            /* Same contract as the top bar: the panel changes
-                            with the highlight, so one press both previews
-                            and selects. */
-                            .onFocusChanged {
-                                if (it.isFocused && currentSection() != section)
-                                    selectSection(section)
-                            }
                             /* Only the selected section's content is composed; pointing
                             Right anywhere else would target a node that isn't there. */
                             .focusProperties {
                                 val entry = sectionEntryFocus.getValue(section)
-                                if (section == currentSection() && entry.attached)
+                                if (section == sectionName && entry.attached)
                                     right = entry.requester
                                 if (index == 0) up = navFocus
                             }
@@ -158,8 +150,9 @@ internal fun SettingsPage(
                             .onPreviewKeyEvent {
                                 it.type == KeyEventType.KeyDown &&
                                     it.key == Key.DirectionRight &&
-                                    section != currentSection()
+                                    section != sectionName
                             },
+                        onFocused = { if (sectionName != section) selectSection(section) },
                     )
                 }
             }

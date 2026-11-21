@@ -26,6 +26,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.key
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import tv.prism.ui.widgets.FocusAnchor
 import tv.prism.library.MusicPlaylist
@@ -49,6 +50,7 @@ import tv.prism.ui.widgets.PrismEmptyState
 import tv.prism.ui.widgets.PrismTrackRow
 import tv.prism.catalog.matchesSearchHistory
 import tv.prism.ui.widgets.Input
+import tv.prism.ui.widgets.AuraIconButton
 
 internal data class LibraryPageFocus(
     val nav: FocusRequester,
@@ -77,6 +79,7 @@ internal data class LibraryPageActions(
     val openPlaylist: (String) -> Unit,
     val closePlaylist: () -> Unit,
     val importPlaylist: () -> Unit,
+    val fillOnPhone: (field: String, query: String, onReturn: () -> Unit, onQuery: (String) -> Unit) -> Unit,
     val discover: () -> Unit,
     val enterManage: () -> Unit,
     val exitManage: () -> Unit,
@@ -435,7 +438,7 @@ internal fun LibraryPage(
                         // in empty lists they stay in place, disabled.
                         if (!showingSubjects && !showingPlaylists)
                             PrismAction(
-                                "全部播放",
+                                "播放全部",
                                 { actions.playAll(songs) },
                                 headerEdges
                                     .focusAnchor(focus.playAll)
@@ -587,7 +590,7 @@ internal fun LibraryPage(
                     } else {
                         val detailCanAct = manageTargets.isNotEmpty()
                         PrismAction(
-                            "全部播放",
+                            "播放全部",
                             { actions.playAll(songs) },
                             headerEdges.then(
                                 if (detailCanAct)
@@ -636,7 +639,10 @@ internal fun LibraryPage(
                     showingSubjects -> "输入专辑名"
                     else -> "输入歌名或歌手"
                 }
-                LibraryFilterField(query, { query = it }, field, filterInput, filterButton.requester, focus.content, focus.mini)
+                LibraryFilterField(
+                    query, { query = it }, field, filterInput, filterButton.requester, focus.content,
+                    focus.mini, actions.fillOnPhone,
+                )
             }
             if (showingSubjects || showingPlaylists) {
                 LibraryCollections(
@@ -792,19 +798,45 @@ private fun LibraryFilterField(
     button: FocusRequester,
     results: FocusAnchor,
     mini: FocusRequester,
+    fillOnPhone: (field: String, query: String, onReturn: () -> Unit, onQuery: (String) -> Unit) -> Unit,
 ) {
-    Input(
-        query, onQuery,
-        if (android.os.Build.VERSION.SDK_INT >= 29) "${field}或拼音首字母" else field,
-        Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp)
-            .focusAnchor(input).focusProperties {
+    val phone = remember { FocusAnchor() }
+    val scope = rememberCoroutineScope()
+    Row(
+        Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp, end = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Input(
+            query, onQuery,
+            if (android.os.Build.VERSION.SDK_INT >= 29) "${field}或拼音首字母" else field,
+            Modifier.weight(1f).focusAnchor(input).focusProperties {
+                up = button
+                down = if (results.attached) results.requester else mini
+                if (phone.attached) right = phone.requester
+            },
+            manualKeyboard = true,
+            downTarget = results,
+            onSubmit = { if (!results.requestIfAttached()) mini.requestFocus() },
+        )
+        AuraIconButton(
+            "qr", "手机代填查找关键词",
+            {
+                fillOnPhone(field, query, {
+                    scope.launch {
+                        repeat(2) { withFrameNanos {} }
+                        phone.requestIfAttached()
+                    }
+                }, onQuery)
+            },
+            Modifier.focusAnchor(phone).focusProperties {
+                if (input.attached) left = input.requester
                 up = button
                 down = if (results.attached) results.requester else mini
             },
-        manualKeyboard = true,
-        downTarget = results,
-        onSubmit = { if (!results.requestIfAttached()) mini.requestFocus() },
-    )
+            size = 42.dp,
+        )
+    }
 }
 
 @Composable

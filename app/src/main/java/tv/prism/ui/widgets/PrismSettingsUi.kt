@@ -197,14 +197,17 @@ internal fun SettingsChip(label: String, checked: Boolean, onClick: () -> Unit, 
 }
 
 @Composable
-internal fun SettingsRailItem(label: String, icon: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun SettingsRailItem(label: String, icon: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, onFocused: () -> Unit) {
     val c = LocalPrismColors.current
     val shape = RoundedCornerShape(10.dp)
     var focused by remember { mutableStateOf(false) }
     Box(modifier.fillMaxWidth().height(46.dp).auraFocus(shape, 1f)
         .clip(shape)
         .then(if (selected) Modifier.background(Brush.horizontalGradient(listOf(c.accent.copy(alpha = .17f), c.accent.copy(alpha = .05f), Color.Transparent))) else Modifier)
-        .onFocusChanged { focused = it.isFocused }
+        .onFocusChanged {
+            focused = it.isFocused
+            if (focused) onFocused()
+        }
         .clickable(onClick = onClick)
         .semantics { this.selected = selected }) {
         /* The gold bar sits where the focus ring is, so both together would read as a
@@ -228,7 +231,7 @@ internal fun SettingsButton(
     val c = LocalPrismColors.current
     val shape = RoundedCornerShape(9.dp)
     val contentColor = if (primary) c.onAccent else c.foreground
-    Row(modifier.height(36.dp).then(if (passive) Modifier else Modifier.auraFocus(shape, 1f))
+    Row(modifier.height(36.dp).then(if (passive) Modifier else Modifier.auraFocus(shape, 1f, ring = if (primary) c.foreground else null))
         .clip(shape)
         .then(if (passive) Modifier.focusProperties { canFocus = false } else Modifier)
         .then(if (primary) Modifier.background(Brush.verticalGradient(listOf(lerp(c.accent, Color.White, .05f), lerp(c.accent, c.glow, .35f))))
@@ -284,7 +287,7 @@ internal fun PrismConfigChoice(title: String, subtitle: String, icon: String, on
                                modifier: Modifier = Modifier) {
     val c = LocalPrismColors.current
     val shape = RoundedCornerShape(12.dp)
-    Row(modifier.heightIn(min = 68.dp).auraFocus(shape, scale = 1.015f).clip(shape)
+    Row(modifier.heightIn(min = 68.dp).auraFocus(shape, scale = 1f).clip(shape)
         .background(c.background.copy(alpha = .55f))
         .clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically) {

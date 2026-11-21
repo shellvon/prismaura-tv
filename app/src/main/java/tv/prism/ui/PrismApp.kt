@@ -91,6 +91,7 @@ import tv.prism.library.LibraryBackup
 import tv.prism.sources.Plugin
 import tv.prism.library.primaryKeys
 import tv.prism.ui.widgets.requestIfAttached
+import tv.prism.ui.widgets.revealFocusRow
 import tv.prism.ui.widgets.requestAfterScroll
 import tv.prism.catalog.subjectTitle
 import tv.prism.playback.qualityOptions
@@ -107,7 +108,7 @@ import tv.prism.ui.widgets.PrismContentDialog
 import tv.prism.ui.widgets.PrismAction
 import tv.prism.ui.widgets.PrismBackground
 import tv.prism.ui.home.HomePage
-import tv.prism.ui.discovery.DiscoveryVerticalReveal
+import tv.prism.ui.widgets.FocusRowRevealSpec
 import tv.prism.ui.discovery.RecommendationShelf
 import tv.prism.ui.home.HomePageState
 import tv.prism.ui.home.HomePageFocus
@@ -116,12 +117,10 @@ import tv.prism.ui.widgets.PrismDetailHero
 import tv.prism.ui.widgets.focusAnchor
 import tv.prism.ui.widgets.PrismShelfHeader
 import tv.prism.LoadingStatus
-import tv.prism.ui.widgets.rememberRowRevealer
 import tv.prism.ui.widgets.rememberVerticalFocusSearch
 import tv.prism.ui.widgets.PrismSheetCard
 import tv.prism.ui.widgets.PrismTrackRow
 import tv.prism.ui.widgets.PrismPageHead
-import tv.prism.ui.widgets.keepFocusVisible
 import tv.prism.CardFocusRow
 import tv.prism.ui.widgets.RecommendationSkeleton
 import tv.prism.ui.widgets.PrismEmptyState
@@ -1062,7 +1061,7 @@ internal fun MainActivity.PrismApp() {
             PrismBackground {
                 Column(Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 20.dp)) {
                     TopNavigation(page, navTabs, pageEntryFocus,
-                        readPage = { page }, onPreviewPage = { page = it }, onEnterPage = enterPage,
+                        onPreviewPage = { page = it }, onEnterPage = enterPage,
                         onNavFocusChanged = { navFocused = it }, onOpenPhone = { openPhoneHub() })
                     Spacer(Modifier.height(18.dp))
                     if (state.error != null || libraryState.error != null) Text(state.error ?: libraryState.error.orEmpty(), fontSize = 12.sp, color = c.accent, modifier = Modifier.padding(bottom = 8.dp), maxLines = 2)
@@ -1086,7 +1085,6 @@ internal fun MainActivity.PrismApp() {
                                     chartLoading = discoverySession.chartLoading,
                                     chartStatus = discoverySession.chartStatus,
                                     chartTitle = discoverySession.charts.firstOrNull()?.optString("title").orEmpty(),
-                                    chartSongs = discoverySession.charts.firstOrNull()?.let { discoverySession.chartPreviews[it.optString("id")] }.orEmpty(),
                                 ),
                                 focus = HomePageFocus(navTabFocus, miniFocus, heroFocus, homeBodyFocus, homePlayerFocus,
                                     updatePromptFocus, radioCardFocus, homeListState, homeRowStates, ::detailFocus, { entryFocus("home") }),
@@ -1110,13 +1108,6 @@ internal fun MainActivity.PrismApp() {
                                             page = "discover"
                                             if (target != null) discoverySession.openChart(source, target)
                                             else if (!discoverySession.chartLoading) lifecycleScope.launch { discoverySession.loadCharts(source) }
-                                        }
-                                    },
-                                    openChartMenu = {
-                                        val chart = discoverySession.charts.firstOrNull()
-                                        val source = chartSource
-                                        if (chart != null && source != null) {
-                                            subjectMenu = SavedSubject(source.id, "chart", chart, source.displayName, primaryKeys(source.metadata))
                                         }
                                     },
                                     discover = { page = "discover" },
@@ -1189,6 +1180,19 @@ internal fun MainActivity.PrismApp() {
                                         val description = browseInfo?.optString("description").orEmpty().ifBlank {
                                             if (browseKind == "artist") "" else item.optString("description")
                                         }
+                                        var albumRowFocused by remember(item) { mutableStateOf(false) }
+                                        val detailDefaultReveal = LocalBringIntoViewSpec.current
+                                        val detailReveal = remember(detailDefaultReveal, item) {
+                                            FocusRowRevealSpec(detailDefaultReveal) { albumRowFocused }
+                                        }
+                                        val detailMotion = LocalAuraMotion.current
+                                        LaunchedEffect(albumRowFocused) {
+                                            if (albumRowFocused) {
+                                                withFrameNanos { }
+                                                browseSongListState.revealFocusRow(2, detailMotion)
+                                            }
+                                        }
+                                        CompositionLocalProvider(LocalBringIntoViewSpec provides detailReveal) {
                                         LazyColumn(state = browseSongListState, modifier = Modifier.weight(1f)) {
                                             item {
                                                 PrismDetailHero(
@@ -1222,14 +1226,15 @@ internal fun MainActivity.PrismApp() {
                                                 if (browseAlbums.isEmpty()) item {
                                                     LoadingStatus(browseAlbumStatus, 13)
                                                 } else item {
-                                                    val (albumReveal, revealAlbums) = rememberRowRevealer(pageScope)
                                                     val firstSongFocus = browseSongs.firstOrNull()?.let { trackFocus(it.key) }
                                                     val (albumLayout, focusAlbumExit) = rememberVerticalFocusSearch()
                                                     val albumNavigation = albumLayout.onPreviewKeyEvent { event ->
                                                         if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionDown || firstSongFocus == null) return@onPreviewKeyEvent false
                                                         focusAlbumExit(event.key) { firstSongFocus }
                                                     }
-                                                    LazyRow(albumReveal.then(albumNavigation), state = browseAlbumRowState, horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                                    CompositionLocalProvider(LocalBringIntoViewSpec provides detailDefaultReveal) {
+                                                    LazyRow(albumNavigation.onFocusChanged { albumRowFocused = it.hasFocus }.focusGroup(),
+                                                        state = browseAlbumRowState, horizontalArrangement = Arrangement.spacedBy(10.dp),
                                                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
                                                         itemsIndexed(browseAlbums) { index, album ->
                                                             val albumId = album.optString("id")
@@ -1246,7 +1251,7 @@ internal fun MainActivity.PrismApp() {
                                                                     if (index == 0) Modifier.focusProperties {
                                                                         up = if (detailHeaderFocus.attached) detailHeaderFocus.requester else navTabFocus
                                                                     } else Modifier
-                                                                ).onFocusChanged { if (it.isFocused) revealAlbums() },
+                                                                ),
                                                                 onLongPress = { state.plugins.firstOrNull { it.id == browsePluginId }?.let {
                                                                     showSubjectMenu(it, "album", album, detailFocus("album:$browsePluginId:$albumId"))
                                                                 } },
@@ -1254,6 +1259,7 @@ internal fun MainActivity.PrismApp() {
                                                                 state.plugins.firstOrNull { it.id == browsePluginId }?.let { openBrowse(it, album, "album") }
                                                             }
                                                         }
+                                                    }
                                                     }
                                                 }
                                             }
@@ -1263,6 +1269,7 @@ internal fun MainActivity.PrismApp() {
                                                     browseSongs.size.takeIf { it > 0 },
                                                     if (browseKind == "artist" && browseSongs.isNotEmpty()) "播放全部" else "",
                                                     { if (browseSongs.isNotEmpty()) playQueue(browseSongs.toList()) },
+                                                    actionIcon = "play",
                                                     actionEdges = Modifier.focusAnchor(artistPlayAllFocus)
                                                         .focusProperties {
                                                             if (browseAlbums.isEmpty()) up = if (detailHeaderFocus.attached) detailHeaderFocus.requester else navTabFocus
@@ -1312,11 +1319,27 @@ internal fun MainActivity.PrismApp() {
                                                 PrismAction(if (browseLoading) "正在加载…" else "加载更多", { if (!browseLoading) loadBrowse(true) })
                                             }
                                         }
+                                        }
                                     }
                                 } else if (selectedChart != null) {
                                     PrismPageHead(selectedChart.optString("title").ifBlank { "榜单" }) {
-                                        if (discoverySession.chartSongs.isNotEmpty()) PrismAction("播放全部", { playQueue(discoverySession.chartSongs.toList()) }, Modifier.focusAnchor(detailHeaderFocus).then(headUp))
-                                        if (queue.isNotEmpty()) PrismAction("打开播放器", { playerOpen = true }, headUp)
+                                        if (discoverySession.chartSongs.isNotEmpty()) {
+                                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                PrismAction(
+                                                    "播放全部",
+                                                    { playCollection(discoverySession.chartSongs) },
+                                                    Modifier.focusAnchor(detailHeaderFocus).then(headUp),
+                                                    primary = true,
+                                                    icon = "play",
+                                                )
+                                                PrismAction(
+                                                    "随机播放",
+                                                    { playCollection(discoverySession.chartSongs, shuffle = true) },
+                                                    headUp,
+                                                    icon = "shuffle",
+                                                )
+                                            }
+                                        }
                                     }
                                     if (discoverySession.chartSongs.isEmpty()) LoadingStatus(discoverySession.chartDetailStatus, 13)
                                     else {
@@ -1331,10 +1354,19 @@ internal fun MainActivity.PrismApp() {
                                 } else {
                                 val focusScope = rememberCoroutineScope()
                                 val cardCoordinates = remember { mutableMapOf<FocusRequester, LayoutCoordinates>() }
-                                val (rowLayout, focusDiscoverRow) = rememberVerticalFocusSearch()
                                 var focusedShelfCard by remember { mutableStateOf<FocusRequester?>(null) }
-                                fun trackCard(requester: FocusRequester, row: Int, revealMargin: Boolean = true) =
-                                    (if (revealMargin) Modifier.keepFocusVisible() else Modifier)
+                                var focusedDiscoverRow by remember { mutableStateOf<Int?>(null) }
+                                val motion = LocalAuraMotion.current
+                                LaunchedEffect(focusedDiscoverRow) {
+                                    val row = focusedDiscoverRow ?: return@LaunchedEffect
+                                    withFrameNanos { }
+                                    discoverListState.revealFocusRow(row, motion)
+                                }
+                                fun discoverRow(index: Int) = Modifier.onFocusChanged {
+                                    if (it.hasFocus) focusedDiscoverRow = index
+                                    else if (focusedDiscoverRow == index) focusedDiscoverRow = null
+                                }.focusGroup()
+                                fun trackCard(requester: FocusRequester, row: Int) = Modifier
                                         .onPlaced { cardCoordinates[requester] = it }
                                         .onFocusChanged { state ->
                                             if (state.isFocused) {
@@ -1409,18 +1441,12 @@ internal fun MainActivity.PrismApp() {
                                                 }
                                             }.minByOrNull { it.second }?.first
                                         }
-                                        if (!focusDiscoverRow(direction, ::nearest)) {
-                                            // The next shelf may not be composed yet. Prevent default
-                                            // focus search from re-entering the current LazyRow.
-                                            focusScope.launch {
-                                                if (discoverListState.layoutInfo.visibleItemsInfo.none { it.index == targetRow }) {
-                                                    discoverListState.scrollToItem(targetRow)
-                                                }
-                                                repeat(6) {
-                                                    withFrameNanos { }
-                                                    val requester = nearest() ?: return@repeat
-                                                    if (runCatching { requester.requestFocus() }.getOrDefault(false)) return@launch
-                                                }
+                                        focusScope.launch {
+                                            discoverListState.revealFocusRow(targetRow, motion)
+                                            repeat(6) {
+                                                withFrameNanos { }
+                                                val requester = nearest() ?: return@repeat
+                                                if (runCatching { requester.requestFocus() }.getOrDefault(false)) return@launch
                                             }
                                         }
                                         true
@@ -1430,15 +1456,11 @@ internal fun MainActivity.PrismApp() {
                                    sketch's grids with, so these shelves show what you kept from
                                    a detail page; the discoverySession.charts below remain source-driven. */
                                 val defaultReveal = LocalBringIntoViewSpec.current
-                                val verticalReveal = remember(defaultReveal) { DiscoveryVerticalReveal(defaultReveal) }
-                                val lockVerticalOnHorizontal = Modifier.onPreviewKeyEvent { event ->
-                                    if (event.type == KeyEventType.KeyDown) {
-                                        verticalReveal.onKey(event.key)
-                                    }
-                                    false
+                                val verticalReveal = remember(defaultReveal) {
+                                    FocusRowRevealSpec(defaultReveal) { focusedDiscoverRow != null }
                                 }
                                 CompositionLocalProvider(LocalBringIntoViewSpec provides verticalReveal) {
-                                LazyColumn(state = discoverListState, modifier = Modifier.weight(1f).padding(bottom = 10.dp).then(lockVerticalOnHorizontal), verticalArrangement = Arrangement.spacedBy(22.dp),
+                                LazyColumn(state = discoverListState, modifier = Modifier.weight(1f).padding(bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(22.dp),
                                     /* 末排榜单行在最大滚动时贴着视口底边，聚焦边框没有呼吸空间；
                                        底部留白让最后一行能完整滚入。 */
                                     contentPadding = PaddingValues(bottom = 14.dp)) {
@@ -1452,7 +1474,7 @@ internal fun MainActivity.PrismApp() {
                                                 up = navTabFocus, entry = recommendEntryFocus,
                                                 firstCard = recommendFirstCardFocus, below = discoverBelowFocus,
                                                 cardFocus = { sheet -> detailFocus("recommend:${recommendationSource.id}:${sheet.optString("id")}") },
-                                                edges = { index -> trackCard(recommendCards[index], 0, revealMargin = false).then(stepRow(Key.DirectionDown, recommendCards, index)) }, rowState = recommendationRow, modifier = rowLayout,
+                                                edges = { index -> trackCard(recommendCards[index], 0).then(stepRow(Key.DirectionDown, recommendCards, index)) }, rowState = recommendationRow, modifier = discoverRow(0),
                                                 onMenu = { item, focus -> showSubjectMenu(recommendationSource, "sheet", item, focus) }) {
                                                     openBrowse(recommendationSource, it, "sheet", "recommend:${recommendationSource.id}:${it.optString("id")}")
                                                 }
@@ -1462,7 +1484,7 @@ internal fun MainActivity.PrismApp() {
                                         item(key = "discover-seeds-title") { PrismShelfHeader("从常听歌手继续", null, "", {}) }
                                         item(key = "discover-seeds") {
                                             CompositionLocalProvider(LocalBringIntoViewSpec provides defaultReveal) {
-                                                LazyRow(state = seedRow, modifier = rowLayout, horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
+                                                LazyRow(state = seedRow, modifier = discoverRow(seedListRow), horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
                                                     itemsIndexed(artistSeeds) { index, seed ->
                                                         PrismSheetCard(seed.artist, seed.data.optString("artistArtwork"), "歌手作品 · ${seed.sourceLabel}", portrait = true,
                                                             modifier = Modifier.focusRequester(seedCards[index]).then(trackCard(seedCards[index], seedListRow))
@@ -1484,7 +1506,7 @@ internal fun MainActivity.PrismApp() {
                                         item(key = "discover-artists-title") { PrismShelfHeader("歌手", null, "", {}) }
                                         item(key = "discover-artists") {
                                             CompositionLocalProvider(LocalBringIntoViewSpec provides defaultReveal) {
-                                                LazyRow(state = artistRow, modifier = rowLayout, horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
+                                                LazyRow(state = artistRow, modifier = discoverRow(artistListRow), horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
                                                     itemsIndexed(savedArtists) { index, subject ->
                                                         PrismSheetCard(subject.title, subject.artwork, "${subject.kindLabel} · ${subject.sourceName.ifBlank { "已收藏" }}", portrait = subject.kind == "artist",
                                                             modifier = Modifier.focusRequester(artistCards[index]).then(trackCard(artistCards[index], artistListRow))
@@ -1509,7 +1531,7 @@ internal fun MainActivity.PrismApp() {
                                         item(key = "discover-albums-title") { PrismShelfHeader("专辑", null, "", {}) }
                                         item(key = "discover-albums") {
                                             CompositionLocalProvider(LocalBringIntoViewSpec provides defaultReveal) {
-                                                LazyRow(state = albumRow, modifier = rowLayout, horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
+                                                LazyRow(state = albumRow, modifier = discoverRow(albumListRow), horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)) {
                                                     itemsIndexed(savedAlbums) { index, subject ->
                                                         PrismSheetCard(subject.title, subject.artwork, "${subject.kindLabel} · ${subject.sourceName.ifBlank { "已收藏" }}", portrait = subject.kind == "artist",
                                                             modifier = Modifier.focusRequester(albumCards[index]).then(trackCard(albumCards[index], albumListRow))
@@ -1542,11 +1564,14 @@ internal fun MainActivity.PrismApp() {
                                         "chart-row:$index:${group.first().optString("id")}"
                                     }) { chunkIndex, group ->
                                         val rowCards = chartCardRows.getOrNull(chunkIndex).orEmpty()
-                                        Row(rowLayout.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                        val cardRow = discoverChartsOffset + chunkIndex
+                                        Row(
+                                            discoverRow(cardRow).fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                        ) {
                                             group.forEachIndexed { column, chart ->
                                                 val chartId = chart.optString("id")
                                                 val cardFocus = detailFocus("chart:$chartId")
-                                                val cardRow = discoverChartsOffset + chunkIndex
                                                 PrismChartCard(
                                                     chart.optString("title").ifBlank { "榜单" },
                                                     chart.optString("coverImg").ifBlank { chart.optString("artwork") },
@@ -1655,6 +1680,14 @@ internal fun MainActivity.PrismApp() {
                                     openPlaylist = ::openPlaylistTable,
                                     closePlaylist = ::closePlaylistTable,
                                     importPlaylist = { importDialog = true },
+                                    fillOnPhone = { field, query, onReturn, onQuery ->
+                                        phoneSessions.openForm(
+                                            listOf("keyword" to field), mapOf("keyword" to query),
+                                            title = "填写查找关键词",
+                                            message = "提交后，电视会直接筛选当前列表。",
+                                            onReturn = onReturn,
+                                        ) { values -> onQuery(values["keyword"].orEmpty().take(120)) }
+                                    },
                                     discover = { page = "discover" },
                                     enterManage = ::enterLibraryManage,
                                     exitManage = ::exitLibraryManage,
@@ -1685,7 +1718,7 @@ internal fun MainActivity.PrismApp() {
                                     onPhoneForm = { fields, values, submit -> phoneSessions.openForm(fields, values, onSubmit = submit) },
                                 )
                                 else SettingsPage(
-                                    { settingsViewModel.state.value.section }, settingsSections, settingsScroll, navTabFocus, sectionFocus, sectionEntryFocus,
+                                    settingsSection, settingsSections, settingsScroll, navTabFocus, sectionFocus, sectionEntryFocus,
                                     selectSection = { settingsViewModel.open(it) },
                                 ) { edgeToRail, entryUpScrollsBack, entryEdge ->
                                     when (settingsSection) {
@@ -1712,7 +1745,7 @@ internal fun MainActivity.PrismApp() {
                                         pluginViewModel, plugins, state, busyState, subscriptionUpdateProgress,
                                         lifecycleScope, navTabFocus, sourceActionFocus, addFocus, entryEdge,
                                         edgeToRail, bodyFocusMemory, ::showPluginImport, { status = it },
-                                        ::searchUsingSubscription, ::fillSourceOnPhone, { page = "search" },
+                                        ::searchUsingSubscription, ::fillSourceOnPhone,
                                     ) { plugin, owned, onRemoved, edge ->
                                         PluginSourceRow(plugin, owned, { pluginViewModel.configure(plugin.id) }, onRemoved,
                                             sourceConfigFocus.getOrPut(plugin.id) { FocusAnchor() }, edge)

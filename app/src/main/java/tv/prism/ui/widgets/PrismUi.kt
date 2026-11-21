@@ -404,16 +404,19 @@ fun prismColors(theme: String): PrismColors = when (theme) {
     }
 }
 
-@Composable fun PrismNav(label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, dense: Boolean = false, quiet: Boolean = false) {
+@Composable internal fun PrismNav(
+    label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier,
+    focused: Boolean, quiet: Boolean = false,
+) {
     val c = LocalPrismColors.current
     val idle = if (quiet) c.muted.copy(alpha = .62f) else c.muted
-    Column(modifier.widthIn(min = 64.dp).auraFocus(RoundedCornerShape(50), 1.02f)
+    Column(modifier.widthIn(min = 64.dp).border(2.dp, if (focused) c.accent else Color.Transparent, RoundedCornerShape(50))
         .clip(RoundedCornerShape(50)).clickable(onClick = onClick)
         .semantics { this.selected = selected }
-        .padding(horizontal = if (dense) 14.dp else 18.dp, vertical = if (dense) 6.dp else 9.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        .padding(horizontal = 18.dp, vertical = 9.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Column(Modifier.width(IntrinsicSize.Max), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(label, color = if (selected) c.foreground else idle, fontSize = if (dense) 15.sp else 16.sp, fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal, maxLines = 1)
-            Spacer(Modifier.height(if (dense) 4.dp else 5.dp))
+            Text(label, color = if (selected) c.foreground else idle, fontSize = 16.sp, fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal, maxLines = 1)
+            Spacer(Modifier.height(5.dp))
             Box(Modifier.fillMaxWidth().height(2.dp).background(if (selected) c.accent else Color.Transparent, CircleShape))
         }
     }

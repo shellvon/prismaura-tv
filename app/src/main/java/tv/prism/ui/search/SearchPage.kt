@@ -1,5 +1,7 @@
 package tv.prism.ui.search
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyListState
@@ -35,6 +37,9 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.input.key.key
 import kotlinx.coroutines.flow.first
 import tv.prism.ui.widgets.FocusAnchor
+import tv.prism.ui.widgets.FocusRowRevealSpec
+import tv.prism.ui.widgets.LocalAuraMotion
+import tv.prism.ui.widgets.revealFocusRow
 import tv.prism.library.Song
 import tv.prism.sources.Plugin
 import tv.prism.library.SavedSubject
@@ -408,6 +413,7 @@ internal fun SearchPage(
                         true
                     } else false
                 }
+            val resultMotion = LocalAuraMotion.current
             // Keep the column across rows; the last row exits to the footer or mini player.
             fun stepRows(
                 index: Int,
@@ -426,13 +432,27 @@ internal fun SearchPage(
                     val nextRow = index / unit + delta
                     if (nextRow < 0) return@onPreviewKeyEvent false
                     if (nextRow > (total - 1) / unit) {
+                        if (unit > 1 && showMore) {
+                            focusScope.coroutineContext.cancelChildren()
+                            focusScope.launch {
+                                focus.list.revealFocusRow(nextRow, resultMotion)
+                                focus.more.requestIfAttached()
+                            }
+                            return@onPreviewKeyEvent true
+                        }
                         return@onPreviewKeyEvent focusSearchRow(Key.DirectionDown) {
                             if (showMore) focus.more.requester else focus.mini
                         }
                     }
                     val next = (nextRow * unit + index % unit).coerceAtMost(total - 1)
                     focusScope.coroutineContext.cancelChildren()
-                    focusSearchRow(event.key) { requester(next) }
+                    if (unit > 1) {
+                        focusScope.launch {
+                            focus.list.revealFocusRow(nextRow, resultMotion)
+                            requester(next).requestAfterScroll { focus.list.revealFocusRow(nextRow, resultMotion) }
+                        }
+                        true
+                    } else focusSearchRow(event.key) { requester(next) }
                 }
             /* Input first, then the source row. The source is a filter on the
             search, not a separate page — you pick it before you type, because
@@ -853,6 +873,7 @@ internal data class SearchResultsFocus(
     val registerTrack: (Song, FocusRequester) -> Unit,
 )
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun ColumnScope.SearchResults(
     state: SearchResultsState,
@@ -892,7 +913,17 @@ internal fun ColumnScope.SearchResults(
                 color = c.muted,
                 fontSize = 12.sp,
             )
-        else
+        else {
+            var focusedRow by remember { mutableStateOf<Int?>(null) }
+            val defaultReveal = LocalBringIntoViewSpec.current
+            val reveal = remember(defaultReveal) { FocusRowRevealSpec(defaultReveal) { focusedRow != null } }
+            val motion = LocalAuraMotion.current
+            LaunchedEffect(focusedRow) {
+                val row = focusedRow ?: return@LaunchedEffect
+                withFrameNanos {}
+                focus.list.revealFocusRow(row, motion)
+            }
+            CompositionLocalProvider(LocalBringIntoViewSpec provides reveal) {
             LazyColumn(
                 Modifier.weight(1f).padding(bottom = 10.dp),
                 state = focus.list,
@@ -901,7 +932,13 @@ internal fun ColumnScope.SearchResults(
                 contentPadding = PaddingValues(start = 6.dp, end = 6.dp, top = 8.dp, bottom = 22.dp),
             ) {
                 itemsIndexed(entities.chunked(6)) { rowIndex, row ->
-                    Row(focus.rowLayout, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        focus.rowLayout.onFocusChanged {
+                            if (it.hasFocus) focusedRow = rowIndex
+                            else if (focusedRow == rowIndex) focusedRow = null
+                        }.focusGroup(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
                         row.forEachIndexed { col, entry ->
                             PrismSheetCard(
                                 entry.data.optString("title").ifBlank {
@@ -914,7 +951,6 @@ internal fun ColumnScope.SearchResults(
                                 portrait = searchType == "artist",
                                 modifier =
                                     Modifier.focusRequester(entityFocus(entry))
-                                        .keepFocusVisible()
                                         .then(
                                             if (entry === entities.first())
                                                 Modifier.focusAnchor(focus.entry)
@@ -966,6 +1002,8 @@ internal fun ColumnScope.SearchResults(
                         )
                     }
             }
+            }
+        }
     } else {
         if (results.isNotEmpty()) {
             PrismTrackHeader()
@@ -1001,8 +1039,9 @@ internal fun ColumnScope.SearchResults(
                         modifier =
                             (if (index == 0) Modifier.focusAnchor(focus.entry)
                                 else Modifier.focusRequester(rowFocus))
+                                // The row draws its border inside its bounds. Let LazyColumn
+                                // handle focus scrolling without a second reveal request.
                                 .then(focus.rowLayout)
-                                .keepFocusVisible()
                                 .then(
                                     if (index == 0)
                                         Modifier.focusProperties { upTo(focus.chip, focus.input) }

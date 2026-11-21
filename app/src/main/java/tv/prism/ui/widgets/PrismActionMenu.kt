@@ -28,9 +28,6 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -43,7 +40,6 @@ import androidx.compose.ui.window.DialogWindowProvider
 import androidx.tv.material3.Text
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
-import kotlin.math.roundToInt
 import java.util.function.Consumer
 import tv.prism.library.Song
 
@@ -79,19 +75,10 @@ internal fun PrismActionMenu(
     var focusedRow by remember { mutableIntStateOf(-1) }
     var previousCount by remember { mutableIntStateOf(actions.size) }
     val scroll = rememberScrollState()
-    val rowCenters = remember { mutableMapOf<Int, Float>() }
-    var viewportHeight by remember { mutableIntStateOf(0) }
     var visibleNotice by remember { mutableStateOf("") }
     LaunchedEffect(notice) {
         visibleNotice = notice
         if (notice.isNotBlank()) { delay(2200); visibleNotice = "" }
-    }
-    LaunchedEffect(focusedRow, viewportHeight) {
-        if (focusedRow < 0 || viewportHeight == 0) return@LaunchedEffect
-        withFrameNanos { }
-        val center = rowCenters[focusedRow] ?: return@LaunchedEffect
-        val target = (center - viewportHeight / 2f).roundToInt().coerceIn(0, scroll.maxValue)
-        if (motion) scroll.animateScrollTo(target) else scroll.scrollTo(target)
     }
     LaunchedEffect(enabledRows, rowFocus) {
         val changed = previousCount != actions.size
@@ -170,7 +157,7 @@ internal fun PrismActionMenu(
                     }
                 }
                 Box(Modifier.fillMaxWidth().height(1.dp).background(c.line.copy(alpha = .45f)))
-                Column(Modifier.fillMaxWidth().weight(1f, fill = false).onSizeChanged { viewportHeight = it.height }
+                Column(Modifier.fillMaxWidth().weight(1f, fill = false)
                     .verticalScroll(scroll).padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     actions.forEachIndexed { index, action ->
@@ -181,7 +168,6 @@ internal fun PrismActionMenu(
                                 modifier = Modifier.padding(start = 12.dp, top = 3.dp, bottom = 3.dp))
                         }
                         ActionMenuRow(action, { if (action.keepOpen) action.run() else dismiss(action.run) }, { dismiss(null) }, Modifier.focusRequester(rowFocus[index])
-                            .onGloballyPositioned { rowCenters[index] = it.positionInParent().y + it.size.height / 2f }
                             .onFocusChanged { if (it.isFocused) focusedRow = index }.focusProperties {
                             canFocus = action.enabled
                             up = enabledRows.getOrNull(at - 1)?.let { rowFocus[it] } ?: closeFocus
@@ -208,7 +194,7 @@ private fun ActionMenuRow(action: PrismMenuAction, onClick: () -> Unit, onLongPr
         if (c.panel.luminance() > .5f) Color(0xFF9B3C30) else Color(0xFFE3A098)
     } else c.foreground
     Row(modifier.fillMaxWidth().heightIn(min = 48.dp)
-        .then(if (action.enabled) Modifier.auraFocus(RoundedCornerShape(14.dp), 1.035f, ring = if (action.destructive) ink else null).tvClickable({
+        .then(if (action.enabled) Modifier.auraFocus(RoundedCornerShape(14.dp), 1f, ring = if (action.destructive) ink else null).tvClickable({
             if (motion) scope.launch { press.snapTo(.975f); press.animateTo(1f, tween(160)) }
             onClick()
         }, onLongPress) else Modifier)

@@ -90,42 +90,33 @@ import tv.prism.catalog.SearchSuggestion
     }
 }
 
-/* 平台热榜 — the first loaded chart, three lines of it. The whole card is one focus target: four
-   nested focusables inside a 90dp card would cost more navigation than the list is worth.
-   A chart whose preview failed still opens: the detail page fetches it on demand, and a card
-   that refuses focus is a card the remote cannot reach. */
-@Composable fun AuraHotCard(title: String?, songs: List<Song>, onOpen: () -> Unit, modifier: Modifier = Modifier, onLongPress: (() -> Unit)? = null, status: String = "", loading: Boolean = false) {
+@Composable
+internal fun AuraHotCard(
+    title: String, onOpen: () -> Unit, modifier: Modifier = Modifier,
+    status: String = "", loading: Boolean = false,
+) {
     val c = LocalPrismColors.current
-    var focused by remember { mutableStateOf(false) }
-    Column(modifier.auraFocus().onFocusChanged { focused = it.isFocused }.clip(RoundedCornerShape(12.dp))
-        .background(c.panel.copy(alpha = .92f))
-        .border(1.dp, c.line.copy(alpha = .7f), RoundedCornerShape(12.dp))
-        .tvClickable(onOpen, onLongPress).padding(horizontal = 14.dp, vertical = 10.dp)) {
-        Text("平台热榜", color = c.foreground, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
-        Spacer(Modifier.height(2.dp))
-        if (loading && title.isNullOrBlank()) PrismSkeletonLine("榜单加载中", Modifier.width(116.dp).height(15.dp))
-        else Text(title?.ifBlank { null } ?: status.ifBlank { "选择一个音源后显示" }, color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Spacer(Modifier.weight(1f))
-        if (songs.isEmpty() && loading) {
-            PrismSkeletonLine("正在获取歌曲", Modifier.fillMaxWidth(.66f).height(12.dp))
-        } else if (songs.isEmpty()) {
-            /* A chart with no preview rows is a normal answer, not an error: some sources list
-               the chart but serve it only on demand. Say what OK will do instead of leaving a
-               blank card. */
-            Text("按确定打开榜单",
-                color = c.muted.copy(alpha = .8f), fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        // The compact rail is 88dp high: heading + subtitle leave room for one readable row.
-        // The card opens the complete chart; a second row was being clipped at the bottom.
-        } else songs.take(1).forEachIndexed { index, song ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 1.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("%02d".format(index + 1), color = c.accent.copy(alpha = .8f), fontSize = 9.sp, modifier = Modifier.width(22.dp))
-                Text(song.title, color = c.foreground.copy(alpha = .86f), fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f).focusedMarquee(focused))
-                Spacer(Modifier.width(8.dp))
-                Text(song.sourceLabel, color = c.muted.copy(alpha = .85f), fontSize = 9.sp, maxLines = 1,
-                    overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 72.dp))
+    val shape = RoundedCornerShape(12.dp)
+    Row(
+        modifier.auraFocus(shape).clip(shape)
+            .background(c.panel.copy(alpha = .92f))
+            .border(1.dp, c.line.copy(alpha = .7f), shape)
+            .clickable(onClick = onOpen)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Glyph("trendUp", Modifier.size(22.dp), c.accent)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text("平台热榜", color = c.foreground, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            if (loading && title.isBlank()) {
+                PrismSkeletonLine("榜单加载中", Modifier.width(104.dp).height(13.dp))
+            } else {
+                Text(title.ifBlank { status }, color = c.muted, fontSize = 12.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
+        Glyph("chevR", Modifier.size(14.dp), c.muted)
     }
 }
 
@@ -186,11 +177,10 @@ fun PrismCoverCard(song: Song, index: Int, onClick: () -> Unit, modifier: Modifi
     Column(
         modifier
             .width(132.dp)
-            .auraFocus(RoundedCornerShape(14.dp))
+            .auraFocus(RoundedCornerShape(14.dp), scale = 1.035f)
             .onFocusChanged { focused = it.isFocused }
             .clip(RoundedCornerShape(14.dp))
             .background(if (focused) c.accent.copy(alpha = .12f) else Color.Transparent)
-            .border(1.dp, if (focused) c.accent.copy(alpha = .55f) else Color.Transparent, RoundedCornerShape(14.dp))
             .tvClickable(onClick, onLongPress)
             .padding(6.dp),
     ) {
@@ -261,7 +251,10 @@ fun PrismSheetCard(title: String, artwork: String, subtitle: String, modifier: M
 
 /** Section header: name, count, and the way out. */
 @Composable
-fun PrismShelfHeader(title: String, count: Int?, action: String, onAction: () -> Unit, actionFocus: FocusRequester? = null, actionEdges: Modifier = Modifier) {
+fun PrismShelfHeader(
+    title: String, count: Int?, action: String, onAction: () -> Unit, actionFocus: FocusRequester? = null,
+    actionEdges: Modifier = Modifier, actionIcon: String? = null,
+) {
     val c = LocalPrismColors.current
     Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(title, color = c.foreground, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
@@ -272,7 +265,7 @@ fun PrismShelfHeader(title: String, count: Int?, action: String, onAction: () ->
         Spacer(Modifier.weight(1f))
         /* The action sits flush against the page's clipped edge; its focus scale would push
            the ring past the clip, so keep a small inset the scale can live inside. */
-        if (action.isNotBlank()) PrismAction(action, onAction, (if (actionFocus != null) Modifier.focusRequester(actionFocus) else Modifier).then(actionEdges).padding(end = 4.dp))
+        if (action.isNotBlank()) PrismAction(action, onAction, (if (actionFocus != null) Modifier.focusRequester(actionFocus) else Modifier).then(actionEdges).padding(end = 6.dp), icon = actionIcon)
     }
 }
 
@@ -573,7 +566,7 @@ fun PrismPageHead(title: String, trailing: @Composable RowScope.() -> Unit = {})
     Row(Modifier.fillMaxWidth().heightIn(min = 60.dp).padding(bottom = 12.dp), verticalAlignment = Alignment.Bottom) {
         Text(title, fontSize = 26.sp, fontWeight = FontWeight.SemiBold, color = c.foreground)
         Spacer(Modifier.weight(1f))
-        Row(verticalAlignment = Alignment.CenterVertically, content = trailing)
+        Row(Modifier.padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically, content = trailing)
     }
 }
 

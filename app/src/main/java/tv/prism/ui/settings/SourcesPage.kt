@@ -63,7 +63,6 @@ internal fun SourcesPage(
     onStatus: (String) -> Unit,
     searchSubscription: (String) -> Unit,
     fillOnPhone: () -> Unit,
-    openSearch: () -> Unit,
     sourceRow: @Composable (Plugin, Boolean, () -> Unit, Modifier) -> Unit,
 ) {
     val ui by pluginViewModel.state.collectAsState()
@@ -183,9 +182,6 @@ internal fun SourcesPage(
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 16.dp),
             )
 
-        if (state.plugins.any { it.enabled && it.capabilities.has("search") }) {
-            SettingsButton("去搜索歌曲", openSearch)
-        }
         if (ui.adding)
             Dialog(onDismissRequest = { closeAddSource() }) {
                 LaunchedEffect(Unit) {
