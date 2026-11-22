@@ -1426,9 +1426,12 @@ private fun PlayerMenu(
         if (neteaseEnabled) add(LyricSources.NETEASE to "网易云音乐")
     }
     val settled = probes.isNotEmpty() && probes.values.none { it.state == LyricProbeState.LOADING }
-    val ordered = if (settled) {
-        enabledSources.sortedByDescending { probes[it.first]?.payload?.score ?: Int.MIN_VALUE }
-    } else enabledSources
+    /* 固定顺序，结果回来也不重排，否则行位置和焦点都会跳；最佳来源只用文案标出。 */
+    val bestId = if (settled) {
+        enabledSources.map { it.first }
+            .filter { probes[it]?.state == LyricProbeState.READY }
+            .maxByOrNull { probes[it]?.payload?.score ?: Int.MIN_VALUE }
+    } else null
     val activeId = lyricSource.ifBlank { lyricActiveSource }
     val level3 = buildList {
         if (lyricSource.isNotBlank()) add(MenuEntry("restore", "恢复自动选择", "",
@@ -1438,6 +1441,7 @@ private fun PlayerMenu(
             add(MenuEntry(id, name, when {
                 activeId == id -> "使用中"
                 state == LyricProbeState.LOADING -> "查询中…"
+                state == LyricProbeState.READY && id == bestId -> "最佳匹配"
                 state == LyricProbeState.READY -> "可用"
                 state == LyricProbeState.EMPTY -> "无结果"
                 state == LyricProbeState.FAILED -> "连接失败"
@@ -1447,20 +1451,10 @@ private fun PlayerMenu(
                 note = if (state == LyricProbeState.FAILED) "按确定重试" else ""))
         }
         addSource(LyricSources.PLUGIN, "音源插件")
-        ordered.forEach { (id, name) -> addSource(id, name) }
+        enabledSources.forEach { (id, name) -> addSource(id, name) }
     }
     val rows = when (level) { 1 -> level1; 2 -> level2; else -> level3 }
     val index = row.coerceIn(0, rows.lastIndex)
-    /* 查询结果落定后按匹配度重排，焦点跟着原来那一行走，不会跳到别的源。 */
-    var seenIds by remember { mutableStateOf<List<String>>(emptyList()) }
-    LaunchedEffect(level, rows.map { it.id }) {
-        if (level == 3) {
-            val id = seenIds.getOrNull(row)
-            val next = rows.indexOfFirst { it.id == id }
-            if (next >= 0 && next != row) row = next
-            seenIds = rows.map { it.id }
-        }
-    }
 
     fun stepFont(dir: Int) {
         val options = lyricFontLevels
