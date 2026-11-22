@@ -177,7 +177,7 @@ fun PrismCoverCard(song: Song, index: Int, onClick: () -> Unit, modifier: Modifi
     Column(
         modifier
             .width(132.dp)
-            .auraFocus(RoundedCornerShape(14.dp), scale = 1.035f)
+            .auraFocus(RoundedCornerShape(14.dp), scale = 1.035f, instantRing = true)
             .onFocusChanged { focused = it.isFocused }
             .clip(RoundedCornerShape(14.dp))
             .background(if (focused) c.accent.copy(alpha = .12f) else Color.Transparent)
@@ -265,7 +265,7 @@ fun PrismShelfHeader(
         Spacer(Modifier.weight(1f))
         /* The action sits flush against the page's clipped edge; its focus scale would push
            the ring past the clip, so keep a small inset the scale can live inside. */
-        if (action.isNotBlank()) PrismAction(action, onAction, (if (actionFocus != null) Modifier.focusRequester(actionFocus) else Modifier).then(actionEdges).padding(end = 6.dp), icon = actionIcon)
+        if (action.isNotBlank()) PrismAction(action, onAction, (if (actionFocus != null) Modifier.focusRequester(actionFocus) else Modifier).then(actionEdges).padding(end = 6.dp), icon = actionIcon, instantFocus = true)
     }
 }
 

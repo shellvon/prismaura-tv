@@ -35,7 +35,7 @@ import tv.prism.ui.widgets.LocalPrismColors
 import tv.prism.ui.widgets.FocusAnchor
 import tv.prism.ui.widgets.requestIfAttached
 
-@Composable internal fun Input(value: String, onChange: (String) -> Unit, hint: String, modifier: Modifier = Modifier, secret: Boolean = false, keyboardType: KeyboardType = KeyboardType.Text, manualKeyboard: Boolean = false, onSubmit: (() -> Unit)? = null, downTarget: FocusAnchor? = null) {
+@Composable internal fun Input(value: String, onChange: (String) -> Unit, hint: String, modifier: Modifier = Modifier, secret: Boolean = false, keyboardType: KeyboardType = KeyboardType.Text, manualKeyboard: Boolean = false, onSubmit: (() -> Unit)? = null, downTarget: FocusAnchor? = null, onEditingChange: (Boolean) -> Unit = {}) {
     var focused by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(!manualKeyboard) }
     var textFieldValue by remember { mutableStateOf(TextFieldValue(value, selection = TextRange(value.length))) }
@@ -46,7 +46,10 @@ import tv.prism.ui.widgets.requestIfAttached
     LaunchedEffect(value) {
         if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, selection = TextRange(value.length))
     }
-    LaunchedEffect(editing) { if (manualKeyboard && editing) { withFrameNanos { }; keyboardController?.show() } }
+    LaunchedEffect(editing) {
+        onEditingChange(editing)
+        if (manualKeyboard && editing) { withFrameNanos { }; keyboardController?.show() }
+    }
     /* A read-only field can still be handed the IME the moment it gains focus, which is exactly
        when the remote is travelling through with direction keys. Keep it closed until OK asks. */
     LaunchedEffect(focused, editing) {

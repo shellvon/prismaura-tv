@@ -277,6 +277,7 @@ private const val CARD_FOCUS_SCALE = 1.05f
 
 @Composable internal fun Modifier.auraFocus(
     shape: RoundedCornerShape = RoundedCornerShape(12.dp), scale: Float = CARD_FOCUS_SCALE, ring: Color? = null,
+    instantRing: Boolean = false,
 ): Modifier {
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
@@ -293,7 +294,7 @@ private const val CARD_FOCUS_SCALE = 1.05f
         }
         .drawWithContent {
             val radius = CornerRadius(shape.topStart.toPx(size, this))
-            val amount = emphasis
+            val amount = if (instantRing) { if (focused) 1f else 0f } else emphasis
             if (amount > 0f) drawRoundRect(c.accent.copy(alpha = amount * .09f), cornerRadius = radius)
             drawContent()
             if (amount > 0f) {

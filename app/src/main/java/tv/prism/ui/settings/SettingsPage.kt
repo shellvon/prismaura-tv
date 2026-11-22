@@ -538,6 +538,10 @@ internal fun PlaybackSettings(
     lyricFontLevel: String,
     hideHeading: Boolean,
     subLyrics: Boolean,
+    lyricMode: String,
+    lyricLrclib: Boolean,
+    lyricKugou: Boolean,
+    lyricNetease: Boolean,
     entry: FocusAnchor,
     entryEdge: Modifier,
     edgeToRail: Modifier,
@@ -656,6 +660,49 @@ internal fun PlaybackSettings(
             subLyrics,
             { updatePreference("subLyrics", it.toString()) },
             edgeToRail.rememberFocus(bodyFocusMemory),
+        )
+        SettingsDivider()
+        val lyricModes = listOf(
+            tv.prism.lyrics.LyricSourcePrefs.MODE_AUTO to "插件优先",
+            tv.prism.lyrics.LyricSourcePrefs.MODE_PLUGIN_ONLY to "仅插件",
+        )
+        fun pickLyricMode(value: String) = updatePreference("lyricMode", value)
+        fun cycleLyricMode() {
+            val i = lyricModes.indexOfFirst { it.first == lyricMode }
+            if (i < 0) return
+            pickLyricMode(lyricModes[(i + 1) % lyricModes.size].first)
+        }
+        SettingsRow(
+            "歌词来源",
+            if (lyricMode == tv.prism.lyrics.LyricSourcePrefs.MODE_AUTO) "插件无可用歌词或等待超过 2 秒时，才查找外部歌词" else "只用插件，不访问外部源",
+            modifier = edgeToRail.rememberFocus(bodyFocusMemory),
+            onActivate = { cycleLyricMode() },
+        ) {
+            SettingsSeg(lyricModes, lyricMode, ::pickLyricMode)
+        }
+        SettingsDivider()
+        PrismSwitchRow(
+            "LRCLIB 外部源",
+            lyricLrclib,
+            { updatePreference("lyricLrclib", it.toString()) },
+            edgeToRail.rememberFocus(bodyFocusMemory),
+            description = "公开逐行歌词库，不需要 Key",
+        )
+        SettingsDivider()
+        PrismSwitchRow(
+            "酷狗外部源",
+            lyricKugou,
+            { updatePreference("lyricKugou", it.toString()) },
+            edgeToRail.rememberFocus(bodyFocusMemory),
+            description = "中文曲库覆盖更好，接口失效时自动忽略",
+        )
+        SettingsDivider()
+        PrismSwitchRow(
+            "网易云外部源",
+            lyricNetease,
+            { updatePreference("lyricNetease", it.toString()) },
+            edgeToRail.rememberFocus(bodyFocusMemory),
+            description = "简体中文曲库，带翻译，不需要 Key",
         )
     }
 }

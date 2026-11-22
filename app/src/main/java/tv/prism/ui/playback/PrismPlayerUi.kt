@@ -158,6 +158,9 @@ import tv.prism.sources.MusicPlatform
 import tv.prism.ui.widgets.PlatformIcon
 import tv.prism.ui.widgets.AuraProgress
 import tv.prism.lyrics.LyricCalibration
+import tv.prism.lyrics.LyricProbe
+import tv.prism.lyrics.LyricProbeState
+import tv.prism.lyrics.LyricSources
 import tv.prism.ui.widgets.LocalMarqueeSuspended
 import tv.prism.ui.widgets.PrismCapsule
 import tv.prism.lyrics.lyricCues
@@ -404,7 +407,7 @@ private fun CoverPlate(song: Song?, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun PrismPlayer(
+internal fun PrismPlayer(
     song: Song?, lyrics: List<LyricLine>, lyricStatus: LyricStatus, position: () -> Long, duration: Long,
     playing: Boolean, playMode: PlaybackMode, favorite: Boolean, quality: String, playingQuality: String,
     queueIndex: Int, queueSize: Int, status: String,
@@ -437,6 +440,15 @@ fun PrismPlayer(
     hideHeading: Boolean = true, onHideHeading: (Boolean) -> Unit = {},
     subLyrics: Boolean = true,
     onSubLyrics: (Boolean) -> Unit = {},
+    lyricSource: String = "",
+    lyricSourceLabel: String = "",
+    lyricActiveSource: String = "",
+    lyricLrclib: Boolean = true,
+    lyricKugou: Boolean = true,
+    lyricNetease: Boolean = true,
+    lyricProbes: Map<String, LyricProbe> = emptyMap(),
+    onProbeLyrics: () -> Unit = {},
+    onLyricSource: (String?) -> Unit = {},
     lyricOffsetMs: Long = 0L,
     visible: Boolean = true,
     onLyricCalibration: (Long) -> Unit = {},
@@ -919,6 +931,11 @@ fun PrismPlayer(
                 canArtist = artistName != null && onArtist != null, canAlbum = albumName != null && onAlbum != null,
                 hideHeading = hideHeading, onHideHeading = onHideHeading,
                 fontLevel = lyricFontLevel, subLyrics = subLyrics, offsetMs = lyricOffsetMs,
+                lyricSource = lyricSource, lyricSourceLabel = lyricSourceLabel,
+                lyricActiveSource = lyricActiveSource,
+                lrclibEnabled = lyricLrclib, kugouEnabled = lyricKugou, neteaseEnabled = lyricNetease,
+                lyricStatus = lyricStatus, probes = lyricProbes, onProbe = onProbeLyrics,
+                onLyricSource = onLyricSource,
                 canCalibrate = lyrics.isNotEmpty(),
                 onClose = { menuOpen = false },
                 onQuality = { onSelectQuality(it) },
@@ -1276,9 +1293,8 @@ private fun Immersion(
 }
 
 /* 一行只做一件事，控件形状说出是哪件：Step = 左右键改值（‹ v ›），Open = OK 进下一层（›），
-   Toggle = 开关（胶囊）。以前 极光电台 是光秃秃一个「关」字、歌词是圆圈里的 ⌄、布尔值又画成
-   ‹ 开 ›，同一件事三种画法——这里按种类定形，不再按页面定形。 */
-private enum class RowKind { Step, Open, Toggle }
+   Toggle = 开关（胶囊），Select = 单选（确定即生效，不画箭头）。 */
+private enum class RowKind { Step, Open, Toggle, Select }
 
 internal const val LYRIC_HEADING_HINT = "隐藏开头重复的歌名和歌手。若第一句歌词也被隐藏，可关闭此项。"
 
@@ -1305,6 +1321,10 @@ private fun PlayerMenu(
     canArtist: Boolean, canAlbum: Boolean,
     hideHeading: Boolean, onHideHeading: (Boolean) -> Unit,
     fontLevel: String, subLyrics: Boolean, offsetMs: Long, canCalibrate: Boolean,
+    lyricSource: String, lyricSourceLabel: String, lyricActiveSource: String,
+    lrclibEnabled: Boolean, kugouEnabled: Boolean, neteaseEnabled: Boolean,
+    lyricStatus: LyricStatus, probes: Map<String, LyricProbe>, onProbe: () -> Unit,
+    onLyricSource: (String?) -> Unit,
     onClose: () -> Unit, onQuality: (String) -> Unit, onArtist: () -> Unit, onAlbum: () -> Unit,
     onOtherSources: (() -> Unit)?,
     onFontLevel: (String) -> Unit, onSubLyrics: (Boolean) -> Unit, onCalibration: (Long) -> Unit,
@@ -1317,6 +1337,7 @@ private fun PlayerMenu(
     var row by remember { mutableIntStateOf(0) }
     // Returning from lyric settings restores the parent row.
     var parentRow by remember { mutableIntStateOf(0) }
+    var sourceRow by remember { mutableIntStateOf(0) }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; runCatching { focus.requestFocus() } }
     val enter = remember { Animatable(if (motion) 0f else 1f) }
@@ -1380,14 +1401,66 @@ private fun PlayerMenu(
             on = radioActive, icon = "radio"))
     }
     val level2 = buildList {
-        add(MenuEntry("font", "字号", fontLevel, false, RowKind.Step, icon = "lyric"))
-        add(MenuEntry("heading", "自动隐藏片头署名", "", false, RowKind.Toggle, on = hideHeading, icon = "lyric"))
+        add(MenuEntry("font", "字号", fontLevel, false, RowKind.Step, icon = "fontSize"))
+        add(MenuEntry("heading", "自动隐藏片头署名", "", false, RowKind.Toggle, on = hideHeading, icon = "eyeOff"))
         add(MenuEntry("sub", "翻译与注音", "", false, RowKind.Toggle, on = subLyrics, icon = "layers"))
+        val currentSource = lyricSourceLabel.ifBlank {
+            if (lyricSource.isBlank()) "自动" else LyricSources.label(lyricSource)
+        }
+        val stateNote = when (lyricStatus) {
+            LyricStatus.Loading -> "加载中…"
+            LyricStatus.Ready -> "已加载"
+            LyricStatus.Error -> "加载失败"
+            is LyricStatus.Empty -> "暂无歌词"
+        }
+        add(MenuEntry("source", "歌词来源", currentSource, false, RowKind.Open,
+            note = stateNote, icon = "list"))
         /* 没有歌词就没有可校准的东西，这一行不出现。 */
         if (canCalibrate) add(MenuEntry("calibrate", "时间校准", calibrationText(offsetMs), false, RowKind.Step, icon = "history"))
     }
-    val rows = if (level == 1) level1 else level2
+    /* 打开来源列表时才请求，每行说清自己处在哪一步：查询中、可用、无结果、连接失败。
+       「使用中」是选择，不是可进入的入口，所以这些行一律不画 ›。 */
+    val enabledSources = buildList {
+        if (lrclibEnabled) add(LyricSources.LRCLIB to "LRCLIB")
+        if (kugouEnabled) add(LyricSources.KUGOU to "酷狗音乐")
+        if (neteaseEnabled) add(LyricSources.NETEASE to "网易云音乐")
+    }
+    val settled = probes.isNotEmpty() && probes.values.none { it.state == LyricProbeState.LOADING }
+    val ordered = if (settled) {
+        enabledSources.sortedByDescending { probes[it.first]?.payload?.score ?: Int.MIN_VALUE }
+    } else enabledSources
+    val activeId = lyricSource.ifBlank { lyricActiveSource }
+    val level3 = buildList {
+        if (lyricSource.isNotBlank()) add(MenuEntry("restore", "恢复自动选择", "",
+            false, RowKind.Select, icon = "lyric", note = "插件优先"))
+        fun addSource(id: String, name: String) {
+            val state = probes[id]?.state ?: LyricProbeState.LOADING
+            add(MenuEntry(id, name, when {
+                activeId == id -> "使用中"
+                state == LyricProbeState.LOADING -> "查询中…"
+                state == LyricProbeState.READY -> "可用"
+                state == LyricProbeState.EMPTY -> "无结果"
+                state == LyricProbeState.FAILED -> "连接失败"
+                else -> "不支持歌词"
+            }, state == LyricProbeState.EMPTY || state == LyricProbeState.UNSUPPORTED,
+                RowKind.Select, icon = "layers",
+                note = if (state == LyricProbeState.FAILED) "按确定重试" else ""))
+        }
+        addSource(LyricSources.PLUGIN, "音源插件")
+        ordered.forEach { (id, name) -> addSource(id, name) }
+    }
+    val rows = when (level) { 1 -> level1; 2 -> level2; else -> level3 }
     val index = row.coerceIn(0, rows.lastIndex)
+    /* 查询结果落定后按匹配度重排，焦点跟着原来那一行走，不会跳到别的源。 */
+    var seenIds by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(level, rows.map { it.id }) {
+        if (level == 3) {
+            val id = seenIds.getOrNull(row)
+            val next = rows.indexOfFirst { it.id == id }
+            if (next >= 0 && next != row) row = next
+            seenIds = rows.map { it.id }
+        }
+    }
 
     fun stepFont(dir: Int) {
         val options = lyricFontLevels
@@ -1425,7 +1498,13 @@ private fun PlayerMenu(
                         if (closing) return@onPreviewKeyEvent true
                         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                         val n = rows.size
-                        fun back() { if (level == 2) { level = 1; row = parentRow } else dismiss() }
+                        fun back() {
+                            when (level) {
+                                2 -> { level = 1; row = parentRow }
+                                3 -> { level = 2; row = sourceRow }
+                                else -> dismiss()
+                            }
+                        }
                         fun activate() {
                             val entry = rows[index]
                             /* 置灰的行用确定键也不该有动作 —— 箭头可以不动，回车更不该假装能动。 */
@@ -1441,6 +1520,14 @@ private fun PlayerMenu(
                                 "font" -> stepFont(1)
                                 "heading" -> onHideHeading(!hideHeading)
                                 "sub" -> onSubLyrics(!subLyrics)
+                                "source" -> { sourceRow = index; onProbe(); level = 3; row = 0 }
+                                /* 选源是最后一步：切换后收起菜单，回歌词页看效果。 */
+                                "restore" -> { onLyricSource(null); dismiss() }
+                                /* 连接失败说明「这次没问到」，不是「这首歌没有」：
+                                   确定键先重试一轮，不切源也不收起菜单。 */
+                                "plugin", "lrclib", "kugou", "netease" ->
+                                    if (probes[entry.id]?.state == LyricProbeState.FAILED) onProbe()
+                                    else { onLyricSource(entry.id); dismiss() }
                                 "calibrate" -> onCalibration((offsetMs + 100).coerceIn(-LyricCalibration.LIMIT_MS, LyricCalibration.LIMIT_MS))
                             }
                         }
@@ -1455,7 +1542,7 @@ private fun PlayerMenu(
                                 "calibrate" -> onCalibration((offsetMs + dir * 100L).coerceIn(-LyricCalibration.LIMIT_MS, LyricCalibration.LIMIT_MS))
                                 /* 画了 › 的行，右键就该和确定键做同一件事：那个箭头的含义
                                    就是「往右能进去」。只有确定能进的行，不该有箭头。 */
-                                "artist", "album", "lyric" -> if (dir > 0) activate()
+                                "artist", "album", "lyric", "source" -> if (dir > 0) activate()
                                 /* 别的行不认左右：一级页按左不该把整个面板收掉——那和
                                    「退出」是两件事，却被同一个键做了。 */
                                 else -> Unit
@@ -1515,7 +1602,7 @@ private fun PlayerMenu(
                         Box(Modifier.fillMaxWidth().height(1.dp).background(c.foreground.copy(alpha = .09f)))
                         Spacer(Modifier.height(4.dp))
                     } else {
-                        Text("‹　歌词", color = c.muted, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
+                        Text(if (level == 3) "‹　歌词来源" else "‹　歌词", color = c.muted, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
                         Box(Modifier.fillMaxWidth().height(1.dp).background(c.foreground.copy(alpha = .09f)))
                         Spacer(Modifier.height(4.dp))
                     }

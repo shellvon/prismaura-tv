@@ -26,6 +26,10 @@ internal fun MainActivity.TrackActionsMenu(
     onDismiss: () -> Unit,
 ) {
     val song = target.song
+    var pickingPlaylist by remember(song.key) { mutableStateOf(false) }
+    val picker: (@Composable () -> Unit)? = if (pickingPlaylist) {
+        { PlaylistPickerPanel(song, libraryState, onDismiss) }
+    } else null
     var favoritePending by remember(song.key) { mutableStateOf(false) }
     var menuNotice by remember(song.key) { mutableStateOf("") }
     val saved = libraryState.favorites.any { it.key == song.key }
@@ -35,7 +39,7 @@ internal fun MainActivity.TrackActionsMenu(
     /* Search-type support is declared per plugin. Asking an album search of a
        music-only source returns nothing, so fall back to a song search. */
     val albumSearch = activePlugins.any { supportsSubjectSearch(it, "album") }
-    PrismActionMenu(song.title, song.artist, song, onDismiss = onDismiss, notice = menuNotice, actions = buildList {
+    PrismActionMenu(song.title, song.artist, song, onDismiss = onDismiss, notice = menuNotice, replacement = picker, actions = buildList {
             add(PrismMenuAction("下一首播放", "queueNext") { onDismiss(); enqueueSong(song, next = true) })
             add(PrismMenuAction("添加到播放队列", "queueAdd") { onDismiss(); enqueueSong(song, next = false) })
             add(PrismMenuAction(if (favoritePending) "正在保存…" else if (saved) "取消收藏" else "收藏歌曲", if (saved) "heartFilled" else "heart", active = saved, keepOpen = true) {
@@ -48,6 +52,7 @@ internal fun MainActivity.TrackActionsMenu(
                     }, onFailure = { favoritePending = false; menuNotice = it; status = it })
                 }
             })
+            add(PrismMenuAction("添加到歌单", "list", navigates = true, keepOpen = true) { pickingPlaylist = true })
             if (openOtherSources != null) add(PrismMenuAction("其他音源", "layers", section = PrismMenuSection.RELATED) {
                 openOtherSources()
             })
@@ -133,7 +138,19 @@ internal fun MainActivity.CollectionActionsMenu(
 ) {
     var confirming by remember(target) { mutableStateOf(false) }
     var removing by remember(target) { mutableStateOf(false) }
+    var renaming by remember(target) { mutableStateOf(false) }
     var error by remember(target) { mutableStateOf("") }
+    val renamePanel: (@Composable () -> Unit)? =
+        if (renaming && target.playlistId != null) {
+            {
+                RenamePlaylistPanel(
+                    playlistId = target.playlistId,
+                    currentName = target.title,
+                    onDone = { renaming = false; onDismiss() },
+                    onCancel = { renaming = false },
+                )
+            }
+        } else null
     val verb = if (target.playlistId != null) "删除歌单" else "取消专辑收藏"
     if (confirming) PrismConfirmDialog(verb,
         (if (target.playlistId != null) "删除本机歌单「${target.title}」？此操作无法撤销。" else "取消这张专辑中 ${target.songs.size} 首歌曲的收藏？") +
@@ -153,13 +170,19 @@ internal fun MainActivity.CollectionActionsMenu(
                 }
             }
         }, confirmIcon = if (target.playlistId != null) "trash" else "heart")
-    else PrismActionMenu(target.title, "本机 · ${target.songs.size} 首", onDismiss = onDismiss, actions = listOf(
-        PrismMenuAction("播放全部", "play", enabled = target.songs.isNotEmpty(), description = if (target.songs.isEmpty()) "这个歌单还没有歌曲" else "") {
+    else PrismActionMenu(target.title, "本机 · ${target.songs.size} 首", onDismiss = onDismiss,
+        replacement = renamePanel, actions = buildList {
+        add(PrismMenuAction("播放全部", "play", enabled = target.songs.isNotEmpty(), description = if (target.songs.isEmpty()) "这个歌单还没有歌曲" else "") {
             onDismiss(); playCollection(target.songs)
-        },
-        PrismMenuAction("随机播放", "shuffle", enabled = target.songs.isNotEmpty()) {
+        })
+        add(PrismMenuAction("随机播放", "shuffle", enabled = target.songs.isNotEmpty()) {
             onDismiss(); playCollection(target.songs, shuffle = true)
-        },
-        PrismMenuAction(verb, if (target.playlistId != null) "trash" else "heart", destructive = true) { error = ""; confirming = true },
-    ))
+        })
+        if (target.playlistId != null) {
+            add(PrismMenuAction("重命名歌单", "keyboard", navigates = true, section = PrismMenuSection.MANAGEMENT) {
+                renaming = true
+            })
+        }
+        add(PrismMenuAction(verb, if (target.playlistId != null) "trash" else "heart", destructive = true) { error = ""; confirming = true })
+    })
 }

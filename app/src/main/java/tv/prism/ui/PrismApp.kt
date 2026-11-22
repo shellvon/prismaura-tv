@@ -1727,6 +1727,7 @@ internal fun MainActivity.PrismApp() {
                                             navTabFocus, entryUpScrollsBack, edgeToRail, bodyFocusMemory, ::updatePreference)
                                         "播放" -> PlaybackSettings(quality, autoSourceFallback, playMode, pluginWorkerLimit,
                                             PluginWorkers.automatic(this@PrismApp), showMiniLyrics, lyricFontLevel, hideHeading, subLyrics,
+                                            lyricMode, lyricLrclib, lyricKugou, lyricNetease,
                                             sectionEntryFocus.getValue("播放"), entryEdge, edgeToRail, bodyFocusMemory,
                                             ::updatePreference, { setAutoSourceFallback(it) })
                                     }
@@ -1888,6 +1889,15 @@ internal fun MainActivity.PrismApp() {
                                 onSubLyrics = { show ->
                                     updatePreference("subLyrics", show.toString())
                                 },
+                                lyricSource = lyricSourceOverride.orEmpty(),
+                                lyricSourceLabel = lyricSourceLabel,
+                                lyricActiveSource = lyricActiveSource,
+                                lyricLrclib = lyricLrclib,
+                                lyricKugou = lyricKugou,
+                                lyricNetease = lyricNetease,
+                                lyricProbes = lyricProbes,
+                                onProbeLyrics = { probeLyricSources() },
+                                onLyricSource = { selectLyricSource(it) },
                                 lyricOffsetMs = lyricCalibrationMs,
                                 onLyricCalibration = { value ->
                                     lyricCalibrationMs = value

@@ -61,6 +61,7 @@ internal data class PrismMenuAction(
 internal fun PrismActionMenu(
     title: String, subtitle: String = "", song: Song? = null,
     actions: List<PrismMenuAction>, onDismiss: () -> Unit, notice: String = "",
+    replacement: (@Composable () -> Unit)? = null,
 ) {
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
@@ -83,15 +84,11 @@ internal fun PrismActionMenu(
     LaunchedEffect(enabledRows, rowFocus) {
         val changed = previousCount != actions.size
         previousCount = actions.size
-        if (!closing && focusedRow >= 0 && (changed || focusedRow !in enabledRows)) {
-            /* 条目数量变了，rowFocus 就是新建的一批 FocusRequester，要等这一帧的重组+布局
-               把它们挂上去。withFrameNanos 的回调跑在重组之前，只等一帧会拿到未初始化的
-               requester（IllegalStateException），所以等两帧。 */
+        if (replacement == null && !closing && focusedRow >= 0 && (changed || focusedRow !in enabledRows)) {
             repeat(2) { withFrameNanos { } }
             if (!closing) (first?.let { rowFocus.getOrNull(it) } ?: closeFocus).requestFocus()
         }
     }
-    // Actions own their state transition: close, navigate, or replace this menu with a confirmation.
     val dismiss: ((() -> Unit)?) -> Unit = { action ->
         if (!closing) {
             closing = true
@@ -107,7 +104,6 @@ internal fun PrismActionMenu(
             val window = (view.parent as? DialogWindowProvider)?.window
             val original = window?.attributes?.let { WindowManager.LayoutParams().apply { copyFrom(it) } }
             window?.setDimAmount(.28f)
-            // Android controls blur support and can disable it at runtime; dimming remains available.
             val manager = view.context.getSystemService(WindowManager::class.java)
             val listener = if (Build.VERSION.SDK_INT >= 31 && window != null) Consumer<Boolean> { enabled ->
                 if (enabled) {
@@ -133,52 +129,67 @@ internal fun PrismActionMenu(
             } else false
         }, contentAlignment = Alignment.Center) {
             Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { dismiss(null) } })
-            val shape = RoundedCornerShape(24.dp)
-            Column(Modifier.padding(24.dp).width(560.dp).heightIn(max = (maxHeight - 48.dp).coerceAtLeast(120.dp)).graphicsLayer {
-                alpha = reveal.value
-                translationY = (1f - reveal.value) * 40.dp.toPx()
-            }.clip(shape).background(Brush.verticalGradient(listOf(lerp(c.panel, c.foreground, .035f), c.panel, lerp(c.panel, c.background, .25f))))
-                .border(1.dp, c.line.copy(alpha = .6f), shape)
-                .pointerInput(Unit) { detectTapGestures {} }
-                .padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (song != null) CoverArt(song, Modifier.size(42.dp), radius = 6.dp)
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text(title, color = c.foreground, fontSize = 18.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (subtitle.isNotBlank()) Text(subtitle, color = c.muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    }
-                    Box(Modifier.size(38.dp).focusRequester(closeFocus).focusProperties {
-                        up = FocusRequester.Cancel; down = enabledRows.firstOrNull()?.let { rowFocus[it] } ?: FocusRequester.Cancel
-                        left = FocusRequester.Cancel; right = FocusRequester.Cancel
-                    }.onFocusChanged { if (it.isFocused) focusedRow = -1 }
-                        .auraFocus(RoundedCornerShape(50), 1.04f).semantics { contentDescription = "关闭菜单" }
-                        .tvClickable({ dismiss(null) }, { dismiss(null) }), contentAlignment = Alignment.Center) {
-                        Glyph("close", Modifier.size(20.dp), c.muted)
-                    }
-                }
-                Box(Modifier.fillMaxWidth().height(1.dp).background(c.line.copy(alpha = .45f)))
-                Column(Modifier.fillMaxWidth().weight(1f, fill = false)
-                    .verticalScroll(scroll).padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    actions.forEachIndexed { index, action ->
-                        val at = enabledRows.indexOf(index)
-                        if (showSections && (index == 0 || action.section != actions[index - 1].section)) {
-                            if (index > 0) Box(Modifier.fillMaxWidth().padding(vertical = 5.dp).height(1.dp).background(c.line.copy(alpha = .5f)))
-                            Text(action.section.title, color = c.muted, fontSize = 11.sp,
-                                modifier = Modifier.padding(start = 12.dp, top = 3.dp, bottom = 3.dp))
+            if (replacement != null) {
+                replacement()
+            } else {
+                val shape = RoundedCornerShape(24.dp)
+                Column(Modifier.padding(24.dp).width(560.dp).heightIn(max = (maxHeight - 48.dp).coerceAtLeast(120.dp)).graphicsLayer {
+                    alpha = reveal.value
+                    translationY = (1f - reveal.value) * 40.dp.toPx()
+                }.clip(shape).background(Brush.verticalGradient(listOf(lerp(c.panel, c.foreground, .035f), c.panel, lerp(c.panel, c.background, .25f))))
+                    .border(1.dp, c.line.copy(alpha = .6f), shape)
+                    .pointerInput(Unit) { detectTapGestures {} }
+                    .padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (song != null) CoverArt(song, Modifier.size(38.dp), radius = 6.dp)
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(title, color = c.foreground, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (subtitle.isNotBlank()) Text(subtitle, color = c.muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         }
-                        ActionMenuRow(action, { if (action.keepOpen) action.run() else dismiss(action.run) }, { dismiss(null) }, Modifier.focusRequester(rowFocus[index])
-                            .onFocusChanged { if (it.isFocused) focusedRow = index }.focusProperties {
-                            canFocus = action.enabled
-                            up = enabledRows.getOrNull(at - 1)?.let { rowFocus[it] } ?: closeFocus
-                            down = enabledRows.getOrNull(at + 1)?.let { rowFocus[it] } ?: FocusRequester.Cancel
+                        Box(Modifier.size(38.dp).focusRequester(closeFocus).focusProperties {
+                            up = FocusRequester.Cancel; down = enabledRows.firstOrNull()?.let { rowFocus[it] } ?: FocusRequester.Cancel
                             left = FocusRequester.Cancel; right = FocusRequester.Cancel
-                        })
+                        }.onFocusChanged { if (it.isFocused) focusedRow = -1 }
+                            .auraFocus(RoundedCornerShape(50), 1.04f).semantics { contentDescription = "关闭菜单" }
+                            .tvClickable({ dismiss(null) }, { dismiss(null) }), contentAlignment = Alignment.Center) {
+                            Glyph("close", Modifier.size(20.dp), c.muted)
+                        }
                     }
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.line.copy(alpha = .45f)))
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .weight(1f, fill = false)
+                            .verticalScroll(scroll)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        actions.forEachIndexed { index, action ->
+                            val at = enabledRows.indexOf(index)
+                            if (showSections && (index == 0 || action.section != actions[index - 1].section)) {
+                                if (index > 0) Box(Modifier.fillMaxWidth().padding(vertical = 2.dp).height(1.dp).background(c.line.copy(alpha = .5f)))
+                                Text(action.section.title, color = c.muted, fontSize = 11.sp,
+                                    modifier = Modifier.padding(start = 12.dp, top = 1.dp, bottom = 1.dp))
+                            }
+                            ActionMenuRow(
+                                action,
+                                { if (action.keepOpen) action.run() else dismiss(action.run) },
+                                { dismiss(null) },
+                                Modifier.focusRequester(rowFocus[index])
+                                    .onFocusChanged { if (it.isFocused) focusedRow = index }
+                                    .focusProperties {
+                                        canFocus = action.enabled
+                                        up = enabledRows.getOrNull(at - 1)?.let { rowFocus[it] } ?: closeFocus
+                                        down = enabledRows.getOrNull(at + 1)?.let { rowFocus[it] } ?: FocusRequester.Cancel
+                                        left = FocusRequester.Cancel
+                                        right = FocusRequester.Cancel
+                                    },
+                            )
+                        }
+                    }
+                    Text(visibleNotice.ifBlank { "↑ ↓ 选择    OK 确认    返回或长按关闭" },
+                        color = if (visibleNotice.isBlank()) c.muted else c.foreground, fontSize = 11.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().heightIn(min = 16.dp))
                 }
-                Text(visibleNotice.ifBlank { "↑ ↓ 选择    OK 确认    返回或长按关闭" },
-                    color = if (visibleNotice.isBlank()) c.muted else c.foreground, fontSize = 11.sp,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().heightIn(min = 18.dp))
             }
         }
     }
@@ -194,13 +205,13 @@ private fun ActionMenuRow(action: PrismMenuAction, onClick: () -> Unit, onLongPr
         if (c.panel.luminance() > .5f) Color(0xFF9B3C30) else Color(0xFFE3A098)
     } else c.foreground
     Row(modifier.fillMaxWidth().heightIn(min = 48.dp)
-        .then(if (action.enabled) Modifier.auraFocus(RoundedCornerShape(14.dp), 1f, ring = if (action.destructive) ink else null).tvClickable({
+        .then(if (action.enabled) Modifier.auraFocus(RoundedCornerShape(14.dp), 1f, ring = if (action.destructive) ink else null, instantRing = true).tvClickable({
             if (motion) scope.launch { press.snapTo(.975f); press.animateTo(1f, tween(160)) }
             onClick()
         }, onLongPress) else Modifier)
         .graphicsLayer { alpha = if (action.enabled) 1f else .42f; scaleX = press.value; scaleY = press.value }
         .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Box(Modifier.size(32.dp).background((if (action.destructive) ink else c.accent).copy(alpha = .10f), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
             Glyph(action.icon, Modifier.size(20.dp), if (action.destructive) ink else c.accent)
         }

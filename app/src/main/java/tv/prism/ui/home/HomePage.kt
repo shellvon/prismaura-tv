@@ -178,9 +178,10 @@ internal fun HomePage(
             } else false
         }
     var focusedShelfId by remember { mutableStateOf<String?>(null) }
+    var holdReveal by remember { mutableStateOf(false) }
     val defaultReveal = LocalBringIntoViewSpec.current
     val verticalReveal = remember(defaultReveal) {
-        FocusRowRevealSpec(defaultReveal) { focusedShelfId != null }
+        FocusRowRevealSpec(defaultReveal) { focusedShelfId != null || holdReveal }
     }
     LaunchedEffect(focusedShelfId) {
         val id = focusedShelfId ?: return@LaunchedEffect
@@ -425,9 +426,18 @@ internal fun HomePage(
                                         if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionUp)
                                             return@onPreviewKeyEvent false
                                         returnCard = song.key to index
-                                        shelfActionFocus.requestFocus().also {
-                                            if (!it) returnCard = null
+                                        holdReveal = true
+                                        val moved = shelfActionFocus.requestFocus()
+                                        if (!moved) {
+                                            returnCard = null
+                                            holdReveal = false
+                                        } else focusScope.launch {
+                                            withFrameNanos {}
+                                            withFrameNanos {}
+                                            withFrameNanos {}
+                                            holdReveal = false
                                         }
+                                        moved
                                     }
                                     .then(downToCard(shelfIndex + 1, index))
                                     .onFocusChanged {

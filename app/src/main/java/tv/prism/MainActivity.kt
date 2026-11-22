@@ -100,8 +100,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -170,6 +168,13 @@ import tv.prism.playback.UnsupportedAudioEncryptionException
 import tv.prism.playback.audioQualityLabel
 import tv.prism.playback.recordingDurationMatches
 import tv.prism.lyrics.Lyrics
+import tv.prism.lyrics.LyricPayload
+import tv.prism.lyrics.LyricProbe
+import tv.prism.lyrics.LyricProbeState
+import tv.prism.lyrics.LyricLookup
+import tv.prism.lyrics.LyricSourcePrefs
+import tv.prism.lyrics.LyricSources
+import tv.prism.lyrics.withoutOpeningHeading
 import tv.prism.sources.MusicPlatform
 import tv.prism.sources.SyncResult
 import tv.prism.playback.PlaybackResume
@@ -376,6 +381,17 @@ class MainActivity : ComponentActivity() {
     internal var hideHeading by mutableStateOf(true)
     internal var subLyrics by mutableStateOf(true)
     internal var lyricCalibrationMs by mutableStateOf(0L)
+    internal var lyricMode by mutableStateOf(LyricSourcePrefs.MODE_AUTO)
+    internal var lyricLrclib by mutableStateOf(true)
+    internal var lyricKugou by mutableStateOf(true)
+    internal var lyricNetease by mutableStateOf(true)
+    internal var lyricSourceLabel by mutableStateOf("")
+    internal var lyricActiveSource by mutableStateOf("")
+    internal var lyricSourceOverride by mutableStateOf<String?>(null)
+    internal var lyricOverrideKey = ""
+    internal var lyricProbes by mutableStateOf<Map<String, LyricProbe>>(emptyMap())
+    private var lyricProbeJob: Job? = null
+    private var lyricProbeKey = ""
     internal var positionMs by mutableLongStateOf(0L)
     internal var durationMs by mutableLongStateOf(0L)
     internal var theme by mutableStateOf("gold")
@@ -547,6 +563,10 @@ class MainActivity : ComponentActivity() {
         lyricFontLevel = getSharedPreferences("appearance", MODE_PRIVATE).getString("lyric_font_level", "标准") ?: "标准"
         hideHeading = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("hide_heading", true)
         subLyrics = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("sub_lyrics", true)
+        lyricMode = LyricSourcePrefs.mode(this)
+        lyricLrclib = LyricSourcePrefs.lrclib(this)
+        lyricKugou = LyricSourcePrefs.kugou(this)
+        lyricNetease = LyricSourcePrefs.netease(this)
         pluginWorkerLimit = PluginWorkers.saved(this)
         searchHistory = loadSearchHistory()
         recentArtists = loadRecentArtists()
@@ -1574,25 +1594,164 @@ class MainActivity : ComponentActivity() {
     internal fun loadLyrics(plugin: Plugin, song: Song) {
         lyricJob?.cancel()
         val token = ++lyricToken
+        if (lyricOverrideKey != song.key) { lyricSourceOverride = null; lyricOverrideKey = song.key }
+        if (lyricProbeKey != song.key) {
+            lyricProbeJob?.cancel()
+            lyricProbes = emptyMap()
+            lyricProbeKey = ""
+        }
         lyricJob = lifecycleScope.launch {
+            lyrics = emptyList()
+            lyricSourceLabel = ""
+            lyricActiveSource = ""
+            lyricStatus = LyricStatus.Loading
             try {
-                val supplied = song.data.optString("rawLrc")
-                val result = if (supplied.isNotBlank()) JSONObject().put("rawLrc", supplied)
-                else if (!plugin.capabilities.has("lyric") && song.data.optString("lrc").isBlank()) null
-                else plugins.client.call(plugin.source, plugin.variables, "getLyric", JSONArray().put(song.data), plugin.id) as? JSONObject
-                val text = result?.optString("rawLrc").orEmpty()
-                val translated = result?.optString("translation").orEmpty()
-                val parsed = withContext(Dispatchers.Default) { Lyrics.parse(text, translated) }
-                if (token != lyricToken) return@launch
-                lyrics = parsed
-                lyricStatus = when {
-                    parsed.isNotEmpty() -> LyricStatus.Ready
-                    text.trimStart('\uFEFF', ' ', '\t', '\r', '\n').startsWith("<") -> LyricStatus.Empty("暂无可用歌词")
-                    text.isNotBlank() && !text.trimStart().startsWith("[") -> LyricStatus.Empty(text.take(3000))
-                    else -> LyricStatus.Empty()
+                val direct = song.data.optString("rawLrc").ifBlank { song.data.optString("lrc") }
+                val override = lyricSourceOverride
+                if (direct.isNotBlank() && override == null) {
+                    publishLyric(LyricPayload(
+                        direct,
+                        source = LyricSources.label(LyricSources.PLUGIN),
+                        sourceId = LyricSources.PLUGIN,
+                    ), token)
+                    return@launch
                 }
+                val payload = when {
+                    override == LyricSources.PLUGIN -> pluginLyric(plugin, song)
+                    override != null -> when (val found = LyricSources.lookup(override, song)) {
+                        is LyricLookup.Found -> found.payload
+                        LyricLookup.Missing -> null
+                        LyricLookup.Failed -> error("歌词源连接失败")
+                    }
+                    lyricMode == LyricSourcePrefs.MODE_PLUGIN_ONLY -> pluginLyric(plugin, song)
+                    else -> {
+                        val primary = try {
+                            withTimeoutOrNull(2_000) { pluginLyric(plugin, song) }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            null
+                        }
+                        primary?.takeIf { it.text.isNotBlank() } ?: LyricSources.fetchExternal(
+                            song, lyricLrclib, lyricKugou,
+                            lyricNetease && !(plugin.platform == MusicPlatform.NETEASE && plugin.capabilities.has("lyric")),
+                        )
+                    }
+                }
+                if (token != lyricToken) return@launch
+                if (payload == null || payload.text.isBlank()) {
+                    lyrics = emptyList()
+                    lyricStatus = LyricStatus.Empty()
+                    return@launch
+                }
+                publishLyric(payload, token)
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (_: Exception) { if (token == lyricToken) { lyrics = emptyList(); lyricStatus = LyricStatus.Error } }
+        }
+    }
+
+    private suspend fun publishLyric(payload: LyricPayload, token: Int) {
+        val parsed = withContext(Dispatchers.Default) { Lyrics.parse(payload.text, payload.translation) }
+        if (token != lyricToken) return
+        lyrics = parsed
+        lyricSourceLabel = payload.source
+        lyricActiveSource = payload.sourceId
+        lyricStatus = when {
+            parsed.isNotEmpty() -> LyricStatus.Ready
+            payload.text.trimStart('\uFEFF', ' ', '\t', '\r', '\n').startsWith("<") -> LyricStatus.Empty("暂无可用歌词")
+            payload.text.isNotBlank() && !payload.text.trimStart().startsWith("[") -> LyricStatus.Empty(payload.text.take(3000))
+            else -> LyricStatus.Empty()
+        }
+    }
+
+    private suspend fun pluginLyric(plugin: Plugin, song: Song): LyricPayload? {
+        val supplied = song.data.optString("rawLrc").ifBlank { song.data.optString("lrc") }
+        if (supplied.isNotBlank()) return LyricPayload(supplied,
+            source = LyricSources.label(LyricSources.PLUGIN), sourceId = LyricSources.PLUGIN)
+        if (!plugin.capabilities.has("lyric")) return null
+        val result = plugins.client.call(plugin.source, plugin.variables, "getLyric", JSONArray().put(song.data), plugin.id) as? JSONObject
+            ?: return null
+        val text = result.optString("rawLrc")
+        if (text.isBlank()) return null
+        return LyricPayload(text, result.optString("translation"),
+            LyricSources.label(LyricSources.PLUGIN), sourceId = LyricSources.PLUGIN)
+    }
+
+    internal fun selectLyricSource(source: String?) {
+        val song = playbackSong() ?: return
+        val plugin = plugins.state.value.plugins.firstOrNull { it.id == song.pluginId } ?: return
+        lyricSourceOverride = source
+        lyricOverrideKey = song.key
+        val cached = source?.let { id ->
+            lyricProbes[id]?.takeIf { it.state == LyricProbeState.READY }?.payload
+        }
+        if (cached == null) { loadLyrics(plugin, song); return }
+        lyricJob?.cancel()
+        val token = ++lyricToken
+        lyricJob = lifecycleScope.launch {
+            lyrics = emptyList()
+            lyricSourceLabel = ""
+            lyricActiveSource = ""
+            lyricStatus = LyricStatus.Loading
+            publishLyric(cached, token)
+        }
+    }
+
+    private fun setLyricProbe(source: String, probe: LyricProbe) {
+        val song = playbackSong() ?: return
+        if (lyricProbeKey != song.key) return
+        lyricProbes = lyricProbes + (source to probe)
+    }
+
+    internal fun probeLyricSources() {
+        val song = playbackSong() ?: return
+        val sameSong = lyricProbeKey == song.key
+        val settled = sameSong && lyricProbes.isNotEmpty() &&
+            lyricProbes.values.none { it.state == LyricProbeState.LOADING || it.state == LyricProbeState.FAILED }
+        if (settled || (sameSong && lyricProbeJob?.isActive == true)) return
+        lyricProbeJob?.cancel()
+        lyricProbeKey = song.key
+        val plugin = plugins.state.value.plugins.firstOrNull { it.id == song.pluginId }
+        val external = buildList {
+            if (lyricLrclib) add(LyricSources.LRCLIB)
+            if (lyricKugou) add(LyricSources.KUGOU)
+            if (lyricNetease) add(LyricSources.NETEASE)
+        }
+        lyricProbes = (listOf(LyricSources.PLUGIN) + external).associateWith { id ->
+            /* 重试只补没问到的源：已经拿到的结果留着，列表不会整体闪回「查询中」。 */
+            (if (sameSong) lyricProbes[id]?.takeIf {
+                it.state == LyricProbeState.READY || it.state == LyricProbeState.EMPTY ||
+                    it.state == LyricProbeState.UNSUPPORTED
+            } else null) ?: LyricProbe(LyricProbeState.LOADING)
+        }
+        val pending = lyricProbes.filterValues { it.state == LyricProbeState.LOADING }.keys
+        lyricProbeJob = lifecycleScope.launch {
+            if (LyricSources.PLUGIN in pending) launch {
+                val supplied = song.data.optString("rawLrc").ifBlank { song.data.optString("lrc") }
+                val payload = if (supplied.isNotBlank()) {
+                    LyricPayload(supplied,
+                        source = LyricSources.label(LyricSources.PLUGIN),
+                        sourceId = LyricSources.PLUGIN)
+                } else if (plugin != null && plugin.capabilities.has("lyric")) {
+                    runCatching { pluginLyric(plugin, song) }.getOrNull()
+                } else null
+                setLyricProbe(
+                    LyricSources.PLUGIN,
+                    if (payload == null) LyricProbe(LyricProbeState.UNSUPPORTED)
+                    else LyricProbe(LyricProbeState.READY, payload),
+                )
+            }
+            external.forEach { id ->
+                if (id !in pending) return@forEach
+                launch {
+                    val probe = when (val result = LyricSources.lookup(id, song)) {
+                        is LyricLookup.Found -> LyricProbe(LyricProbeState.READY, result.payload)
+                        LyricLookup.Missing -> LyricProbe(LyricProbeState.EMPTY)
+                        LyricLookup.Failed -> LyricProbe(LyricProbeState.FAILED)
+                    }
+                    setLyricProbe(id, probe)
+                }
+            }
         }
     }
 
@@ -1781,6 +1940,20 @@ class MainActivity : ComponentActivity() {
                 lyricFontLevel = value
                 getSharedPreferences("appearance", MODE_PRIVATE).edit().putString("lyric_font_level", value).apply()
             }
+            "lyricMode" -> {
+                require(value in setOf(LyricSourcePrefs.MODE_AUTO, LyricSourcePrefs.MODE_PLUGIN_ONLY)) { "未知歌词来源" }
+                lyricMode = value
+                getSharedPreferences(LyricSourcePrefs.PREFS, MODE_PRIVATE).edit().putString("mode", value).apply()
+            }
+            "lyricLrclib", "lyricKugou", "lyricNetease" -> {
+                val enabled = value.toBooleanStrictOrNull() ?: error("开关值无效")
+                val preference = when (key) {
+                    "lyricLrclib" -> { lyricLrclib = enabled; "lrclib" }
+                    "lyricKugou" -> { lyricKugou = enabled; "kugou" }
+                    else -> { lyricNetease = enabled; "netease" }
+                }
+                getSharedPreferences(LyricSourcePrefs.PREFS, MODE_PRIVATE).edit().putBoolean(preference, enabled).apply()
+            }
             "pluginWorkerLimit" -> {
                 val limit = value.toIntOrNull() ?: error("并发数无效")
                 require(limit in 0..4) { "并发数应为 0～4" }
@@ -1822,6 +1995,10 @@ class MainActivity : ComponentActivity() {
         lyricFontLevel = getSharedPreferences("appearance", MODE_PRIVATE).getString("lyric_font_level", "标准") ?: "标准"
         hideHeading = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("hide_heading", true)
         subLyrics = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("sub_lyrics", true)
+        lyricMode = LyricSourcePrefs.mode(this)
+        lyricLrclib = LyricSourcePrefs.lrclib(this)
+        lyricKugou = LyricSourcePrefs.kugou(this)
+        lyricNetease = LyricSourcePrefs.netease(this)
         lyricCalibrationMs = playbackSong()?.let { LyricCalibration.load(this, it.key) } ?: 0L
         pluginWorkerLimit = PluginWorkers.saved(this)
         homeShelfHidden = getSharedPreferences("home", MODE_PRIVATE).getStringSet("hidden_shelves", null)?.toSet() ?: emptySet()

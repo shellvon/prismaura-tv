@@ -322,6 +322,23 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
                 drawLine(color, p(.58f, .63f), p(.84f, .63f), w, StrokeCap.Round)
                 drawLine(color, p(.50f, .82f), p(.84f, .82f), w, StrokeCap.Round)
             }
+            /* A 字：只说「字号」，不借用歌词或均衡器的图形。 */
+            "fontSize" -> {
+                drawLine(color, p(.28f, .80f), p(.50f, .18f), w, StrokeCap.Round)
+                drawLine(color, p(.50f, .18f), p(.72f, .80f), w, StrokeCap.Round)
+                drawLine(color, p(.38f, .56f), p(.62f, .56f), w, StrokeCap.Round)
+            }
+            /* 眼睛加一道斜线：隐藏，而不是「灯关了」。 */
+            "eyeOff" -> {
+                drawPath(path {
+                    moveTo(s * .14f, s * .50f)
+                    cubicTo(s * .28f, s * .26f, s * .72f, s * .26f, s * .86f, s * .50f)
+                    cubicTo(s * .72f, s * .74f, s * .28f, s * .74f, s * .14f, s * .50f)
+                    close()
+                }, color, style = Stroke(w, join = StrokeJoin.Round))
+                drawCircle(color, radius = s * .085f, center = p(.50f, .50f), style = Stroke(w))
+                drawLine(color, p(.18f, .18f), p(.82f, .82f), w, StrokeCap.Round)
+            }
             "palette" -> {
                 drawCircle(color, radius = s * .40f, center = p(.5f, .5f), style = Stroke(w))
                 for (dot in listOf(p(.32f, .52f), p(.41f, .33f), p(.60f, .31f))) drawCircle(color, s * .05f, dot)

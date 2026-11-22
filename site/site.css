@@ -239,7 +239,6 @@ button { color: inherit; }
 .install-section__inner { display: flex; align-items: end; justify-content: space-between; gap: 48px; padding: clamp(38px, 6vw, 76px); overflow: hidden; border: 1px solid rgba(230,187,115,.24); border-radius: 20px; background: radial-gradient(ellipse at 10% 0%, rgba(178,126,55,.19), transparent 56%), linear-gradient(115deg, #191612, #0d0d0c 70%); }
 .install-section h2 { font-size: clamp(2.5rem, 4.4vw, 4.5rem); }
 .install-section__actions { display: grid; justify-items: start; gap: 11px; flex: none; }
-.download-badge { display: block; height: 20px; max-width: 100%; }
 .install-section__actions small { margin-top: 7px; color: #847d72; font-size: .68rem; line-height: 1.7; }
 .footer { padding: 48px 0 28px; border-top: 1px solid rgba(255,255,255,.06); }
 .footer__top { display: flex; justify-content: space-between; align-items: center; gap: 28px; }

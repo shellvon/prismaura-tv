@@ -360,11 +360,12 @@ fun prismColors(theme: String): PrismColors = when (theme) {
     label: String, onClick: () -> Unit, modifier: Modifier = Modifier,
     primary: Boolean = false, live: Boolean = false,
     enabled: Boolean = true, onLongPress: (() -> Unit)? = null,
-    icon: String? = null,
+    icon: String? = null, instantFocus: Boolean = false,
 ) {
     val c = LocalPrismColors.current
     Box(modifier.heightIn(min = 42.dp)
-        .then(if (enabled) Modifier.auraFocus(RoundedCornerShape(50), ring = if (primary) c.foreground else null) else Modifier)
+        .then(if (enabled) Modifier.auraFocus(RoundedCornerShape(50), scale = if (instantFocus) 1f else 1.05f,
+            ring = if (primary) c.foreground else null, instantRing = instantFocus) else Modifier)
         .clip(RoundedCornerShape(50)).background(if (primary) c.accent else c.panel)
         .then(if (enabled) Modifier.tvClickable(onClick, onLongPress) else Modifier.focusProperties { canFocus = false })
         .alpha(if (enabled) 1f else .42f)

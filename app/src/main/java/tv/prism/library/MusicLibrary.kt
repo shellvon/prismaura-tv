@@ -235,13 +235,19 @@ class MusicLibrary(context: Context) {
     suspend fun delete(playlistId: String) = change { state ->
         state.copy(playlists = state.playlists.filterNot { it.id == playlistId })
     }
+    suspend fun rename(playlistId: String, name: String) = change { state ->
+        val clean = name.trim()
+        require(clean.isNotEmpty() && clean.length <= 60) { "歌单名需为 1 至 60 个字符" }
+        require(state.playlists.any { it.id == playlistId }) { "歌单不存在" }
+        state.copy(playlists = state.playlists.map { if (it.id == playlistId) it.copy(name = clean) else it })
+    }
 }
 
 /** 本地备份：曲库、音源（源码 + 配置变量 + 订阅地址）与可迁移的偏好设置。
     自动保存的登录 Cookie 由 Android Keystore 加密，换设备无法解密，因此不写入备份。
     电视上没有文件选择器，导出与恢复走手机遥控页面（H5）。 */
 object LibraryBackup {
-    private val prefFiles = listOf("appearance", "playback", "search", "home", "source_platforms", "lyric_calibration")
+    private val prefFiles = listOf("appearance", "playback", "search", "home", "source_platforms", "lyric_calibration", "lyrics")
 
     suspend fun build(context: Context, library: MusicLibrary, plugins: Plugins): JSONObject {
         val preferences = JSONObject()
