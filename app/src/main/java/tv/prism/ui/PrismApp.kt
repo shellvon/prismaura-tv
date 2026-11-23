@@ -60,6 +60,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.Player
 import androidx.tv.material3.Text
+import coil.imageLoader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.async
@@ -94,6 +95,7 @@ import tv.prism.ui.widgets.requestIfAttached
 import tv.prism.ui.widgets.revealFocusRow
 import tv.prism.ui.widgets.requestAfterScroll
 import tv.prism.catalog.subjectTitle
+import tv.prism.playback.PlaybackPhase
 import tv.prism.playback.qualityOptions
 import tv.prism.playback.ActiveQueue
 import tv.prism.playback.PlaybackService
@@ -106,12 +108,15 @@ import tv.prism.ui.widgets.LocalPlaybackActive
 import tv.prism.ui.widgets.LocalMarqueeSuspended
 import tv.prism.ui.widgets.PrismContentDialog
 import tv.prism.ui.widgets.PrismAction
+import tv.prism.ui.widgets.PrismPagePadding
 import tv.prism.ui.widgets.PrismBackground
 import tv.prism.ui.home.HomePage
 import tv.prism.ui.widgets.FocusRowRevealSpec
 import tv.prism.ui.discovery.RecommendationShelf
 import tv.prism.ui.home.HomePageState
 import tv.prism.ui.home.HomePageFocus
+import tv.prism.ui.home.HomePlaylistOrigin
+import tv.prism.ui.home.homeSectionOptions
 import tv.prism.ui.home.HomePageActions
 import tv.prism.ui.widgets.PrismDetailHero
 import tv.prism.ui.widgets.focusAnchor
@@ -150,6 +155,7 @@ import tv.prism.ui.playback.PrismMiniPlayer
 import tv.prism.ui.widgets.StatusOverlay
 import tv.prism.playback.qualityLadder
 import tv.prism.ui.playback.PrismPlayer
+import tv.prism.lyrics.LyricSources
 import tv.prism.lyrics.LyricCalibration
 import tv.prism.playback.PlaybackMode
 import tv.prism.ui.playback.PrismScreenOff
@@ -228,42 +234,71 @@ internal fun MainActivity.PrismApp() {
         /* Manage mode covers one list at a time: song keys, saved subject keys, or local playlist ids. */
         /* Manage owns selecting; the confirmation dialog owns the irreversible part. */
         var confirmBatchOpen by remember { mutableStateOf(false) }
+        var batchRunning by remember { mutableStateOf(false) }
+        val libraryBatchConfirmFocus = remember { FocusAnchor() }
         /* Long-press on a tab opens the list-level menu (play all / import / manage):
            toolbar actions stay reachable without crossing five tabs. */
         var libraryListMenu by remember { mutableStateOf(false) }
         val settingsSection = settingsUi.section
+        var homePlaylistOrigin by remember { mutableStateOf<HomePlaylistOrigin?>(null) }
+        var returningHomePlaylist by remember { mutableStateOf<HomePlaylistOrigin?>(null) }
+        fun openPlaylists() {
+            homePlaylistOrigin = null
+            libraryViewModel.open("playlists")
+            page = "library"
+        }
+        fun returnToHomePlaylist(origin: HomePlaylistOrigin) {
+            if (origin.playlistId != null && libraryViewModel.state.value.list == "playlist:${origin.playlistId}")
+                libraryViewModel.open("playlists")
+            homePlaylistOrigin = null
+            returningHomePlaylist = origin
+            page = "home"
+        }
         fun openSources(add: Boolean) {
             guideOpen = false
             settingsViewModel.open("音源")
             page = "plugins"
             pluginViewModel.showAdd(add)
         }
-        var cacheSize by remember { mutableLongStateOf(-1L) }
+        var cacheBytes by remember { mutableStateOf<Long?>(null) }
         var clearingCache by remember { mutableStateOf(false) }
+        @OptIn(coil.annotation.ExperimentalCoilApi::class)
         fun clearCache() {
             if (!clearingCache) lifecycleScope.launch {
                 clearingCache = true
-                cacheSize = withContext(Dispatchers.IO) { directorySize(cacheDir) }
-                withContext(Dispatchers.IO) { clearDirectory(cacheDir) }
-                getSharedPreferences("discovery", Context.MODE_PRIVATE).edit().clear().apply()
-                hotSearchCache.clear()
-                discoverySession.invalidateChartCache()
-                cacheSize = 0L
-                clearingCache = false
-                status = "缓存已清理"
-                chartSource?.let { discoverySession.loadCharts(it) }
+                try {
+                    withContext(Dispatchers.IO) {
+                        val images = imageLoader.diskCache
+                        clearDirectory(cacheDir, except = images?.directory?.toFile())
+                        images?.clear()
+                    }
+                    getSharedPreferences("discovery", Context.MODE_PRIVATE).edit().clear().apply()
+                    hotSearchCache.clear()
+                    discoverySession.invalidateChartCache()
+                    status = "缓存已清理"
+                    chartSource?.let { discoverySession.loadCharts(it) }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    status = "清理缓存失败：${e.message ?: "未知错误"}"
+                } finally {
+                    clearingCache = false
+                }
             }
         }
-        LaunchedEffect(settingsSection) {
-            if (settingsSection == "关于") cacheSize = withContext(Dispatchers.IO) { directorySize(cacheDir) }
+        LaunchedEffect(page, settingsSection, clearingCache) {
+            if (page == "plugins" && settingsSection == "关于" && !clearingCache)
+                cacheBytes = withContext(Dispatchers.IO) { directorySize(cacheDir) }
         }
         /* Tabs switch lists, so a selection carried across would arm the next tab's verb
            against items the remote never chose. */
         LaunchedEffect(selectedList) { confirmBatchOpen = false }
         var mvResolving by remember { mutableStateOf(false) }
+        var mvError by remember(queue.getOrNull(queueIndex)?.key) { mutableStateOf("") }
         fun openMv(song: Song?) {
             if (song == null || mvResolving) return
             mvResolving = true
+            mvError = ""
             lifecycleScope.launch {
                 reportPlayback("正在解析 MV…")
                 try {
@@ -273,7 +308,12 @@ internal fun MainActivity.PrismApp() {
                     resumeAfterMv = controller?.playWhenReady == true
                     controller?.pause(); activeMv = source; reportPlayback("")
                 } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-                catch (e: Exception) { reportPlayback("MV 解析失败：${e.message ?: "音源不可用"}") }
+                catch (e: Exception) {
+                    if (queue.getOrNull(queueIndex)?.key == song.key) {
+                        mvError = "MV 解析失败：${e.message ?: "音源不可用"}"
+                        reportPlayback(mvError)
+                    }
+                }
                 finally { mvResolving = false }
             }
         }
@@ -350,7 +390,7 @@ internal fun MainActivity.PrismApp() {
                     preference = ::updatePreference,
                     toggleMiniLyrics = { updatePreference("miniLyrics", (!showMiniLyrics).toString()) },
                     homeShelf = { id, visible ->
-                        require(id in setOf("favorites", "recent", "frequent") || library.state.value.playlists.any { it.id == id }) {
+                        require(homeSectionOptions.any { it.first == id }) {
                             "栏目不存在"
                         }
                         if (visible == (id in homeShelfHidden)) toggleHomeShelf(id)
@@ -559,7 +599,14 @@ internal fun MainActivity.PrismApp() {
                     withFrameNanos { }
                     if (target != null && runCatching { target.requestFocus() }.getOrDefault(false)) return@LaunchedEffect
                 }
-                if (pageEntryFocus?.requestIfAttached() != true) focusActiveTab()
+                val content = when (page) {
+                    "home" -> homeBodyFocus
+                    "search" -> searchResultsFocus
+                    "library" -> libraryContentFocus
+                    "discover" -> discoverEntryFocus
+                    else -> null
+                }
+                if (!content.requestIfAttached() && !pageEntryFocus.requestIfAttached()) focusActiveTab()
             }
         }
         val pageScope = rememberCoroutineScope()
@@ -570,7 +617,13 @@ internal fun MainActivity.PrismApp() {
            one instead of the page entry (the rail). */
         val bodyFocusMemory = remember { mutableStateOf<FocusRequester?>(null) }
         LaunchedEffect(configured, settingsSection) { bodyFocusMemory.value = null }
-        val enterPage: (String) -> Unit = { target ->
+        val enterPage: (String) -> Unit = enter@{ target ->
+            val origin = homePlaylistOrigin
+            if (target == "home" && origin != null) {
+                returnToHomePlaylist(origin)
+                return@enter
+            }
+            homePlaylistOrigin = null
             page = target
             pageScope.launch {
                 repeat(12) {
@@ -767,7 +820,8 @@ internal fun MainActivity.PrismApp() {
                out from under it. */
             if (navFocused || playerOpen) return@LaunchedEffect
             /* Back from a detail restores the card that opened it; that effect owns focus. */
-            if (pendingReturnFocus.isNotBlank()) return@LaunchedEffect
+            if (pendingReturnFocus.isNotBlank() || (page == "home" && returningHomePlaylist != null))
+                return@LaunchedEffect
             withFrameNanos { }
             when (page) {
                 "home" -> entryFocus("home").requestIfAttached()
@@ -902,7 +956,12 @@ internal fun MainActivity.PrismApp() {
             libraryViewModel.open("playlist:$id")
         }
         fun closePlaylistTable() {
-            selectedPlaylist?.let { libraryViewModel.closePlaylist(it.id) }
+            val list = libraryViewModel.state.value.list
+            if (!list.startsWith("playlist:")) return
+            val id = list.removePrefix("playlist:")
+            val origin = homePlaylistOrigin
+            if (origin?.playlistId == id) returnToHomePlaylist(origin)
+            else libraryViewModel.closePlaylist(id)
         }
         /* A phone import also chooses the new playlist, without changing the open TV page. */
         LaunchedEffect(playlistToShow) {
@@ -927,6 +986,8 @@ internal fun MainActivity.PrismApp() {
             val keys = libraryViewModel.state.value.selected
             if (keys.isEmpty()) { status = "先用确定键选中要处理的条目"; return }
             val playlistId = selectedPlaylist?.id
+            if (batchRunning) return
+            batchRunning = true
             lifecycleScope.launch {
                 try {
                     when {
@@ -936,9 +997,11 @@ internal fun MainActivity.PrismApp() {
                         playlistId != null -> { library.removeSongsFrom(playlistId, keys); status = "已从歌单移出 ${keys.size} 首" }
                         else -> { library.removeFavorites(keys); status = "已取消收藏 ${keys.size} 首" }
                     }
-                } catch (e: Exception) { status = e.message ?: "操作失败" }
+                    exitLibraryManage()
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                catch (e: Exception) { status = e.message ?: "操作失败"; confirmBatchOpen = false }
+                finally { batchRunning = false }
             }
-            exitLibraryManage()
         }
         BackHandler {
             when {
@@ -953,7 +1016,8 @@ internal fun MainActivity.PrismApp() {
                 page == "library" && libraryViewModel.state.value.managing -> exitLibraryManage()
                 /* A playlist's table is one step inside the 歌单 tab, so Back steps out of the
                    table rather than leaving 我的 for 首页. */
-                page == "library" && selectedPlaylist != null -> closePlaylistTable()
+                page == "library" && libraryViewModel.state.value.list.startsWith("playlist:") -> closePlaylistTable()
+                page == "library" && homePlaylistOrigin != null -> homePlaylistOrigin?.let(::returnToHomePlaylist)
                 browseItem != null && page == "discover" -> leaveBrowse()
                 discoverySession.chartSelection != null && page == "discover" -> {
                     /* Back belongs on the chart card you chose, not on whichever one the grid
@@ -975,18 +1039,22 @@ internal fun MainActivity.PrismApp() {
                         status = "再按一次返回键退出"
                         return@BackHandler
                     }
+                    saveResume()
+                    exitingAfterResumeSave = true
                     recovery?.ready?.cancel(); recovery = null
-                    resolving?.cancel()
+                    resolving?.cancel(); streamSwap?.cancel()
                     /* Back can arrive while the controller is still connecting; stopping only the
                        connected instance would let the audio survive the exit. */
                     val ready = controller
-                    if (ready != null) runCatching { ready.stop(); ready.clearMediaItems() }
+                    if (ready != null) runCatching { resetStream(ready) }
                     else connection?.let { pending ->
+                        ActiveQueue.attempt.clear()
                         pending.addListener({
                             runCatching { pending.get() }.getOrNull()?.let { runCatching { it.stop(); it.clearMediaItems() } }
                         }, ContextCompat.getMainExecutor(this@PrismApp))
                     }
                     queue = emptyList(); queueIndex = -1; playing = false; lyrics = emptyList(); loadedKey = ""; ActiveQueue.source = null
+                    playbackPhase = PlaybackPhase.Idle
                     lyricCalibrationMs = 0L
                     stopService(Intent(this@PrismApp, PlaybackService::class.java)); finish()
                 }
@@ -1037,10 +1105,10 @@ internal fun MainActivity.PrismApp() {
             /* Cold start: the light comes into the room before the furniture does. Drawn above
                everything by zIndex because it is inserted first, and only once per process. */
             val addFocus = remember { FocusRequester() }
-            fun fillSourceOnPhone() {
+            fun fillSourceOnPhone(onReturn: () -> Unit) {
                 phoneSessions.openForm(listOf("url" to "插件或订阅地址"), mapOf("url" to pluginViewModel.state.value.address),
                     title = "填写音源地址", message = "填写后回到电视确认并添加，不会自动导入。",
-                    onReturn = { pageScope.launch { repeat(2) { withFrameNanos { } }; runCatching { addFocus.requestFocus() } } }) {
+                    onReturn = onReturn) {
                     pluginViewModel.editAddress(it["url"].orEmpty())
                 }
             }
@@ -1053,16 +1121,20 @@ internal fun MainActivity.PrismApp() {
                     Text("在电视上输入地址，或用同一网络的手机扫码填写。最后在电视上确认添加。", color = c.muted, fontSize = 15.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         PrismAction("我有地址，去添加", { openSources(true) }, Modifier.focusRequester(guideFocus), primary = true)
-                        PrismAction("用手机填写", { openSources(true); fillSourceOnPhone() })
+                        PrismAction("用手机填写", {
+                            openSources(true)
+                            fillSourceOnPhone { pageScope.launch { repeat(2) { withFrameNanos { } }; runCatching { addFocus.requestFocus() } } }
+                        }, icon = "qr")
                     }
                 }
             }
             Box(Modifier.fillMaxSize().focusProperties { canFocus = !playerOpen }) {
             PrismBackground {
-                Column(Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 20.dp)) {
+                Column(Modifier.fillMaxSize().padding(horizontal = PrismPagePadding, vertical = 20.dp)) {
                     TopNavigation(page, navTabs, pageEntryFocus,
                         onPreviewPage = { page = it }, onEnterPage = enterPage,
-                        onNavFocusChanged = { navFocused = it }, onOpenPhone = { openPhoneHub() })
+                        onNavFocusChanged = { navFocused = it }, onOpenPhone = { openPhoneHub() },
+                        restoreHomeOnDown = homePlaylistOrigin != null)
                     Spacer(Modifier.height(18.dp))
                     if (state.error != null || libraryState.error != null) Text(state.error ?: libraryState.error.orEmpty(), fontSize = 12.sp, color = c.accent, modifier = Modifier.padding(bottom = 8.dp), maxLines = 2)
                     Box(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
@@ -1112,13 +1184,20 @@ internal fun MainActivity.PrismApp() {
                                     },
                                     discover = { page = "discover" },
                                     manageShelves = { settingsViewModel.open("推荐"); page = "plugins" },
-                                    playShelf = { playQueue(it) },
+                                    openPlaylists = { origin ->
+                                        homePlaylistOrigin = origin
+                                        libraryViewModel.open(origin.playlistId?.let { "playlist:$it" } ?: "playlists")
+                                        page = "library"
+                                    },
+                                    playShelf = { playCollection(it) },
                                     playSong = { playSingle(it) },
                                     openTrackMenu = { song, list, requester ->
                                         menuReturnFocus = requester
                                         trackMenu = TrackMenuTarget(song, list)
                                     },
                                 ),
+                                returnToPlaylist = returningHomePlaylist,
+                                onPlaylistFocusRestored = { returningHomePlaylist = null },
                                 onCardFocused = {
                                     homeFocusMemory.value = it
                                     bodyFocusMemory.value = it
@@ -1268,8 +1347,9 @@ internal fun MainActivity.PrismApp() {
                                                     if (browseKind == "artist") "热门歌曲" else "歌曲",
                                                     browseSongs.size.takeIf { it > 0 },
                                                     if (browseKind == "artist" && browseSongs.isNotEmpty()) "播放全部" else "",
-                                                    { if (browseSongs.isNotEmpty()) playQueue(browseSongs.toList()) },
+                                                    { if (browseSongs.isNotEmpty()) playCollection(browseSongs.toList()) },
                                                     actionIcon = "play",
+                                                    primaryAction = true,
                                                     actionEdges = Modifier.focusAnchor(artistPlayAllFocus)
                                                         .focusProperties {
                                                             if (browseAlbums.isEmpty()) up = if (detailHeaderFocus.attached) detailHeaderFocus.requester else navTabFocus
@@ -1356,6 +1436,7 @@ internal fun MainActivity.PrismApp() {
                                 val cardCoordinates = remember { mutableMapOf<FocusRequester, LayoutCoordinates>() }
                                 var focusedShelfCard by remember { mutableStateOf<FocusRequester?>(null) }
                                 var focusedDiscoverRow by remember { mutableStateOf<Int?>(null) }
+                                val discoverRowMemory = remember { mutableMapOf<Int, FocusRequester>() }
                                 val motion = LocalAuraMotion.current
                                 LaunchedEffect(focusedDiscoverRow) {
                                     val row = focusedDiscoverRow ?: return@LaunchedEffect
@@ -1372,6 +1453,7 @@ internal fun MainActivity.PrismApp() {
                                             if (state.isFocused) {
                                                 focusedShelfCard = requester
                                                 discoverFocusMemory.value = requester to row
+                                                discoverRowMemory[row] = requester
                                             } else if (focusedShelfCard === requester) focusedShelfCard = null
                                         }
                                 fun centerX(requester: FocusRequester): Float? = cardCoordinates[requester]
@@ -1443,6 +1525,11 @@ internal fun MainActivity.PrismApp() {
                                         }
                                         focusScope.launch {
                                             discoverListState.revealFocusRow(targetRow, motion)
+                                            val previous = discoverRowMemory[targetRow]
+                                            val index = target.cards.indexOf(previous)
+                                            if (index >= 0 && previous != null && previous.requestAfterScroll {
+                                                    target.horizontal?.scrollToItem(index)
+                                                }) return@launch
                                             repeat(6) {
                                                 withFrameNanos { }
                                                 val requester = nearest() ?: return@repeat
@@ -1665,7 +1752,7 @@ internal fun MainActivity.PrismApp() {
                                 libraryViewModel, libraryState, queue.getOrNull(queueIndex)?.key, mvCapableIds,
                                 LibraryPageFocus(
                                     navTabFocus, miniFocus, libraryContentFocus, libraryHeaderFocus, playlistBackFocus,
-                                    libraryEmptyFocus, libraryPlayAllFocus, libraryImportFocus, libraryTabs,
+                                    libraryEmptyFocus, libraryPlayAllFocus, libraryImportFocus, libraryBatchConfirmFocus, libraryTabs,
                                     libraryPlaylistListState, librarySongListState, librarySubjectListState, ::detailFocus,
                                     ::trackFocus, { bodyFocusMemory.value = it },
                                     { list, requester -> detailCardFocus["playlist:${list.id}"] = requester },
@@ -1673,7 +1760,7 @@ internal fun MainActivity.PrismApp() {
                                 ),
                                 LibraryPageActions(
                                     playSong = { playSingle(it) },
-                                    playAll = { playQueue(it) },
+                                    playAll = { playCollection(it) },
                                     openSubject = { subject ->
                                         state.plugins.firstOrNull { it.id == subject.pluginId }?.let { openBrowse(it, subject.data, subject.kind) }
                                     },
@@ -1715,7 +1802,7 @@ internal fun MainActivity.PrismApp() {
                                     selected, configEntryFocus, bodyFocusMemory, closeConfig,
                                     plugins, busy, lifecycleScope, { status = it },
                                     searchSource = { searchUsingSources(setOf(selected.id)) },
-                                    onPhoneForm = { fields, values, submit -> phoneSessions.openForm(fields, values, onSubmit = submit) },
+                                    onPhoneForm = { fields, values, onReturn, submit -> phoneSessions.openForm(fields, values, onReturn = onReturn, onSubmit = submit) },
                                 )
                                 else SettingsPage(
                                     settingsSection, settingsSections, settingsScroll, navTabFocus, sectionFocus, sectionEntryFocus,
@@ -1727,20 +1814,20 @@ internal fun MainActivity.PrismApp() {
                                             navTabFocus, entryUpScrollsBack, edgeToRail, bodyFocusMemory, ::updatePreference)
                                         "播放" -> PlaybackSettings(quality, autoSourceFallback, playMode, pluginWorkerLimit,
                                             PluginWorkers.automatic(this@PrismApp), showMiniLyrics, lyricFontLevel, hideHeading, subLyrics,
-                                            lyricMode, lyricLrclib, lyricKugou, lyricNetease,
+                                            lyricLrclib, lyricKugou, lyricNetease,
                                             sectionEntryFocus.getValue("播放"), entryEdge, edgeToRail, bodyFocusMemory,
                                             ::updatePreference, { setAutoSourceFallback(it) })
                                     }
                                     if (settingsSection == "关于") AboutSettings(
-                                        updateState, cacheSize, clearingCache, sectionEntryFocus.getValue("关于"),
+                                        updateState, cacheBytes, clearingCache, sectionEntryFocus.getValue("关于"),
                                         entryEdge, edgeToRail, bodyFocusMemory, ::checkAppUpdates, appUpdates::setRemind,
                                         clearCache = ::clearCache,
                                         onBackup = { openPhoneHub("settings") },
                                     )
                                     if (settingsSection == "推荐") DiscoverySettings(
-                                        activePlugins, recommendationPluginId, chartPluginId, libraryState, homeShelfHidden,
+                                        activePlugins, recommendationPluginId, chartPluginId, homeShelfHidden,
                                         sectionEntryFocus.getValue("推荐"), entryEdge, edgeToRail, bodyFocusMemory,
-                                        ::updatePreference, ::toggleHomeShelf, { page = "library" },
+                                        ::updatePreference, ::toggleHomeShelf, ::openPlaylists,
                                     )
                                     if (settingsSection == "音源") SourcesPage(
                                         pluginViewModel, plugins, state, busyState, subscriptionUpdateProgress,
@@ -1759,6 +1846,7 @@ internal fun MainActivity.PrismApp() {
                     PrismMiniPlayer(
                         song = queue.getOrNull(queueIndex),
                         playbackSource = playbackSong(),
+                        playbackMessage = playbackPhase.takeIf { it.holdControls }?.message.orEmpty(),
                         playing = playing && !playerOpen && activeMv == null,
                         // Read the playback clock inside the mini player so progress ticks do not
                         // invalidate the surrounding page content (including home shelf cards).
@@ -1862,9 +1950,10 @@ internal fun MainActivity.PrismApp() {
                             val otherSources = remember(streamSong, activePlugins) {
                                 streamSong?.let { alternateSongSources(it, activePlugins) }.orEmpty()
                             }
+                            val externalLyricSources = enabledExternalLyricSources()
                             PrismPlayer(song, visibleLyrics, lyricStatus, { positionMs }, durationMs, playing, playMode,
                                 song != null && libraryState.favorites.any { it.key == song.key }, tierFor(song), playingQuality,
-                                playbackIndices().indexOf(queueIndex).coerceAtLeast(0), queue.size, playbackStatus,
+                                playbackIndices().indexOf(queueIndex).coerceAtLeast(0), queue.size, playbackPhase, playbackDetail,
                                 streamFormat,
                                 playbackSource = streamSong,
                                 onOtherSources = if (streamSong != null && otherSources.isNotEmpty()) {
@@ -1872,14 +1961,12 @@ internal fun MainActivity.PrismApp() {
                                 } else null,
                                 hasMv = song != null && song.hasMv && song.pluginId in mvCapableIds,
                                 mvResolving = mvResolving,
+                                mvError = mvError,
                                 mvOpen = activeMv != null,
                                 visible = playerVisible,
                                 overlayOpen = playerSourceChooser != null || queueOpen || radioMenuOpen || phoneSessions.dialogVisible || pendingSong != null ||
                                     trackMenu != null || subjectMenu != null || collectionMenu != null || updateDialogOpen,
-                                readPosition = {
-                                    if (recovery != null && resolving?.isActive == true) positionMs
-                                    else controller?.currentPosition?.coerceAtLeast(0) ?: positionMs
-                                },
+                                readPosition = { trustedPosition() },
                                 lyricFontLevel = lyricFontLevel,
                                 onLyricFontLevel = { level ->
                                     updatePreference("lyricFontLevel", level)
@@ -1892,9 +1979,9 @@ internal fun MainActivity.PrismApp() {
                                 lyricSource = lyricSourceOverride.orEmpty(),
                                 lyricSourceLabel = lyricSourceLabel,
                                 lyricActiveSource = lyricActiveSource,
-                                lyricLrclib = lyricLrclib,
-                                lyricKugou = lyricKugou,
-                                lyricNetease = lyricNetease,
+                                lyricLrclib = LyricSources.LRCLIB in externalLyricSources,
+                                lyricKugou = LyricSources.KUGOU in externalLyricSources,
+                                lyricNetease = LyricSources.NETEASE in externalLyricSources,
                                 lyricProbes = lyricProbes,
                                 onProbeLyrics = { probeLyricSources() },
                                 onLyricSource = { selectLyricSource(it) },
@@ -2034,7 +2121,8 @@ internal fun MainActivity.PrismApp() {
             if (queueOpen) {
                 val following = when {
                     queue.isEmpty() -> null
-                    ActiveQueue.radio -> queue.getOrNull(queueIndex + 1)
+                    ActiveQueue.radio || playMode == PlaybackMode.SEQUENTIAL -> queue.getOrNull(queueIndex + 1)
+                    playMode == PlaybackMode.REPEAT_ONE -> queue.getOrNull(queueIndex)
                     else -> queue[nextIndex(1)]
                 }
                 QueueDialog(queue, playbackIndices(), queueIndex, following, ActiveQueue.radio,
@@ -2053,7 +2141,10 @@ internal fun MainActivity.PrismApp() {
                 OtherSourcesDialog(song, sources, plugins, alternateFavoriteKeys, onDismiss = { playerSourceChooser = null },
                     onPlay = { selected ->
                         playerSourceChooser = null
-                        playAlternateSource(selected)
+                        if (playbackSong()?.key == song.key) {
+                            val at = if (playbackPhase == PlaybackPhase.Finished) 0L else trustedPosition()
+                            playAt(queueIndex, openPlayer = false, startAt = at, sourceSong = selected)
+                        } else status = "当前曲目已切换，请重新打开其他音源"
                     })
             }
             trackMenu?.let { target ->
@@ -2144,33 +2235,32 @@ internal fun MainActivity.PrismApp() {
                 }
                 val cancelFocus = remember { FocusRequester() }
                 /* The remote lands on 取消: the destructive verb must be reached on purpose. */
-                Dialog(onDismissRequest = { confirmBatchOpen = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+                Dialog(onDismissRequest = { if (!batchRunning) confirmBatchOpen = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
                     LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; cancelFocus.requestFocus() }
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(Modifier.width(560.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(24.dp))
                             .background(Brush.verticalGradient(listOf(c.panel, c.background.copy(alpha = .985f))))
                             .border(1.dp, c.line.copy(alpha = .75f), androidx.compose.foundation.shape.RoundedCornerShape(24.dp))
                             .padding(horizontal = 30.dp, vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text("BATCH / 批量操作", color = c.accent, fontSize = 10.sp, letterSpacing = 1.sp)
                             Text(batchVerb, color = c.foreground, fontSize = 22.sp, fontWeight = FontWeight.Medium)
                             Text("已选 ${libraryViewModel.state.collectAsState().value.selected.size} $batchUnit，$batchNote", color = c.muted, fontSize = 13.sp)
                             Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
-                                PrismAction("取消", { confirmBatchOpen = false }, Modifier.focusRequester(cancelFocus))
-                                PrismAction("确认", { runLibraryBatch() }, primary = true)
+                                PrismAction("取消", { if (!batchRunning) confirmBatchOpen = false }, Modifier.focusRequester(cancelFocus))
+                                PrismAction(if (batchRunning) "处理中…" else "确认", { runLibraryBatch() }, primary = true)
                             }
                         }
                     }
                 }
-                /* The dialog closes on 取消, BACK, or a finished batch; the bar's 菜单 button
-                   gets the remote back in every case. */
-                var batchWasOpen by remember { mutableStateOf(false) }
-                LaunchedEffect(confirmBatchOpen) {
-                    if (confirmBatchOpen) batchWasOpen = true
-                    else if (batchWasOpen) {
-                        withFrameNanos { }
-                        if (!confirmBatchOpen) libraryHeaderFocus.requestIfAttached()
-                        batchWasOpen = false
+            }
+            var batchWasOpen by remember { mutableStateOf(false) }
+            LaunchedEffect(confirmBatchOpen) {
+                if (confirmBatchOpen) batchWasOpen = true
+                else if (batchWasOpen) {
+                    withFrameNanos { }
+                    if (!libraryBatchConfirmFocus.requestIfAttached() && !libraryHeaderFocus.requestIfAttached()) {
+                        if (!libraryContentFocus.requestIfAttached()) libraryEmptyFocus.requestIfAttached()
                     }
+                    batchWasOpen = false
                 }
             }
             if (importDialog) PlaylistImportDialog(importDraft,

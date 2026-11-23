@@ -117,7 +117,7 @@ fun sourceHeaders(result: JSONObject): Map<String, String> = buildMap {
     result.optString("userAgent").takeIf { it.isNotBlank() && !it.contains('\n') && !it.contains('\r') }?.let { put("User-Agent", it) }
 }
 
-internal fun audioMediaItem(song: Song, source: JSONObject, mediaId: String = ""): MediaItem {
+internal fun audioMediaItem(song: Song, source: JSONObject): MediaItem {
     requireSupportedAudioEncryption(source)
     val uri = Uri.parse(source.optString("url"))
     require(uri.scheme in listOf("http", "https") && !uri.host.isNullOrBlank()) { "插件返回了无效播放地址" }
@@ -131,7 +131,7 @@ internal fun audioMediaItem(song: Song, source: JSONObject, mediaId: String = ""
     }
     val metadata = MediaMetadata.Builder().setTitle(song.title).setArtist(song.artist).setArtworkUri(artwork)
         .setExtras(extras).build()
-    val builder = MediaItem.Builder().setMediaId(mediaId).setUri(uri).setMediaMetadata(metadata)
+    val builder = MediaItem.Builder().setUri(uri).setMediaMetadata(metadata)
     if (ekey != null) when (uri.lastPathSegment?.substringAfterLast('.')?.lowercase()) {
         "mflac", "mflac0" -> builder.setMimeType("audio/flac")
         "mgg", "mgg0", "mgg1" -> builder.setMimeType("audio/ogg")

@@ -29,9 +29,10 @@ import androidx.compose.ui.input.key.*
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
-import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import tv.prism.library.LibraryState
+import tv.prism.library.MusicPlaylist
 import tv.prism.library.Song
 import tv.prism.ui.widgets.FocusAnchor
 import tv.prism.ui.widgets.FocusRowRevealSpec
@@ -51,6 +52,7 @@ import tv.prism.ui.widgets.upTo
 import tv.prism.ui.widgets.PrismShelfHeader
 import tv.prism.ui.widgets.LocalListScrolling
 import tv.prism.ui.widgets.PrismCoverCard
+import tv.prism.ui.widgets.PrismSheetCard
 
 internal data class HomePageState(
     val library: LibraryState,
@@ -95,16 +97,26 @@ internal data class HomePageActions(
     val openChart: () -> Unit,
     val discover: () -> Unit,
     val manageShelves: () -> Unit,
+    val openPlaylists: (HomePlaylistOrigin) -> Unit,
     val playShelf: (List<Song>) -> Unit,
     val playSong: (Song) -> Unit,
     val openTrackMenu: (Song, String?, FocusRequester) -> Unit,
 )
 
-private data class HomeShelf(val id: String, val title: String, val songs: List<Song>) {
+private data class HomeShelf(
+    val id: String, val title: String, val songs: List<Song> = emptyList(),
+    val playlists: List<MusicPlaylist> = emptyList(),
+) {
     val covers = songs.distinctBy(Song::key).take(20)
+    val cardKeys = if (playlists.isEmpty()) covers.map(Song::key) else playlists.map(MusicPlaylist::id)
 }
 
-private val builtInShelves = setOf("favorites", "recent", "frequent")
+internal const val HOME_PLAYLISTS = "playlists"
+internal data class HomePlaylistOrigin(val playlistId: String? = null)
+internal val homeSectionOptions = listOf(
+    "favorites" to "我的收藏", "recent" to "最近播放", "frequent" to "近四周常听",
+    HOME_PLAYLISTS to "我的歌单",
+)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -112,11 +124,14 @@ internal fun HomePage(
     state: HomePageState,
     focus: HomePageFocus,
     actions: HomePageActions,
+    returnToPlaylist: HomePlaylistOrigin?,
+    onPlaylistFocusRestored: () -> Unit,
     onCardFocused: (FocusRequester) -> Unit,
 ) {
     val c = LocalPrismColors.current
     val scope = rememberCoroutineScope()
     val hiddenShelves = state.hiddenShelves
+    val showPlaylists = HOME_PLAYLISTS !in hiddenShelves && state.library.playlists.isNotEmpty()
     val frequent =
         remember(state.library.listens) { state.library.frequent(System.currentTimeMillis()) }
     val homeShelves =
@@ -128,37 +143,68 @@ internal fun HomePage(
                     add(HomeShelf("favorites", "我的收藏", state.library.favorites))
                 if ("recent" !in hiddenShelves)
                     add(HomeShelf("recent", "最近播放", state.library.recent))
-                state.library.playlists
-                    .filterNot { it.id in hiddenShelves }
-                    .forEach { list -> add(HomeShelf(list.id, list.name, list.songs)) }
+                if (showPlaylists)
+                    add(HomeShelf(HOME_PLAYLISTS, "我的歌单", playlists = state.library.playlists))
             }
         }
     /* 首页每一行都是独立的横向行，而几何搜索只看得到视口里的节点：下一行
     还在屏幕外时按「下」，它找不到正下方的候选，就横向落到同排最右侧
     那张卡片上——方向键看起来"崩了"。所以行与行之间的上下落点在这里
     点名：列号相同，下一行更短时取它的最后一列。 */
-    val visibleShelves = remember(homeShelves) { homeShelves.filter { it.covers.isNotEmpty() } }
+    val visibleShelves = remember(homeShelves) { homeShelves.filter { it.cardKeys.isNotEmpty() } }
     val shelfCards =
-        visibleShelves.map { shelf ->
-            shelf.songs
-                .distinctBy { it.key }
-                .take(20)
-                .map { focus.card("home:${shelf.id}:${it.key}") }
+        remember(visibleShelves, focus.card) {
+            visibleShelves.map { shelf -> shelf.cardKeys.map { focus.card("home:${shelf.id}:$it") } }
         }
+    val allPlaylistsFocus = focus.card("home:$HOME_PLAYLISTS:view-all")
+    LaunchedEffect(returnToPlaylist) {
+        val origin = returnToPlaylist ?: return@LaunchedEffect
+        val shelfIndex = visibleShelves.indexOfFirst { it.id == HOME_PLAYLISTS }
+        var restored = false
+        if (shelfIndex >= 0) {
+            val shelf = visibleShelves[shelfIndex]
+            val cardIndex = shelf.cardKeys.indexOf(origin.playlistId)
+            val rowState = focus.rows.getOrPut(HOME_PLAYLISTS) { LazyListState() }
+            val target = shelfCards[shelfIndex].getOrNull(cardIndex) ?: allPlaylistsFocus
+            withFrameNanos {}
+            restored = target.requestAfterScroll {
+                focus.list.revealFocusRow(shelfIndex + 1, motion = false)
+                if (cardIndex >= 0) rowState.scrollToItem(cardIndex)
+            }
+        }
+        if (!restored && !focus.entry().requestIfAttached()) focus.nav.requestFocus()
+        onPlaylistFocusRestored()
+    }
+    val rowMemory = remember { mutableMapOf<String, Pair<String, Int>>() }
     val focusScope = rememberCoroutineScope()
     val motion = LocalAuraMotion.current
-    suspend fun scrollToShelf(index: Int) {
-        if (motion) focus.list.animateScrollToItem(index)
-        else focus.list.scrollToItem(index)
+    var holdReveal by remember { mutableStateOf(false) }
+    var focusMove by remember { mutableStateOf<Job?>(null) }
+    fun focusHeader() {
+        if (focusMove?.isActive == true) return
+        holdReveal = false
+        focusMove = focusScope.launch {
+            focus.list.scrollToItem(0)
+            // Resolve the target after the lazy header has been brought back into view.
+            withFrameNanos {}
+            if (!focus.update.requestIfAttached() && !focus.hero.requestIfAttached() &&
+                !focus.player.requestIfAttached()
+            ) focus.nav.requestFocus()
+        }
     }
 
     fun focusCard(row: Int, column: Int) {
+        if (focusMove?.isActive == true) return
         val cards = shelfCards.getOrNull(row).orEmpty()
         if (cards.isEmpty()) return
-        val col = column.coerceIn(0, cards.lastIndex)
-        val rowState = focus.rows.getOrPut(visibleShelves[row].id) { LazyListState() }
-        focusScope.coroutineContext.cancelChildren()
-        focusScope.launch {
+        val shelf = visibleShelves[row]
+        val remembered = rowMemory[shelf.id]?.let { (key, oldIndex) ->
+            shelf.cardKeys.indexOf(key).takeIf { it >= 0 } ?: oldIndex
+        }
+        val col = (remembered ?: column).coerceIn(0, cards.lastIndex)
+        val rowState = focus.rows.getOrPut(shelf.id) { LazyListState() }
+        holdReveal = false
+        focusMove = focusScope.launch {
             // A prefetched row can accept focus before it is visible. Reveal it first.
             focus.list.revealFocusRow(row + 1, motion)
             if (!cards[col].requestAfterScroll { rowState.scrollToItem(col) }) {
@@ -178,7 +224,6 @@ internal fun HomePage(
             } else false
         }
     var focusedShelfId by remember { mutableStateOf<String?>(null) }
-    var holdReveal by remember { mutableStateOf(false) }
     val defaultReveal = LocalBringIntoViewSpec.current
     val verticalReveal = remember(defaultReveal) {
         FocusRowRevealSpec(defaultReveal) { focusedShelfId != null || holdReveal }
@@ -269,15 +314,11 @@ internal fun HomePage(
                             modifier =
                                 Modifier.weight(1f)
                                     .padding(start = 10.dp)
-                                    .focusProperties {
-                                        up =
-                                            if (!state.hasActiveSources && focus.hero.attached)
-                                                focus.hero.requester
-                                            else if (
-                                                state.updateVersion != null && focus.update.attached
-                                            )
-                                                focus.update.requester
-                                            else focus.nav
+                                    .onPreviewKeyEvent { event ->
+                                        if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionUp)
+                                            return@onPreviewKeyEvent false
+                                        (!state.hasActiveSources && focus.hero.requestIfAttached()) ||
+                                            focus.update.requestIfAttached() || focus.nav.requestFocus()
                                     }
                                     .then(downToCard(0, 0)),
                             hasSources = state.hasActiveSources,
@@ -340,7 +381,7 @@ internal fun HomePage(
                     }
                 Spacer(Modifier.height(14.dp))
 
-                if (homeShelves.isEmpty() && state.hasActiveSources) {
+                if (visibleShelves.isEmpty() && state.hasActiveSources) {
                     Text("把喜欢的音乐留在首页，随时接着听", color = c.muted, fontSize = 13.sp)
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -353,7 +394,8 @@ internal fun HomePage(
         itemsIndexed(visibleShelves, key = { _, shelf -> "shelf:${shelf.id}" }) { shelfIndex, shelf
             ->
             Column {
-                val shelfActionFocus = remember(shelf.id) { FocusRequester() }
+                val playlistShelf = shelf.id == HOME_PLAYLISTS
+                val shelfActionFocus = if (playlistShelf) allPlaylistsFocus else remember(shelf.id) { FocusRequester() }
                 var returnCard by remember(shelf.id) { mutableStateOf<Pair<String, Int>?>(null) }
                 val rowState =
                     rememberSaveable(shelf.id, saver = LazyListState.Saver) {
@@ -362,19 +404,21 @@ internal fun HomePage(
                 LaunchedEffect(shelf.id, rowState) { focus.rows[shelf.id] = rowState }
                 PrismShelfHeader(
                     shelf.title,
-                    shelf.songs.size,
-                    "播放全部",
-                    { actions.playShelf(shelf.songs) },
+                    if (playlistShelf) shelf.playlists.size else shelf.songs.size,
+                    if (playlistShelf) "查看全部" else "播放全部",
+                    { if (playlistShelf) actions.openPlaylists(HomePlaylistOrigin()) else actions.playShelf(shelf.songs) },
                     actionFocus = shelfActionFocus,
-                    actionIcon = "play",
+                    actionIcon = if (playlistShelf) null else "play",
+                    primaryAction = true,
+                    countUnit = if (playlistShelf) "个歌单" else "首",
                     actionEdges = Modifier
                         .onFocusChanged { if (!it.isFocused) returnCard = null }
                         .onPreviewKeyEvent { event ->
                             if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                             when (event.key) {
                                 Key.DirectionDown -> {
-                                    val index = returnCard?.let { (songKey, oldIndex) ->
-                                        shelf.covers.indexOfFirst { it.key == songKey }
+                                    val index = returnCard?.let { (key, oldIndex) ->
+                                        shelf.cardKeys.indexOf(key)
                                             .takeIf { it >= 0 } ?: oldIndex
                                     } ?: 0
                                     focusCard(shelfIndex, index)
@@ -382,9 +426,7 @@ internal fun HomePage(
                                 }
                                 Key.DirectionUp -> {
                                     if (shelfIndex > 0) focusCard(shelfIndex - 1, 0)
-                                    else focusScope.launch {
-                                        focus.entry()?.requester?.requestAfterScroll { scrollToShelf(0) }
-                                    }
+                                    else focusHeader()
                                     true
                                 }
                                 else -> false
@@ -410,13 +452,9 @@ internal fun HomePage(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                     ) {
-                        itemsIndexed(shelf.covers, key = { _, song -> song.key }) { index, song ->
+                        itemsIndexed(shelf.cardKeys, key = { _, key -> key }) { index, key ->
                             val cardFocus = shelfCards[shelfIndex][index]
-                            PrismCoverCard(
-                                song,
-                                index,
-                                { actions.playSong(song) },
-                                Modifier.focusRequester(cardFocus)
+                            val cardModifier = Modifier.focusRequester(cardFocus)
                                     .focusProperties {
                                         up = shelfActionFocus
                                         if (shelfIndex == shelfCards.lastIndex && state.hasQueue)
@@ -425,7 +463,7 @@ internal fun HomePage(
                                     .onPreviewKeyEvent { event ->
                                         if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionUp)
                                             return@onPreviewKeyEvent false
-                                        returnCard = song.key to index
+                                        returnCard = key to index
                                         holdReveal = true
                                         val moved = shelfActionFocus.requestFocus()
                                         if (!moved) {
@@ -441,18 +479,28 @@ internal fun HomePage(
                                     }
                                     .then(downToCard(shelfIndex + 1, index))
                                     .onFocusChanged {
-                                        if (it.isFocused) onCardFocused(cardFocus)
-                                    },
-                                current = state.song?.key == song.key,
-                                onLongPress = {
-                                    actions.openTrackMenu(
-                                        song,
-                                        if (shelf.id in builtInShelves) shelf.id
-                                        else "playlist:${shelf.id}",
-                                        cardFocus,
-                                    )
-                                },
-                            )
+                                        if (it.isFocused) {
+                                            rowMemory[shelf.id] = key to index
+                                            onCardFocused(cardFocus)
+                                        }
+                                    }
+                            if (playlistShelf) {
+                                val playlist = shelf.playlists[index]
+                                PrismSheetCard(
+                                    playlist.name,
+                                    playlist.songs.firstOrNull { it.artwork.isNotBlank() }?.artwork.orEmpty(),
+                                    "${playlist.songs.size} 首",
+                                    cardModifier,
+                                    onClick = { actions.openPlaylists(HomePlaylistOrigin(playlist.id)) },
+                                )
+                            } else {
+                                val song = shelf.covers[index]
+                                PrismCoverCard(
+                                    song, index, { actions.playSong(song) }, cardModifier,
+                                    current = state.song?.key == song.key,
+                                    onLongPress = { actions.openTrackMenu(song, shelf.id, cardFocus) },
+                                )
+                            }
                         }
                     }
                 }

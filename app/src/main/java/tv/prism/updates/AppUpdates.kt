@@ -37,7 +37,7 @@ internal data class AppUpdateState(
     val release: AppRelease? = null, val message: String = "可检查新版本并查看更新说明",
     val checking: Boolean = false, val downloading: Boolean = false,
     val received: Long = 0, val total: Long = 0, val ready: File? = null, val skipped: Boolean = false,
-    val remind: Boolean = true,
+    val remind: Boolean = true, val downloadFailed: Boolean = false,
 ) { val busy get() = checking || downloading }
 
 /** Owns release metadata, network fallback, APK verification and the installer handoff. */
@@ -200,7 +200,7 @@ internal class AppUpdates(
 
     suspend fun download() = mutex.withLock {
         val release = mutable.value.release ?: return@withLock
-        mutable.value = mutable.value.copy(downloading = true, received = 0, total = release.size, ready = null, message = "正在从${release.source}下载…")
+        mutable.value = mutable.value.copy(downloading = true, downloadFailed = false, received = 0, total = release.size, ready = null, message = "正在从${release.source}下载…")
         val part = File(directory, "update.part")
         try {
             check(directory.isDirectory || directory.mkdirs()) { "无法创建更新缓存" }
@@ -234,7 +234,7 @@ internal class AppUpdates(
             mutable.value = mutable.value.copy(downloading = false, ready = null, message = "已取消下载")
             throw e
         } catch (e: Exception) {
-            mutable.value = mutable.value.copy(downloading = false, ready = null, message = "下载失败：${e.message ?: "网络不可用"}；可重试或用手机下载")
+            mutable.value = mutable.value.copy(downloading = false, downloadFailed = true, ready = null, message = "下载失败：${e.message ?: "网络不可用"}；可重试或用手机下载")
         } finally { part.delete(); activeCall = null }
     }
 

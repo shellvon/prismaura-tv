@@ -415,9 +415,15 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
 @Composable fun AuraIconButton(icon: String, description: String, onClick: () -> Unit, modifier: Modifier = Modifier,
                                primary: Boolean = false, size: Dp = 38.dp) {
     val c = LocalPrismColors.current
-    Box(modifier.size(size).auraFocus(CircleShape, 1.06f, ring = if (primary) c.foreground else null)
+    Box(modifier.size(size).auraFocus(CircleShape, 1f, ring = if (primary) c.foreground else null, instantRing = true)
         .clip(CircleShape).background(if (primary) c.accent else c.panel)
         .clickable(onClick = onClick).semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
         Glyph(icon, Modifier.size(size * .6f), if (primary) c.onAccent else c.foreground.copy(alpha = .82f))
     }
+}
+
+
+@Composable
+internal fun PhoneFillButton(description: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    AuraIconButton("qr", description, onClick, modifier, size = 42.dp)
 }

@@ -37,6 +37,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -360,15 +361,15 @@ fun prismColors(theme: String): PrismColors = when (theme) {
     label: String, onClick: () -> Unit, modifier: Modifier = Modifier,
     primary: Boolean = false, live: Boolean = false,
     enabled: Boolean = true, onLongPress: (() -> Unit)? = null,
-    icon: String? = null, instantFocus: Boolean = false,
+    icon: String? = null,
 ) {
     val c = LocalPrismColors.current
     Box(modifier.heightIn(min = 42.dp)
-        .then(if (enabled) Modifier.auraFocus(RoundedCornerShape(50), scale = if (instantFocus) 1f else 1.05f,
-            ring = if (primary) c.foreground else null, instantRing = instantFocus) else Modifier)
-        .clip(RoundedCornerShape(50)).background(if (primary) c.accent else c.panel)
-        .then(if (enabled) Modifier.tvClickable(onClick, onLongPress) else Modifier.focusProperties { canFocus = false })
+        .then(if (enabled) Modifier.auraFocus(RoundedCornerShape(50), scale = 1f,
+            ring = if (primary) c.foreground else null, instantRing = true) else Modifier)
         .alpha(if (enabled) 1f else .42f)
+        .clip(RoundedCornerShape(50)).background(if (primary) c.accent else c.panel)
+        .then(if (enabled) Modifier.tvClickable(onClick, onLongPress) else Modifier.semantics { disabled() })
         .padding(horizontal = 18.dp, vertical = 10.dp), contentAlignment = Alignment.Center) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (live) NowPlayingBars(if (primary) c.onAccent else c.accent, height = 13.dp, barWidth = 2.5.dp)
@@ -407,7 +408,7 @@ fun prismColors(theme: String): PrismColors = when (theme) {
 
 @Composable internal fun PrismNav(
     label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier,
-    focused: Boolean, quiet: Boolean = false,
+    focused: Boolean, quiet: Boolean = false, previewed: Boolean = selected,
 ) {
     val c = LocalPrismColors.current
     val idle = if (quiet) c.muted.copy(alpha = .62f) else c.muted
@@ -418,7 +419,7 @@ fun prismColors(theme: String): PrismColors = when (theme) {
         Column(Modifier.width(IntrinsicSize.Max), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(label, color = if (selected) c.foreground else idle, fontSize = 16.sp, fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal, maxLines = 1)
             Spacer(Modifier.height(5.dp))
-            Box(Modifier.fillMaxWidth().height(2.dp).background(if (selected) c.accent else Color.Transparent, CircleShape))
+            Box(Modifier.fillMaxWidth().height(2.dp).background(if (previewed) c.accent else Color.Transparent, CircleShape))
         }
     }
 }
@@ -467,8 +468,8 @@ fun prismColors(theme: String): PrismColors = when (theme) {
    prototype's denser editorial scale — structure first.
    ───────────────────────────────────────────────────────────────────────────── */
 
-/** 16:9 TV safe margins: 56px in the prototype = 28dp here. */
-val PrismPagePadding = 28.dp
+/** Horizontal inset shared by the page shell and playback controls. */
+val PrismPagePadding = 32.dp
 
 @Composable
 internal fun CoverArt(song: Song?, modifier: Modifier = Modifier, radius: Dp = 12.dp) {

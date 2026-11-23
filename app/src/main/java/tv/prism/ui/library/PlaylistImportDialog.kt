@@ -5,6 +5,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -35,6 +37,8 @@ import tv.prism.MainActivity
 import tv.prism.sources.Plugin
 import tv.prism.ui.widgets.LocalPrismColors
 import tv.prism.ui.widgets.PrismAction
+import tv.prism.ui.widgets.PhoneFillButton
+import tv.prism.ui.widgets.keepFocusVisible
 import tv.prism.sources.MusicPlatform
 import tv.prism.ui.settings.importHints
 import tv.prism.ui.widgets.Input
@@ -58,6 +62,7 @@ internal fun MainActivity.PlaylistImportDialog(
 ) {
     val c = LocalPrismColors.current
     val urlFocus = remember { FocusRequester() }
+    val phoneFocus = remember { FocusRequester() }
     val doorFocus = remember { FocusRequester() }
     val nameFocus = remember { FocusRequester() }
     val primaryFocus = remember { FocusRequester() }
@@ -85,10 +90,11 @@ internal fun MainActivity.PlaylistImportDialog(
     Dialog(onDismissRequest = { if (picker) leavePicker() else onDismiss() },
         properties = DialogProperties(usePlatformDefaultWidth = false)) {
         LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; urlFocus.requestFocus() }
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(Modifier.width(620.dp).focusGroup().clip(RoundedCornerShape(24.dp))
+        BoxWithConstraints(Modifier.fillMaxSize().padding(12.dp), contentAlignment = Alignment.Center) {
+            Column(Modifier.width(620.dp).heightIn(max = maxHeight).focusGroup().clip(RoundedCornerShape(24.dp))
                 .background(Brush.verticalGradient(listOf(c.panel, c.background.copy(alpha = .985f))))
                 .border(1.dp, c.line.copy(alpha = .75f), RoundedCornerShape(24.dp))
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 28.dp, vertical = 22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text("导入歌单或单曲", color = c.foreground, fontSize = 22.sp)
@@ -98,9 +104,24 @@ internal fun MainActivity.PlaylistImportDialog(
                 ImportDoorRow(picker, effective, chosen != null, capable.size, doorFocus,
                     onOpen = { if (picker) leavePicker() else if (capable.isNotEmpty()) picker = true })
                 if (!picker) {
-                    Input(draft.url, { draft.url = it }, "歌单、单曲链接或编号",
-                        Modifier.fillMaxWidth().focusRequester(urlFocus).focusProperties { down = nameFocus },
-                        keyboardType = KeyboardType.Uri, manualKeyboard = true, onSubmit = { nameFocus.requestFocus() })
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Input(draft.url, { draft.url = it }, "歌单、单曲链接或编号",
+                            Modifier.weight(1f).focusRequester(urlFocus).keepFocusVisible().focusProperties {
+                                up = doorFocus; down = nameFocus; right = phoneFocus
+                            },
+                            keyboardType = KeyboardType.Uri, manualKeyboard = true, onSubmit = { nameFocus.requestFocus() })
+                        PhoneFillButton("手机代填歌单链接", {
+                            phoneSessions.openForm(listOf("url" to "歌单、单曲链接或编号", "name" to "歌单名称（选填）"),
+                                mapOf("url" to draft.url, "name" to draft.name), title = "填写歌单导入",
+                                message = "填写后回到电视确认并开始导入。",
+                                onReturn = { pageScope.launch { repeat(2) { withFrameNanos { } }; runCatching { phoneFocus.requestFocus() } } }) { values ->
+                                draft.url = values["url"].orEmpty()
+                                draft.name = values["name"].orEmpty().take(60)
+                            }
+                        }, Modifier.focusRequester(phoneFocus).keepFocusVisible().focusProperties {
+                            left = urlFocus; up = doorFocus; down = nameFocus
+                        })
+                    }
                     /* 说明固定两行高：输入时识别结果会变，行数跳动会把整个弹窗上下推。 */
                     Column(Modifier.fillMaxWidth().height(36.dp).padding(horizontal = 14.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -117,26 +138,16 @@ internal fun MainActivity.PlaylistImportDialog(
                         )
                     }
                     Input(draft.name, { draft.name = it }, "歌单名称（选填）",
-                        Modifier.fillMaxWidth().focusRequester(nameFocus).focusProperties { up = urlFocus; down = primaryFocus },
+                        Modifier.fillMaxWidth().focusRequester(nameFocus).keepFocusVisible().focusProperties { up = urlFocus; down = primaryFocus },
                         manualKeyboard = true, onSubmit = { primaryFocus.requestFocus() })
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        PrismAction("取消", onDismiss, Modifier.keepFocusVisible().focusProperties { up = nameFocus })
                         PrismAction(if (busy) "导入中…" else "开始导入", {
-                            if (!busy) {
-                                val url = draft.url
-                                onDismiss()
-                                runCatching { importPlaylist(draft.name, url, chosen) }.onFailure { onError(it.message ?: "无法开始导入"); onReopen() }
-                            }
-                        }, Modifier.focusRequester(primaryFocus).focusProperties { up = nameFocus }, primary = true)
-                        PrismAction("手机代填", {
-                            phoneSessions.openForm(listOf("url" to "歌单、单曲链接或编号", "name" to "歌单名称（选填）"),
-                                mapOf("url" to draft.url, "name" to draft.name), title = "填写歌单导入",
-                                message = "填写后回到电视确认并开始导入，不会自动导入。",
-                                onReturn = { pageScope.launch { repeat(2) { withFrameNanos { } }; runCatching { primaryFocus.requestFocus() } } }) { values ->
-                                draft.url = values["url"].orEmpty()
-                                draft.name = values["name"].orEmpty().take(60)
-                            }
-                        }, Modifier.focusProperties { up = nameFocus })
-                        PrismAction("取消", { onDismiss() }, Modifier.focusProperties { up = nameFocus })
+                            val url = draft.url
+                            onDismiss()
+                            runCatching { importPlaylist(draft.name, url, chosen) }.onFailure { onError(it.message ?: "无法开始导入"); onReopen() }
+                        }, Modifier.focusRequester(primaryFocus).keepFocusVisible().focusProperties { up = nameFocus },
+                            primary = true, enabled = !busy)
                     }
                     Text("导入后保存在「我的 → 歌单」。私有歌单请先登录对应音源。",
                         color = c.muted, fontSize = 11.sp, lineHeight = 16.sp)

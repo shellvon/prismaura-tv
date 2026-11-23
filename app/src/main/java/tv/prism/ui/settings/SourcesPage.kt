@@ -36,6 +36,7 @@ import tv.prism.ui.widgets.rememberFocus
 import tv.prism.ui.widgets.leftTo
 import tv.prism.ui.widgets.Input
 import tv.prism.ui.widgets.PrismAction
+import tv.prism.ui.widgets.PhoneFillButton
 import tv.prism.ui.widgets.PrismConfirmDialog
 import tv.prism.ui.widgets.SettingsDivider
 import tv.prism.ui.widgets.auraFocus
@@ -62,7 +63,7 @@ internal fun SourcesPage(
     onImport: (SyncResult) -> Unit,
     onStatus: (String) -> Unit,
     searchSubscription: (String) -> Unit,
-    fillOnPhone: () -> Unit,
+    fillOnPhone: (() -> Unit) -> Unit,
     sourceRow: @Composable (Plugin, Boolean, () -> Unit, Modifier) -> Unit,
 ) {
     val ui by pluginViewModel.state.collectAsState()
@@ -73,6 +74,9 @@ internal fun SourcesPage(
     val c = LocalPrismColors.current
     DisposableEffect(Unit) { onDispose { pluginViewModel.showAdd(false) } }
     var removingSubscription by remember { mutableStateOf<String?>(null) }
+    var addProgress by remember { mutableStateOf("") }
+    var sourceNotice by remember { mutableStateOf("") }
+    val phoneFocus = remember { FocusRequester() }
     val addressFocus = remember { FocusRequester() }
     val updateSourcesFocus = remember { FocusRequester() }
     val subscriptionGroups =
@@ -104,20 +108,25 @@ internal fun SourcesPage(
         operationScope.launch {
             busy = true
             pluginViewModel.showAddressError("")
+            addProgress = "正在读取音源…"
             try {
-                onImport(
-                    plugins.importUrl(address) { done, total, label ->
-                        onStatus("正在导入 $done/$total：$label")
-                    }
-                )
-                pluginViewModel.editAddress("")
-                closeAddSource()
+                val result = plugins.importUrl(address) { done, total, label ->
+                    addProgress = "正在导入 $done/$total：$label"
+                }
+                onImport(result)
+                sourceNotice = result.message
+                if (result.failed) pluginViewModel.showAddressError(result.message)
+                else {
+                    pluginViewModel.editAddress("")
+                    closeAddSource()
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 pluginViewModel.showAddressError(e.message ?: "添加失败，请检查地址")
             } finally {
                 busy = false
+                addProgress = ""
             }
         }
     }
@@ -133,7 +142,7 @@ internal fun SourcesPage(
                 Text("添加音源", color = c.foreground, fontSize = 15.sp, lineHeight = 21.sp)
                 Text("请只导入可信来源的插件", color = c.muted, fontSize = 12.sp, lineHeight = 17.sp)
             }
-            SettingsButton(
+            PrismAction(
                 "添加",
                 { pluginViewModel.showAdd(true) },
                 Modifier.focusAnchor(sourceActionFocus)
@@ -143,20 +152,22 @@ internal fun SourcesPage(
                 primary = true,
                 icon = "plus",
             )
-            SettingsButton(
+            PrismAction(
                 if (busy) "更新中…" else "全部更新",
                 {
                     if (!busy)
                         operationScope.launch {
                             busy = true
                             try {
-                                onImport(
-                                    plugins.syncAll { done, total, label ->
-                                        onStatus("正在更新 $done/$total：$label")
-                                    }
-                                )
-                            } catch (e: Exception) {
-                                onStatus("同步失败：${e.message}")
+                                val result = plugins.syncAll { done, total, label ->
+                                    sourceNotice = "正在更新 $done/$total：$label"
+                                }
+                                sourceNotice = result.message
+                                onImport(result)
+                            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                            catch (e: Exception) {
+                                sourceNotice = "同步失败：${e.message}"
+                                onStatus(sourceNotice)
                             } finally {
                                 busy = false
                             }
@@ -170,6 +181,10 @@ internal fun SourcesPage(
                     .rememberFocus(bodyFocusMemory),
                 icon = "refresh",
             )
+        }
+        if (sourceNotice.isNotBlank()) {
+            Text(sourceNotice, color = c.muted, fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 8.dp))
         }
     }
     SettingsCard("已安装", "已启用 ${state.plugins.count { it.enabled }} / ${state.plugins.size}") {
@@ -199,17 +214,22 @@ internal fun SourcesPage(
                 ) {
                     Text("添加音源", color = c.foreground, fontSize = 22.sp)
                     Text("同一局域网的手机可选「手机代填」，扫码粘贴后回到电视确认。", color = c.muted, fontSize = 13.sp)
-                    Input(
-                        subscription,
-                        { pluginViewModel.editAddress(it) },
-                        "插件 .js 或订阅 .json 地址",
-                        Modifier.fillMaxWidth().focusRequester(addressFocus).focusProperties {
-                            down = addFocus
-                        },
-                        keyboardType = KeyboardType.Uri,
-                        manualKeyboard = true,
-                        onSubmit = { addFocus.requestFocus() },
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Input(
+                            subscription, { pluginViewModel.editAddress(it) }, "插件 .js 或订阅 .json 地址",
+                            Modifier.weight(1f).focusRequester(addressFocus).focusProperties { down = addFocus; right = phoneFocus },
+                            keyboardType = KeyboardType.Uri, manualKeyboard = true, onSubmit = { addFocus.requestFocus() },
+                        )
+                        PhoneFillButton("手机代填音源地址", {
+                            fillOnPhone {
+                                pageScope.launch {
+                                    repeat(2) { withFrameNanos { } }
+                                    runCatching { phoneFocus.requestFocus() }
+                                }
+                            }
+                        }, Modifier.focusRequester(phoneFocus).focusProperties { left = addressFocus; down = addFocus })
+                    }
+                    if (addProgress.isNotBlank()) Text(addProgress, color = c.muted, fontSize = 12.sp, maxLines = 2)
                     if (ui.addressError.isNotBlank())
                         Text(
                             ui.addressError,
@@ -220,21 +240,13 @@ internal fun SourcesPage(
                             overflow = TextOverflow.Ellipsis,
                         )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        PrismAction("取消", { closeAddSource() }, Modifier.focusProperties { up = addressFocus })
                         PrismAction(
-                            if (busy) "添加中…" else "添加",
+                            if (addProgress.isNotBlank()) "添加中…" else if (ui.addressError.isNotBlank()) "重试添加" else "添加",
                             { addSource() },
                             Modifier.focusRequester(addFocus).focusProperties { up = addressFocus },
                             primary = true,
-                        )
-                        PrismAction(
-                            "手机代填",
-                            { fillOnPhone() },
-                            Modifier.focusProperties { up = addressFocus },
-                        )
-                        PrismAction(
-                            "取消",
-                            { closeAddSource() },
-                            Modifier.focusProperties { up = addressFocus },
+                            icon = "plus",
                         )
                     }
                 }

@@ -36,6 +36,10 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import tv.prism.catalog.PluginCapabilities
+import tv.prism.library.backupArray
+import tv.prism.library.backupObject
+import tv.prism.library.readBackupFile
+import tv.prism.library.replaceBackupFile
 import tv.prism.library.Song
 import tv.prism.library.primaryKeys
 import tv.prism.updates.compareVersions
@@ -110,25 +114,24 @@ class Plugins(private val context: Context, val client: PluginClient) {
     val state: StateFlow<PluginsState> = mutable
 
     private fun read(): PluginsState = try {
-        if (!file.baseFile.exists()) PluginsState() else parse(JSONObject(file.openRead().bufferedReader().use { it.readText() }))
+        readBackupFile(file)?.let { parse(JSONObject(it.toString(Charsets.UTF_8))) } ?: PluginsState()
     } catch (e: Exception) { PluginsState(error = "插件数据读取失败，已停止写入：${e.message}") }
 
     private fun parse(root: JSONObject): PluginsState {
-        val arr = root.optJSONArray("plugins") ?: JSONArray()
+        val arr = root.backupArray("plugins")
         val plugins = (0 until arr.length()).map { i ->
             val p = arr.getJSONObject(i)
-            Plugin(p.getString("id"), p.optString("url"), p.getString("source"), p.getJSONObject("metadata"), p.optJSONObject("variables") ?: JSONObject(),
+            Plugin(p.getString("id"), p.optString("url"), p.getString("source"), p.getJSONObject("metadata"), p.backupObject("variables"),
                 p.optBoolean("enabled", true), p.optString("origin"))
         }
-        val subscriptions = root.optJSONArray("subscriptions") ?: JSONArray()
-        val removedRoot = root.optJSONObject("removed")
-        val removed = removedRoot?.let { obj ->
-            obj.keys().asSequence().mapNotNull { url -> obj.optString(url).takeIf { it.isNotBlank() }?.let { url to it } }.toMap()
-        } ?: emptyMap()
+        val subscriptions = root.backupArray("subscriptions")
+        val removed = root.backupObject("removed").let { obj ->
+            obj.keys().asSequence().associateWith { obj.getString(it) }
+        }
         val urls = (0 until subscriptions.length()).map { subscriptions.getString(it) }
-        val descriptions = root.optJSONObject("subscriptionDescriptions")
+        val descriptions = root.backupObject("subscriptionDescriptions")
         return PluginsState(plugins, urls, removed = removed, subscriptionDescriptions = urls.mapNotNull { url ->
-            (descriptions?.opt(url) as? String)?.trim()?.take(1024)?.takeIf { it.isNotBlank() }?.let { url to it }
+            (descriptions.opt(url) as? String)?.trim()?.take(1024)?.takeIf { it.isNotBlank() }?.let { url to it }
         }.toMap())
     }
 
@@ -157,9 +160,14 @@ class Plugins(private val context: Context, val client: PluginClient) {
             .put("subscriptionDescriptions", JSONObject(state.subscriptionDescriptions))
     }
 
-    suspend fun restoreBackup(root: JSONObject) = mutex.withLock {
-        val next = parse(root)
-        withContext(Dispatchers.IO) { write(next) }
+    internal fun parseBackup(root: JSONObject): PluginsState {
+        root.getJSONArray("plugins")
+        return parse(root)
+    }
+
+    internal suspend fun restoreBackup(root: JSONObject, next: PluginsState, afterWrite: suspend () -> Unit) = mutex.withLock {
+        replaceBackupFile(file, root, afterWrite)
+        mutable.value = next
     }
 
     suspend fun importSource(source: String, url: String = "", origin: String = ""): SyncResult =

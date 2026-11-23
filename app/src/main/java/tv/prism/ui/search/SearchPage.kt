@@ -57,7 +57,9 @@ import tv.prism.catalog.matchesSearchHistory
 import tv.prism.ui.widgets.Input
 import tv.prism.ui.widgets.focusAnchor
 import tv.prism.ui.widgets.AuraIconButton
+import tv.prism.ui.widgets.PhoneFillButton
 import tv.prism.ui.widgets.PrismLink
+import tv.prism.ui.widgets.PrismEmptyState
 import tv.prism.ui.widgets.PrismAction
 import tv.prism.ui.widgets.PlatformAction
 import tv.prism.ui.widgets.upTo
@@ -137,6 +139,7 @@ internal fun SearchPage(
     val searchSuggestionsVisible =
         !busy && (keyword.isBlank() || keyword.trim() != searchTerm.trim())
     val pageScope = rememberCoroutineScope()
+    val phoneFillFocus = remember { FocusAnchor() }
     val c = LocalPrismColors.current
     fun search(query: String, append: Boolean = false) = actions.submit(query, append)
     CompositionLocalProvider(LocalListScrolling provides { focus.list.isScrollInProgress }) {
@@ -504,17 +507,20 @@ internal fun SearchPage(
                         .then(revealOnDown(searchContentFocus)),
                     primary = true,
                 )
-                AuraIconButton(
-                    "qr",
+                PhoneFillButton(
                     "手机代填搜索词",
                     {
                         actions.fillOnPhone(keyword) {
                             pageScope.launch {
                                 repeat(2) { withFrameNanos {} }
-                                focus.input.requestIfAttached()
+                                if (!phoneFillFocus.requestIfAttached()) focus.input.requestIfAttached()
                             }
                         }
                     },
+                    Modifier.focusAnchor(phoneFillFocus).focusProperties {
+                        up = focus.nav
+                        if (searchContentFocus.attached) down = searchContentFocus.requester
+                    }.then(revealOnDown(searchContentFocus)),
                 )
             }
             /* Filters are footnotes: a quiet link row under the field, not a strip
@@ -908,11 +914,8 @@ internal fun ColumnScope.SearchResults(
     if (searchType != "music") {
         if (entities.isEmpty() && busy) SearchPlaceholder(true)
         else if (entities.isEmpty())
-            Text(
-                "没有找到「$keyword」的${listOf("artist" to "歌手", "album" to "专辑", "sheet" to "歌单").firstOrNull { it.first == searchType }?.second ?: "结果"}。这个音源可能只支持歌曲搜索，切到「歌曲」再试一次",
-                color = c.muted,
-                fontSize = 12.sp,
-            )
+            PrismEmptyState("没有找到「$keyword」的结果。可以换关键词或搜索类型。", "修改关键词",
+                { focus.input.requestIfAttached() }, actionModifier = Modifier.focusAnchor(focus.entry))
         else {
             var focusedRow by remember { mutableStateOf<Int?>(null) }
             val defaultReveal = LocalBringIntoViewSpec.current
@@ -1011,11 +1014,11 @@ internal fun ColumnScope.SearchResults(
         }
         if (results.isEmpty() && busy) SearchPlaceholder(false)
         else if (results.isEmpty()) {
-            Text(
-                if (hasMore) "本页暂无歌曲，可继续加载" else "没有找到「$keyword」的歌曲。换个关键词，或换一个音源试试",
-                color = c.muted,
-                fontSize = 12.sp,
-                modifier = Modifier.padding(top = 16.dp),
+            PrismEmptyState(
+                if (hasMore) "本页暂无歌曲" else "没有找到「$keyword」的歌曲。可以换关键词或音源。",
+                if (hasMore) "加载更多" else "修改关键词",
+                if (hasMore) onLoadMore else ({ focus.input.requestIfAttached(); Unit }),
+                actionModifier = Modifier.focusAnchor(focus.entry),
             )
         } else
             LazyColumn(

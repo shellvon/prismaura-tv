@@ -59,7 +59,12 @@ internal class PhoneSessions(
             formReturn = onReturn
             remoteMode = false
             dialogVisible = true
-            formTimeout = Runnable { closeSession(false); onStatus("扫码输入已过期，请重新打开") }.also { handler.postDelayed(it, 300_000) }
+            formTimeout = Runnable {
+                val returnToField = formReturn.takeIf { activeSession === form && dialogVisible }
+                closeSession(false)
+                returnToField?.invoke()
+                onStatus("扫码输入已过期，请重新打开")
+            }.also { handler.postDelayed(it, 300_000) }
         } catch (e: Exception) { onStatus("无法启动手机输入：${e.message}") }
     }
 

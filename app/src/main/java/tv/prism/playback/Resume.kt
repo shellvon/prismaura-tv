@@ -19,6 +19,7 @@ data class PlaybackResume(
     val radio: Boolean = false,
     val radioRecent: List<String> = emptyList(),
     val shuffleOrder: List<Int> = emptyList(),
+    val finished: Boolean = false,
 )
 
 /** Last queue and position, so the next launch can put the needle back down where it stopped. */
@@ -28,37 +29,33 @@ class ResumeStore(context: Context) {
     fun read(): PlaybackResume? =
         synchronized(fileLock) {
             runCatching {
-                    if (!file.baseFile.exists()) return@runCatching null
-                    val root = JSONObject(file.openRead().bufferedReader().use { it.readText() })
-                    val array = root.optJSONArray("queue") ?: return@runCatching null
-                    val songs =
-                        (0 until array.length()).mapNotNull { i ->
-                            array.optJSONObject(i)?.let { entry ->
-                                entry.optJSONObject("data")?.let {
-                                    Song(
-                                        entry.optString("pluginId"),
-                                        it,
-                                        entry.optString("sourceName"),
-                                        primaryKeys(entry),
-                                    )
-                                }
-                            }
-                        }
-                    if (songs.isEmpty()) return@runCatching null
-                    val recent = root.optJSONArray("radioRecent") ?: JSONArray()
-                    val order = root.optJSONArray("shuffleOrder") ?: JSONArray()
-                    PlaybackResume(
-                        songs,
-                        root.optInt("index", 0).coerceIn(0, songs.lastIndex),
-                        root.optLong("position", 0L).coerceAtLeast(0L),
-                        root.optBoolean("radio"),
-                        (0 until minOf(recent.length(), 80)).mapNotNull {
-                            recent.opt(it) as? String
-                        },
-                        (0 until minOf(order.length(), MAX)).map { order.optInt(it, -1) },
-                    )
+                val root = JSONObject(file.openRead().bufferedReader().use { it.readText() })
+                val array = root.optJSONArray("queue") ?: return@runCatching null
+                val entries = (0 until array.length()).mapNotNull { oldIndex ->
+                    val entry = array.optJSONObject(oldIndex) ?: return@mapNotNull null
+                    val pluginId = (entry.opt("pluginId") as? String)?.takeIf { it.isNotBlank() }
+                        ?: return@mapNotNull null
+                    val data = entry.optJSONObject("data")?.takeIf { it.length() > 0 } ?: return@mapNotNull null
+                    oldIndex to Song(pluginId, data, entry.optString("sourceName"), primaryKeys(entry))
                 }
-                .getOrNull()
+                if (entries.isEmpty()) return@runCatching null
+                val remapped = entries.withIndex().associate { (index, entry) -> entry.first to index }
+                val savedIndex = root.optInt("index", 0).coerceIn(0, array.length() - 1)
+                val current = remapped[savedIndex]
+                val index = current ?: entries.indexOfFirst { it.first > savedIndex }.takeIf { it >= 0 } ?: entries.lastIndex
+                val recent = root.optJSONArray("radioRecent") ?: JSONArray()
+                val order = root.optJSONArray("shuffleOrder") ?: JSONArray()
+                val shuffle = (0 until minOf(order.length(), MAX))
+                    .mapNotNull { remapped[order.optInt(it, -1)] }.distinct()
+                PlaybackResume(
+                    entries.map { it.second }, index,
+                    if (current != null) root.optLong("position", 0L).coerceAtLeast(0L) else 0L,
+                    root.optBoolean("radio"),
+                    (0 until minOf(recent.length(), 80)).mapNotNull { recent.opt(it) as? String },
+                    shuffle.takeIf { it.size == entries.size }.orEmpty(),
+                    current != null && root.optBoolean("finished"),
+                )
+            }.getOrNull()
         }
 
     internal fun enqueueWrite(resume: PlaybackResume) {
@@ -70,6 +67,7 @@ class ResumeStore(context: Context) {
                 resume.radio,
                 resume.radioRecent,
                 resume.shuffleOrder,
+                resume.finished,
             )
         }
     }
@@ -81,9 +79,14 @@ class ResumeStore(context: Context) {
         radio: Boolean = false,
         radioRecent: List<String> = emptyList(),
         shuffleOrder: List<Int> = emptyList(),
+        finished: Boolean = false,
     ) {
         synchronized(fileLock) {
             runCatching {
+                if (songs.isEmpty()) {
+                    file.delete()
+                    return@runCatching
+                }
                 val array = JSONArray()
                 /* A resume point only needs the neighbourhood of the current track; an enormous
                 imported sheet would otherwise be rewritten on every save. Use playback order
@@ -118,6 +121,7 @@ class ResumeStore(context: Context) {
                         .put("index", remapped[current] ?: 0)
                         .put("position", position.coerceAtLeast(0L))
                         .put("radio", radio)
+                        .put("finished", finished)
                         .put("radioRecent", JSONArray(radioRecent.takeLast(80)))
                         .put("shuffleOrder", JSONArray(savedOrder))
                 val stream = file.startWrite()

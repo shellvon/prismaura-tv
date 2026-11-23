@@ -31,6 +31,7 @@ import tv.prism.ui.widgets.Glyph
 import tv.prism.ui.widgets.Input
 import tv.prism.ui.widgets.LocalPrismColors
 import tv.prism.ui.widgets.PrismAction
+import tv.prism.ui.widgets.PhoneFillButton
 import tv.prism.ui.widgets.tvClickable
 
 @Composable
@@ -152,14 +153,15 @@ internal fun MainActivity.PlaylistPickerPanel(song: Song, libraryState: LibraryS
                     )
                     /* 名字就在输入框里，手机代填也贴着输入框：先给一个好改的默认值，
                        再决定是在电视上删改，还是扫码到手机上接着改。 */
-                    PrismAction("手机代填", {
+                    PhoneFillButton("手机代填歌单名称", {
                         phoneSessions.openForm(
                             listOf("name" to "歌单名称"),
                             mapOf("name" to draft.ifBlank { suggestedName() }),
                             title = "新建歌单",
-                            message = "名字已经填好，可直接保存或修改。",
-                        ) { values -> create(values["name"].orEmpty()) }
-                    }, icon = "remote")
+                            message = "提交后回到电视确认歌单名称。",
+                            onReturn = { lifecycleScope.launch { repeat(2) { withFrameNanos { } }; runCatching { nameFocus.requestFocus() } } },
+                        ) { values -> draft = values["name"].orEmpty().take(60) }
+                    })
                 }
             }
             if (notice.isNotBlank() || !creating) {
@@ -253,14 +255,15 @@ internal fun MainActivity.RenamePlaylistPanel(
                     onSubmit = { save(draft) },
                     onEditingChange = { editing = it },
                 )
-                PrismAction("手机代填", {
+                PhoneFillButton("手机代填歌单名称", {
                     phoneSessions.openForm(
                         listOf("name" to "歌单名称"),
                         mapOf("name" to draft.ifBlank { currentName }),
                         title = "重命名歌单",
-                        message = "名字已经填好，可直接保存或修改。",
-                    ) { values -> save(values["name"].orEmpty()) }
-                }, icon = "remote")
+                        message = "提交后回到电视确认歌单名称。",
+                        onReturn = { lifecycleScope.launch { repeat(2) { withFrameNanos { } }; runCatching { nameFocus.requestFocus() } } },
+                    ) { values -> draft = values["name"].orEmpty().take(60) }
+                })
             }
             Text(
                 notice.ifBlank { if (draft.trim() == currentName) "改好后按保存。" else "确定键开始输入，右方向键可转到手机代填。" },

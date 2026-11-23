@@ -20,7 +20,10 @@ internal data class LyricPayload(
     val source: String = "",
     val score: Int = 0,
     val sourceId: String = "",
-)
+    val timedLines: List<LyricLine>? = null,
+) {
+    fun lines() = timedLines ?: Lyrics.parse(text, translation)
+}
 
 internal sealed interface LyricLookup {
     data class Found(val payload: LyricPayload) : LyricLookup
@@ -37,20 +40,24 @@ internal data class LyricProbe(
 
 object LyricSourcePrefs {
     const val PREFS = "lyrics"
-    const val MODE_AUTO = "auto"
-    const val MODE_PLUGIN_ONLY = "pluginOnly"
-
-    fun mode(context: Context): String = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        .getString("mode", MODE_AUTO)?.takeIf { it == MODE_PLUGIN_ONLY } ?: MODE_AUTO
+    fun migrateMode(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val mode = prefs.getString("mode", null) ?: return
+        val editor = prefs.edit().remove("mode")
+        if (mode == "pluginOnly") {
+            for (source in listOf("lrclib", "kugou", "netease")) editor.putBoolean(source, false)
+        }
+        editor.apply()
+    }
 
     fun lrclib(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("lrclib", true)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("lrclib", false)
 
     fun kugou(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("kugou", true)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("kugou", false)
 
     fun netease(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("netease", true)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("netease", false)
 }
 
 internal object LyricSources {
@@ -101,10 +108,14 @@ internal object LyricSources {
                 NETEASE -> netease(song)
                 else -> null
             }
-            if (payload != null && payload.text.isNotBlank()) {
-                remember(id, song, payload)
-                LyricLookup.Found(payload)
-            } else LyricLookup.Missing
+            val lines = payload?.lines().orEmpty()
+            if (payload == null || lines.isEmpty()) {
+                LyricLookup.Missing
+            } else {
+                val ranked = if (lines.any { !it.words.isNullOrEmpty() }) payload.copy(score = payload.score + 100) else payload
+                remember(id, song, ranked)
+                LyricLookup.Found(ranked)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -112,70 +123,45 @@ internal object LyricSources {
         }
     }
 
-    internal suspend fun fetchExternal(
-        song: Song, lrclibEnabled: Boolean, kugouEnabled: Boolean, neteaseEnabled: Boolean,
-    ): LyricPayload? =
+    internal suspend fun fetchExternal(song: Song, sources: Set<String>): LyricLookup =
         coroutineScope {
-            val ids = buildList {
-                if (lrclibEnabled) add(LRCLIB)
-                if (kugouEnabled) add(KUGOU)
-                if (neteaseEnabled) add(NETEASE)
-            }
-            if (ids.isEmpty()) return@coroutineScope null
-            ids.map { id -> async { (lookup(id, song) as? LyricLookup.Found)?.payload } }
-                .awaitAll().filterNotNull().maxByOrNull { it.score }
+            val results = sources.map { id -> async { lookup(id, song) } }.awaitAll()
+            results.filterIsInstance<LyricLookup.Found>().maxByOrNull { it.payload.score }
+                ?: if (LyricLookup.Failed in results) LyricLookup.Failed else LyricLookup.Missing
         }
 
-    private val brackets = Regex("""\s*[（(\[【].*$""")
-    private val featuring = Regex("""(?i)\s*(feat\.?|ft\.?|featuring)\s.*$""")
-
-    private fun normalize(value: String): String = value
-        .replace(featuring, "")
-        .replace(brackets, "")
-        .lowercase()
+    private fun normalize(value: String): String = value.lowercase()
         .replace(Regex("""[^\p{L}\p{N}]"""), "")
 
     private fun performers(value: String): Set<String> = value
-        .split('/', '、', ',', '，', '&', ';', '；')
+        .split('/', '、', ',', '，', '&', '；')
         .map { normalize(it) }
         .filter { it.isNotBlank() }
         .toSet()
 
-    /* 候选打分：歌名完全一致 +40、互相包含 +18、不同 -30；歌手有交集 +30、无交集 -20；
-       专辑一致 +10；时长差 ≤3s +50、≤6s +30、≤12s +10、≤25s 0、更远 -40；
-       有逐行时间轴 +8，带翻译 +2。 */
-    private fun score(
+    // Only rank candidates after checking that the metadata identifies the same recording.
+    internal fun matchScore(
         title: String, artist: String, album: String, duration: Double, song: Song,
-        timed: Boolean, translated: Boolean,
-    ): Int {
-        var total = 0
-        val wanted = normalize(song.title)
-        val got = normalize(title)
-        total += when {
-            wanted.isBlank() || got.isBlank() -> 0
-            wanted == got -> 40
-            got.contains(wanted) || wanted.contains(got) -> 18
-            else -> -30
-        }
+        timed: Boolean,
+    ): Int? {
+        val wantedTitle = normalize(song.title)
+        if (wantedTitle.isBlank() || normalize(title) != wantedTitle) return null
         val wantedArtists = performers(song.artist)
-        val gotArtists = performers(artist)
-        if (wantedArtists.isNotEmpty() && gotArtists.isNotEmpty()) {
-            total += if (wantedArtists.intersect(gotArtists).isNotEmpty()) 30 else -20
-        }
-        if (song.album.isNotBlank() && album.isNotBlank() && normalize(song.album) == normalize(album)) total += 10
-        val target = song.durationSeconds
-        if (target > 0 && duration > 0) {
-            total += when (val diff = abs(target - duration)) {
-                in 0.0..3.0 -> 50
-                in 3.0..6.0 -> 30
-                in 6.0..12.0 -> 10
-                in 12.0..25.0 -> 0
-                else -> -40
-            }
-        }
-        if (timed) total += 8
-        if (translated) total += 2
-        return total
+        if (wantedArtists.isEmpty() || performers(artist) != wantedArtists) return null
+
+        val wantedAlbum = normalize(song.album)
+        val candidateAlbum = normalize(album)
+        val albumsKnown = wantedAlbum.isNotBlank() && candidateAlbum.isNotBlank()
+        if (albumsKnown && wantedAlbum != candidateAlbum) return null
+
+        val durationsKnown = song.durationSeconds > 0 && duration > 0
+        val timingScore = if (durationsKnown) {
+            val difference = abs(song.durationSeconds - duration)
+            if (!difference.isFinite() || difference > 3.0) return null
+            30 - (difference * 10).roundToInt()
+        } else 0
+        if (!durationsKnown && !albumsKnown) return null
+        return timingScore + (if (albumsKnown) 35 else 0) + (if (timed) 8 else 0)
     }
 
     private fun lrclib(song: Song): LyricPayload? {
@@ -191,7 +177,7 @@ internal object LyricSources {
                 ),
                 appAgent = true,
             )?.let { row -> parseRow(row, song) }
-            if (single != null) return single
+            if (single != null) return single.withWordTiming()
         }
         val rows = LyricsHttp.array(
             LyricsHttp.url(LRCLIB_SEARCH, "track_name" to song.title, "artist_name" to song.artist),
@@ -200,25 +186,31 @@ internal object LyricSources {
         return (0 until rows.length())
             .mapNotNull { rows.optJSONObject(it)?.let { row -> parseRow(row, song) } }
             .maxByOrNull { it.score }
+            ?.withWordTiming()
     }
 
-    private fun parseRow(row: JSONObject, song: Song): LyricPayload? {
+    private data class LrclibMatch(val payload: LyricPayload, val row: JSONObject) {
+        val score get() = payload.score
+        fun withWordTiming(): LyricPayload {
+            val lines = (row.opt("lyricsfile") as? String)?.let(::parseLyricsFile)
+            android.util.Log.d("PrismLyrics", "LRCLIB id=${row.optLong("id")} timedLines=${lines?.count { it.words != null } ?: 0}")
+            return payload.copy(timedLines = lines)
+        }
+    }
+
+    private fun parseRow(row: JSONObject, song: Song): LrclibMatch? {
         if (row.optBoolean("instrumental")) return null
         val synced = row.optString("syncedLyrics")
         val text = synced.ifBlank { row.optString("plainLyrics") }
         if (text.isBlank()) return null
-        return LyricPayload(
-            text = text,
-            source = label(LRCLIB),
-            sourceId = LRCLIB,
-            score = score(
-                row.optString("trackName").ifBlank { row.optString("name") },
-                row.optString("artistName"),
-                row.optString("albumName"),
-                row.optDouble("duration", 0.0),
-                song, synced.isNotBlank(), false,
-            ),
-        )
+        val score = matchScore(
+            row.optString("trackName").ifBlank { row.optString("name") },
+            row.optString("artistName"),
+            row.optString("albumName"),
+            row.optDouble("duration", 0.0),
+            song, synced.isNotBlank(),
+        ) ?: return null
+        return LrclibMatch(LyricPayload(text, source = label(LRCLIB), sourceId = LRCLIB, score = score), row)
     }
 
     private fun kugou(song: Song): LyricPayload? {
@@ -232,8 +224,9 @@ internal object LyricSources {
             if (hash.isBlank()) return@mapNotNull null
             val title = row.optString("SongName")
             if (title.contains("伴奏") || title.contains("纯音乐")) return@mapNotNull null
-            hash to score(title, row.optString("SingerName"), row.optString("AlbumName"),
-                row.optDouble("Duration", 0.0), song, true, false)
+            val score = matchScore(title, row.optString("SingerName"), row.optString("AlbumName"),
+                row.optDouble("Duration", 0.0), song, true) ?: return@mapNotNull null
+            hash to score
         }.maxByOrNull { it.second } ?: return null
         val candidate = LyricsHttp.json(
             LyricsHttp.url(KUGOU_MATCH, "ver" to "1", "man" to "yes", "client" to "mobi", "hash" to best.first),
@@ -268,14 +261,17 @@ internal object LyricSources {
             val artists = row.optJSONArray("artists")?.let { list ->
                 (0 until list.length()).mapNotNull { list.optJSONObject(it)?.optString("name") }.joinToString(" / ")
             }.orEmpty()
-            id to score(title, artists, row.optJSONObject("album")?.optString("name").orEmpty(),
-                row.optDouble("duration", 0.0) / 1000.0, song, true, false)
+            val score = matchScore(title, artists, row.optJSONObject("album")?.optString("name").orEmpty(),
+                row.optDouble("duration", 0.0) / 1000.0, song, true) ?: return@mapNotNull null
+            id to score
         }.maxByOrNull { it.second } ?: return null
         val lyric = LyricsHttp.json(
-            LyricsHttp.url(NETEASE_LYRIC, "id" to best.first.toString(), "lv" to "1", "kv" to "1", "tv" to "-1"),
+            LyricsHttp.url(NETEASE_LYRIC, "id" to best.first.toString(), "lv" to "1", "kv" to "1", "tv" to "-1", "yv" to "1"),
             NETEASE_REFERER,
         ) ?: return null
-        val text = lyric.optJSONObject("lrc")?.optString("lyric").orEmpty()
+        val wordTimed = lyric.optJSONObject("yrc")?.optString("lyric").orEmpty()
+        val text = wordTimed.takeIf { Lyrics.parse(it).any { line -> !line.words.isNullOrEmpty() } }
+            ?: lyric.optJSONObject("lrc")?.optString("lyric").orEmpty()
         if (text.isBlank()) return null
         return LyricPayload(
             text,

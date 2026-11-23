@@ -25,7 +25,7 @@ import androidx.tv.material3.Text
 import tv.prism.ui.widgets.LocalPrismColors
 import tv.prism.remote.qrCodeBitmap
 import tv.prism.ui.widgets.PrismQrFrame
-import tv.prism.ui.widgets.SettingsButton
+import tv.prism.ui.widgets.PrismAction
 
 @Composable
 internal fun PhoneConnectionDialog(
@@ -63,10 +63,10 @@ internal fun PhoneConnectionDialog(
                     else "同一网络扫码代填，只接收一次提交\n有效 5 分钟，填写后回电视确认", color = c.muted, fontSize = 13.sp)
                 if (phoneRemoteMode) Text("播放控制、搜索、音源管理与备份恢复", color = c.foreground, fontSize = 14.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SettingsButton(if (phoneRemoteMode) "隐藏二维码" else "返回电视输入", {
+                    PrismAction(if (phoneRemoteMode) "隐藏二维码" else "返回电视输入", {
                         onDismiss()
                     }, Modifier.focusRequester(phoneCloseFocus), primary = true)
-                    if (phoneRemoteMode) SettingsButton("结束遥控", onEndRemote)
+                    if (phoneRemoteMode) PrismAction("结束遥控", onEndRemote)
                 }
             }
         }

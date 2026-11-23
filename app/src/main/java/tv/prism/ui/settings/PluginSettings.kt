@@ -10,6 +10,7 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
@@ -66,6 +67,7 @@ import tv.prism.sources.Plugins
 import tv.prism.ui.widgets.LocalPrismColors
 import tv.prism.ui.widgets.PlatformIcon
 import tv.prism.ui.widgets.PrismAction
+import tv.prism.ui.widgets.PhoneFillButton
 import tv.prism.ui.widgets.rememberFocus
 import tv.prism.ui.widgets.PrismConfigChoice
 import tv.prism.ui.widgets.focusAnchor
@@ -99,7 +101,7 @@ internal fun PluginConfig(
     onStatus: (String) -> Unit,
     searchSource: () -> Unit,
     onPhoneForm:
-        (List<Pair<String, String>>, Map<String, String>, (Map<String, String>) -> Unit) -> Unit,
+        (List<Pair<String, String>>, Map<String, String>, () -> Unit, (Map<String, String>) -> Unit) -> Unit,
 ) {
     val c = LocalPrismColors.current
     val fields = plugin.metadata.optJSONArray("userVariables") ?: JSONArray()
@@ -484,8 +486,8 @@ internal fun PluginConfig(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
                         )
-                        PrismAction(
-                            "手机代填",
+                        PhoneFillButton(
+                            "手机代填音源配置",
                             {
                                 onPhoneForm(
                                     entries.map { (field, key) ->
@@ -495,6 +497,7 @@ internal fun PluginConfig(
                                             }
                                     },
                                     values.toMap(),
+                                    { operationScope.launch { repeat(2) { withFrameNanos { } }; runCatching { phoneFocus.requestFocus() } } },
                                 ) { submitted ->
                                     submitted.forEach { (key, value) ->
                                         if (value.isNotBlank() && key in values) values[key] = value
@@ -1091,6 +1094,8 @@ internal fun <T> ChoicePopup(
     label: (T) -> String,
     onDismiss: () -> Unit,
     onSelect: (T) -> Unit,
+    description: ((T) -> String)? = null,
+    checked: ((T) -> Boolean)? = null,
     icon: @Composable (T) -> Unit,
 ) {
     val c = LocalPrismColors.current
@@ -1124,7 +1129,7 @@ internal fun <T> ChoicePopup(
                     Modifier.fillMaxWidth().focusRequester(focus),
                 )
             options.forEachIndexed { index, option ->
-                val chosen = index == selectedIndex
+                val chosen = checked?.invoke(option) ?: (index == selectedIndex)
                 val rowShape = RoundedCornerShape(8.dp)
                 Row(
                     Modifier.fillMaxWidth()
@@ -1137,21 +1142,24 @@ internal fun <T> ChoicePopup(
                         .auraFocus(rowShape, 1f)
                         .clip(rowShape)
                         .background(if (chosen) c.accent.copy(alpha = .12f) else Color.Transparent)
-                        .selectable(chosen, role = Role.RadioButton, onClick = { onSelect(option) })
+                        .then(if (checked == null) Modifier.selectable(chosen, role = Role.RadioButton, onClick = { onSelect(option) })
+                            else Modifier.toggleable(chosen, role = Role.Checkbox) { onSelect(option) })
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     icon(option)
+                    Column(Modifier.weight(1f)) {
                     Text(
                         label(option),
-                        Modifier.weight(1f),
                         color = c.foreground,
                         fontSize = 14.sp,
                         lineHeight = 20.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    description?.let { Text(it(option), color = c.muted, fontSize = 12.sp, lineHeight = 16.sp) }
+                    }
                     if (chosen) Glyph("check", Modifier.size(14.dp), c.accent)
                 }
             }

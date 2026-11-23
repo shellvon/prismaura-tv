@@ -18,6 +18,9 @@ internal object ActiveQueue {
             entries = value
         }
     var order by mutableStateOf(PlaybackOrder())
+    val attempt = PlaybackAttempt()
+    var phase by mutableStateOf(PlaybackPhase.Connecting)
+    var failureDetail by mutableStateOf("")
     var index by mutableIntStateOf(-1)
     var radio by mutableStateOf(false)
     var listenKey = ""

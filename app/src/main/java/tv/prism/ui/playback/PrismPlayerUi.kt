@@ -82,7 +82,6 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -104,6 +103,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -144,9 +144,13 @@ import tv.prism.library.Song
 import tv.prism.ui.widgets.LocalPrismColors
 import tv.prism.ui.widgets.LocalAuraMotion
 import tv.prism.ui.widgets.PrismColors
+import tv.prism.ui.widgets.PrismContentDialog
+import tv.prism.ui.widgets.PrismPagePadding
+import tv.prism.ui.widgets.auraFocus
 import tv.prism.ui.widgets.CoverArt
 import tv.prism.lyrics.LyricLine
 import tv.prism.lyrics.LyricStatus
+import tv.prism.playback.PlaybackPhase
 import tv.prism.playback.PlaybackMode
 import tv.prism.playback.audioQualityLabel
 import tv.prism.lyrics.lineIndexAt
@@ -410,10 +414,11 @@ private fun CoverPlate(song: Song?, modifier: Modifier = Modifier) {
 internal fun PrismPlayer(
     song: Song?, lyrics: List<LyricLine>, lyricStatus: LyricStatus, position: () -> Long, duration: Long,
     playing: Boolean, playMode: PlaybackMode, favorite: Boolean, quality: String, playingQuality: String,
-    queueIndex: Int, queueSize: Int, status: String,
+    queueIndex: Int, queueSize: Int, phase: PlaybackPhase, playbackDetail: String,
     streamFormat: String,
     hasMv: Boolean,
     mvResolving: Boolean = false,
+    mvError: String = "",
     mvOpen: Boolean = false,
     overlayOpen: Boolean = false,
     readPosition: () -> Long,
@@ -443,9 +448,9 @@ internal fun PrismPlayer(
     lyricSource: String = "",
     lyricSourceLabel: String = "",
     lyricActiveSource: String = "",
-    lyricLrclib: Boolean = true,
-    lyricKugou: Boolean = true,
-    lyricNetease: Boolean = true,
+    lyricLrclib: Boolean = false,
+    lyricKugou: Boolean = false,
+    lyricNetease: Boolean = false,
     lyricProbes: Map<String, LyricProbe> = emptyMap(),
     onProbeLyrics: () -> Unit = {},
     onLyricSource: (String?) -> Unit = {},
@@ -467,6 +472,8 @@ internal fun PrismPlayer(
 
     var immersive by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
+    var errorDetailsOpen by remember(song?.key) { mutableStateOf(false) }
+    val popupOpen = overlayOpen || errorDetailsOpen
     var controlsVisible by remember { mutableStateOf(true) }
     var hint by remember { mutableStateOf("") }
     var wakeKey by remember { mutableStateOf<Key?>(null) }
@@ -500,17 +507,28 @@ internal fun PrismPlayer(
     val active by remember(lyrics, lyricPosition) {
         derivedStateOf(structuralEqualityPolicy()) { lyrics.lineIndexAt(lyricPosition.value) }
     }
+    val lyricPending = lyricStatus == LyricStatus.Loading
+    val hasLyrics = lyrics.isNotEmpty()
+    var lastSettledHadLyrics by remember { mutableStateOf(false) }
+    if (!lyricPending) {
+        SideEffect { lastSettledHadLyrics = hasLyrics }
+    }
+    val showLyricPane = if (lyricPending) lastSettledHadLyrics else hasLyrics
 
     val idleTimeout = LocalAccessibilityManager.current?.calculateRecommendedTimeoutMillis(
         10_000L, containsIcons = true, containsText = true, containsControls = true,
     ) ?: 10_000L
-    val needsAttention = status.startsWith("正在解析") || status.startsWith("正在尝试") ||
-        status.startsWith("正在打开") || status.startsWith("正在加载") || status.startsWith("MV") ||
-        status.contains("失败") || status.contains("不可用")
+    val transportMessage = when {
+        phase == PlaybackPhase.Failed -> "播放失败 · 按播放重试" + if (onOtherSources != null) "，可在更多中换源" else ""
+        mvResolving -> "正在解析 MV…"
+        mvError.isNotBlank() -> mvError
+        else -> phase.message
+    }
+    val needsAttention = phase.holdControls
 
-    LaunchedEffect(interaction, playing, lyrics.isEmpty(), immersive, menuOpen, mvOpen, overlayOpen, needsAttention, idleTimeout) {
+    LaunchedEffect(interaction, playing, immersive, menuOpen, mvOpen, popupOpen, needsAttention, mvError, idleTimeout, visible) {
         controlsVisible = true
-        if (playing && lyrics.isNotEmpty() && !immersive && !menuOpen && !mvOpen && !overlayOpen && !needsAttention) {
+        if (visible && playing && !immersive && !menuOpen && !mvOpen && !popupOpen && !needsAttention) {
             delay(idleTimeout)
             controlsVisible = false
         }
@@ -533,14 +551,11 @@ internal fun PrismPlayer(
         SleeveEntrance.done = true
     }
 
-    var menuWasOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(menuOpen) {
-        if (menuOpen) menuWasOpen = true
-        else if (menuWasOpen) {
-            withFrameNanos { }
-            runCatching { dotsFocus.requestFocus() }
-        }
+    var lastControl by remember { mutableStateOf(playFocus) }
+    fun rememberControl(target: FocusRequester) = Modifier.onFocusChanged {
+        if (it.isFocused) lastControl = target
     }
+
     LaunchedEffect(immersive) {
         if (immersive) {
             // Wait for the immersion focus target to attach.
@@ -550,22 +565,21 @@ internal fun PrismPlayer(
             }
         }
     }
-    LaunchedEffect(mvOpen, overlayOpen, controlsVisible, immersive, menuOpen) {
-        if (mvOpen || overlayOpen || menuOpen || immersive) return@LaunchedEffect
-        // Acquire the stable root immediately, including when returning from a detail page.
-        parkFocus.requestAfterScroll { }
-        val target = if (controlsVisible) playFocus else parkFocus
-        // Touch mode can defer focus until the first remote key.
-        repeat(30) {
-            if (runCatching { target.requestFocus() }.isSuccess) return@LaunchedEffect
-            delay(120)
+    LaunchedEffect(mvOpen, popupOpen, controlsVisible, immersive, menuOpen, visible) {
+        if (!visible || mvOpen || popupOpen || menuOpen || immersive) return@LaunchedEffect
+        if (!controlsVisible) {
+            parkFocus.requestAfterScroll { }
+            return@LaunchedEffect
         }
+        withFrameNanos { }
+        if (!runCatching { lastControl.requestFocus() }.getOrDefault(false)) playFocus.requestAfterScroll { }
     }
-    LaunchedEffect(immersive, l2Tick) {
-        if (!immersive) return@LaunchedEffect
+    LaunchedEffect(immersive, l2Tick, playing, needsAttention, idleTimeout, popupOpen, visible) {
+        if (!immersive || !visible) return@LaunchedEffect
         l2Bar = true
         l2Level = 0
-        delay(3000)
+        if (!playing || needsAttention || popupOpen) return@LaunchedEffect
+        delay(idleTimeout)
         l2Bar = false
         l2Level = 1
         delay(5000)
@@ -579,12 +593,12 @@ internal fun PrismPlayer(
 
     fun seekBy(delta: Long) {
         if (duration <= 0) return
-        currentSeek((rawLyricPosition.value + delta).coerceIn(0, duration))
+        currentSeek((readPosition() + delta).coerceIn(0, duration))
     }
 
     fun immersiveSeek(delta: Long) {
         if (duration <= 0) return
-        val from = rawLyricPosition.value
+        val from = readPosition()
         val to = (from + delta).coerceIn(0, duration)
         if (to == from) return
         currentSeek(to)
@@ -593,10 +607,12 @@ internal fun PrismPlayer(
         l2SeekSeq++
     }
 
-    val controlSemantics = if (controlsVisible) Modifier else Modifier.clearAndSetSemantics { }
+    val chromeEnabled = visible && controlsVisible && !immersive && !menuOpen && !mvOpen && !popupOpen
+    val controlSemantics = if (chromeEnabled) Modifier else Modifier.clearAndSetSemantics { }
+    val controlFocus = Modifier.focusProperties { canFocus = chromeEnabled }
     val sizes = lyricSizes(lyricFontLevel, immersion = false)
     val immersionSizes = lyricSizes(lyricFontLevel, immersion = true)
-    val padX = 32.dp
+    val padX = PrismPagePadding
     val padTop = 18.dp
 
     BoxWithConstraints(
@@ -608,6 +624,21 @@ internal fun PrismPlayer(
                     return@onPreviewKeyEvent true
                 }
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                val navigation = event.key in setOf(
+                    Key.DirectionUp, Key.DirectionDown, Key.DirectionLeft, Key.DirectionRight,
+                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter, Key.Tab, Key.Spacebar,
+                )
+                if (navigation && (if (immersive) !l2Bar else !controlsVisible)) {
+                    wakeKey = event.key
+                    if (immersive) {
+                        l2Bar = true
+                        l2Tick++
+                    } else {
+                        controlsVisible = true
+                        interaction++
+                    }
+                    return@onPreviewKeyEvent true
+                }
                 if (immersive) {
                     l2Tick++
                     when (event.key) {
@@ -621,17 +652,6 @@ internal fun PrismPlayer(
                         else -> false
                     }
                 } else {
-                    if (!controlsVisible) {
-                        if (event.key in setOf(
-                                Key.DirectionUp, Key.DirectionDown, Key.DirectionLeft, Key.DirectionRight,
-                                Key.DirectionCenter, Key.Enter, Key.NumPadEnter, Key.Tab, Key.Spacebar,
-                            )) {
-                            controlsVisible = true
-                            interaction++
-                            wakeKey = event.key
-                            return@onPreviewKeyEvent true
-                        }
-                    }
                     if (controlsVisible) interaction++
                     when {
                         event.key in setOf(Key.Back, Key.Escape) -> { onBack(); true }
@@ -639,36 +659,44 @@ internal fun PrismPlayer(
                     }
                 }
             }
-            .focusable()
-            .pointerInput(Unit) { detectTapGestures { if (!immersive) { controlsVisible = true; interaction++ } } },
+            .focusable(),
     ) {
         val w = maxWidth
         val h = maxHeight
-        /* While the lyric request is still out the two-column layout stands as it is; the layout
-           only moves once the answer is known to be "no lyrics", never while it is still coming. */
-        val lyricPending = lyricStatus == LyricStatus.Loading
-        val noLyrics = lyrics.isEmpty() && !lyricPending
+        val centeredCover = !showLyricPane
         val sleeveBig = minOf(w * .29f, h * .50f)
         // Reserve measured title height without changing the column width.
         val columnWidth = minOf(w * .30f, h * .52f)
         val identityTop = h * .12f
         val sleeveSmall = minOf(w * .292f, h * .49f)
         val artSize by animateDpAsState(
-            if (noLyrics) sleeveBig else sleeveSmall,
+            if (centeredCover) sleeveBig else sleeveSmall,
             tween(if (motion) 460 else 0, easing = FastOutSlowInEasing), label = "sleeve",
         )
         val textMax = minOf(w * .33f, 420.dp)
-        var textPx by remember { mutableIntStateOf(0) }
-        val textWidth = with(LocalDensity.current) { textPx.toDp() }
-        val lockupText = if (textWidth > 0.dp) textWidth else textMax * .7f
-        /* The sleeve breathes: it sits a screen-fraction in from the edge, not glued to it. */
+        val title = song?.title ?: "音乐，即将响起"
+        val measurer = rememberTextMeasurer()
+        val density = LocalDensity.current
+        val centeredTitleStyle = TextStyle(fontSize = 27.sp, lineHeight = 34.sp, fontWeight = FontWeight.Medium)
+        val lockupText = remember(measurer, density, title, artistName, textMax) {
+            with(density) {
+                val constraints = Constraints(maxWidth = textMax.roundToPx())
+                val titleWidth = measurer.measure(title, centeredTitleStyle, maxLines = 2, constraints = constraints).size.width
+                val artistWidth = artistName?.let {
+                    measurer.measure(it, TextStyle(fontSize = 13.sp), maxLines = 1, constraints = constraints).size.width
+                } ?: 0
+                maxOf(titleWidth.toDp(), artistWidth.toDp(), 100.dp).coerceAtMost(textMax)
+            }
+        }
         val identityMargin = w * .10f
-        val identityX by animateDpAsState(
-            if (noLyrics) (w - (sleeveBig + 40.dp + lockupText)) / 2 else identityMargin,
-            tween(if (motion) 460 else 0, easing = FastOutSlowInEasing), label = "identity x",
+        val layoutFraction by animateFloatAsState(
+            if (centeredCover) 1f else 0f,
+            tween(if (motion) 460 else 0, easing = FastOutSlowInEasing), label = "cover layout",
         )
+        val centerX = (w - (sleeveBig + 40.dp + lockupText)) / 2
+        val identityX = identityMargin + (centerX - identityMargin) * layoutFraction
         val identityY by animateDpAsState(
-            if (noLyrics) h * .44f - sleeveBig / 2 else identityTop,
+            if (centeredCover) h * .44f - sleeveBig / 2 else identityTop,
             tween(if (motion) 460 else 0, easing = FastOutSlowInEasing), label = "identity y",
         )
         val freeLeft = identityMargin + columnWidth
@@ -723,16 +751,16 @@ internal fun PrismPlayer(
             val chromeDown = Modifier.focusProperties { down = railFocus }
             if (hasMv) {
                 PlayerIcon("mv", if (mvResolving) "正在解析 MV" else "MV", { onMv() },
-                    Modifier.focusRequester(mvFocus).then(chromeDown), onFocused = { hint = "观看 MV" },
+                    Modifier.focusRequester(mvFocus).then(rememberControl(mvFocus)).then(controlFocus).then(chromeDown), onFocused = { hint = "观看 MV" },
                     text = if (mvResolving) "…" else "MV")
                 Spacer(Modifier.width(10.dp))
             }
             PlayerIcon("expand", "沉浸", { immersive = true; interaction++ },
-                Modifier.focusRequester(immersiveFocus).then(chromeDown),
+                Modifier.focusRequester(immersiveFocus).then(rememberControl(immersiveFocus)).then(controlFocus).then(chromeDown),
                 onFocused = { hint = "沉浸播放 · 歌词占满屏幕" })
             Spacer(Modifier.width(10.dp))
             PlayerIcon("bulbOff", "熄屏", onScreenOff,
-                Modifier.focusRequester(offFocus).then(chromeDown),
+                Modifier.focusRequester(offFocus).then(rememberControl(offFocus)).then(controlFocus).then(chromeDown),
                 onFocused = { hint = "熄屏播放 · 确定或返回恢复" })
         }
 
@@ -753,36 +781,31 @@ internal fun PrismPlayer(
             alpha = appear
         }
 
-        if (noLyrics) {
-            Row(
-                Modifier.offset(x = identityX, y = identityY).height(artSize),
-                verticalAlignment = Alignment.CenterVertically,
+        Box(Modifier.offset(x = identityX, y = identityY).size(artSize).then(sleeveMotion)) {
+            CoverPlate(song, Modifier.fillMaxSize())
+        }
+        if (centeredCover) {
+            Box(
+                Modifier.offset(x = identityX + artSize + 40.dp, y = identityY)
+                    .width(lockupText).height(artSize),
+                contentAlignment = Alignment.CenterStart,
             ) {
-                Box(Modifier.size(artSize).then(sleeveMotion)) { CoverPlate(song, Modifier.fillMaxSize()) }
-                Spacer(Modifier.width(40.dp))
                 IdentityText(
-                    title = song?.title ?: "音乐，即将响起",
-                    artistName = artistName, stream = qualityText,
+                    title = title, artistName = artistName, stream = qualityText,
                     platform = sourceSong?.platform,
-                    status = lyricStatus.message, stacked = true, textAlpha = textAlpha,
-                    modifier = Modifier.widthIn(max = textMax).onSizeChanged { textPx = it.width },
+                    status = if (lyricPending) "" else lyricStatus.message,
+                    stacked = true, textAlpha = textAlpha,
                 )
             }
         } else {
-            Column(Modifier.offset(x = identityX, y = identityY).width(columnWidth)) {
-                Box(Modifier.size(artSize).then(sleeveMotion)) { CoverPlate(song, Modifier.fillMaxSize()) }
-                Spacer(Modifier.height(14.dp))
-                IdentityText(
-                    title = song?.title ?: "音乐，即将响起",
-                    artistName = artistName, stream = qualityText,
-                    platform = sourceSong?.platform,
-                    status = "", stacked = false, textAlpha = textAlpha,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
+            IdentityText(
+                title = title, artistName = artistName, stream = qualityText,
+                platform = sourceSong?.platform, status = "", stacked = false, textAlpha = textAlpha,
+                modifier = Modifier.offset(x = identityX, y = identityY + artSize + 14.dp).width(columnWidth),
+            )
         }
 
-        if (!noLyrics) {
+        if (showLyricPane) {
             RollingLyrics(
                 lyrics, active, lyricStatus, lyricPosition,
                 sizes.text, sizes.line, sizes.support, subLyrics,
@@ -803,13 +826,13 @@ internal fun PrismPlayer(
                 .graphicsLayer { alpha = controlsAlpha.value }.then(controlSemantics)
                 .padding(start = padX, end = padX, bottom = 14.dp),
         ) {
-                Box(Modifier.fillMaxWidth().height(26.dp).focusRequester(railFocus)
+                Box(Modifier.fillMaxWidth().height(26.dp).focusRequester(railFocus).then(rememberControl(railFocus)).then(controlFocus)
                     .onFocusChanged {
                         progressFocused = it.isFocused
                         if (it.isFocused) hint = "← →  快退 / 快进 10 秒"
                     }
-                    .pointerInput(duration) {
-                        detectTapGestures { if (duration > 0 && size.width > 0) currentSeek((duration * (it.x / size.width).coerceIn(0f, 1f)).toLong()) }
+                    .pointerInput(duration, chromeEnabled) {
+                        detectTapGestures { if (chromeEnabled && duration > 0 && size.width > 0) currentSeek((duration * (it.x / size.width).coerceIn(0f, 1f)).toLong()) }
                     }
                     .onPreviewKeyEvent { e ->
                         if (e.type == KeyEventType.KeyDown && e.key in setOf(Key.DirectionLeft, Key.DirectionRight)) {
@@ -824,7 +847,7 @@ internal fun PrismPlayer(
                             if (duration > 0) (position().toFloat() / duration).coerceIn(0f, 1f) else 0f, 0f..1f,
                         )
                         setProgress { v ->
-                            if (duration > 0) { currentSeek((duration * v.coerceIn(0f, 1f)).toLong()); true } else false
+                            if (chromeEnabled && duration > 0) { currentSeek((duration * v.coerceIn(0f, 1f)).toLong()); true } else false
                         }
                     }
                     .focusable(),
@@ -839,13 +862,17 @@ internal fun PrismPlayer(
             Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 ClockText(rawLyricPosition, duration, forward = true)
                 Text(
-                    if (needsAttention) status else hint,
-                    color = if (needsAttention) c.muted else c.accent.copy(alpha = .58f),
+                    transportMessage.ifBlank { hint },
+                    color = if (transportMessage.isNotBlank()) c.foreground else c.accent.copy(alpha = .72f),
                     fontSize = 11.sp, letterSpacing = 1.1.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Center, modifier = Modifier.weight(1f).padding(horizontal = 16.dp),
                 )
                 ClockText(rawLyricPosition, duration, forward = false)
+            }
+            if (phase == PlaybackPhase.Failed && playbackDetail.isNotBlank()) {
+                Text(playbackDetail, color = c.muted, fontSize = 12.sp, textAlign = TextAlign.Center,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
             }
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
@@ -853,35 +880,35 @@ internal fun PrismPlayer(
                         if (favorite) "heartFilled" else "heart",
                         if (favorite) "取消收藏" else "收藏",
                         onFavorite,
-                        rim = if (favorite) c.accent.copy(alpha = .45f) else null,
-                        modifier = Modifier.focusRequester(favFocus)
+                        active = favorite,
+                        modifier = Modifier.focusRequester(favFocus).then(rememberControl(favFocus)).then(controlFocus)
                             .focusProperties { right = prevFocus; up = railFocus },
                         onFocused = { hint = if (favorite) "取消收藏" else "收藏" },
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
                     PlayerIcon("prev", "上一首", onPrevious,
-                        modifier = Modifier.focusRequester(prevFocus)
+                        modifier = Modifier.focusRequester(prevFocus).then(rememberControl(prevFocus)).then(controlFocus)
                             .focusProperties { left = favFocus; right = playFocus; up = railFocus },
                         onFocused = { hint = "上一首" })
                     PlayButton(playing, onPlay,
-                        Modifier.focusRequester(playFocus)
+                        Modifier.focusRequester(playFocus).then(rememberControl(playFocus)).then(controlFocus)
                             .focusProperties { left = prevFocus; right = nextFocus; up = railFocus },
                         onFocused = { hint = if (playing) "暂停" else "播放" })
                     PlayerIcon("next", "下一首", onNext,
-                        modifier = Modifier.focusRequester(nextFocus)
+                        modifier = Modifier.focusRequester(nextFocus).then(rememberControl(nextFocus)).then(controlFocus)
                             .focusProperties { left = playFocus; right = queueFocus; up = railFocus },
                         onFocused = { hint = "下一首" })
                 }
                 Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         PlayerIcon("list", "接下来播放", onQueue,
-                            modifier = Modifier.focusRequester(queueFocus)
+                            modifier = Modifier.focusRequester(queueFocus).then(rememberControl(queueFocus)).then(controlFocus)
                                 .focusProperties { left = nextFocus; right = dotsFocus; up = railFocus },
                             onFocused = { hint = "接下来播放 · 查看队列" })
                         MoreDots(
                             onClick = { interaction++; menuOpen = true },
-                            modifier = Modifier.focusRequester(dotsFocus)
+                            modifier = Modifier.focusRequester(dotsFocus).then(rememberControl(dotsFocus)).then(controlFocus)
                                 .focusProperties { left = queueFocus; up = railFocus }
                                 .onFocusChanged { if (it.isFocused) hint = "更多 · 歌手、专辑、音质与歌词" },
                         )
@@ -912,11 +939,12 @@ internal fun PrismPlayer(
                 scaleOut(tween(if (motion) 300 else 0, easing = FastOutSlowInEasing), targetScale = 1.025f),
         ) {
             Immersion(
-                song = song, lyrics = lyrics, lyricStatus = lyricStatus,
+                song = song, lyrics = lyrics, lyricStatus = lyricStatus, showLyricPane = showLyricPane,
                 clock = rawLyricPosition, lyricClock = lyricPosition, duration = duration,
                 active = active, sizes = immersionSizes, subLyrics = subLyrics, playing = playing,
                 level = l2Level, barVisible = l2Bar, motion = motion, focus = l2Focus,
                 onPlay = onPlay, onInteraction = { l2Tick++ }, seekHint = l2SeekText,
+                message = transportMessage,
             )
         }
 
@@ -941,9 +969,40 @@ internal fun PrismPlayer(
                 onQuality = { onSelectQuality(it) },
                 onArtist = { onArtist?.invoke() }, onAlbum = { onAlbum?.invoke() },
                 onOtherSources = onOtherSources,
+                onErrorDetails = if (phase == PlaybackPhase.Failed && playbackDetail.isNotBlank()) {
+                    { errorDetailsOpen = true }
+                } else null,
                 onFontLevel = onLyricFontLevel, onSubLyrics = onSubLyrics, onCalibration = onLyricCalibration,
                 onMode = onShuffle, onModeStep = onModeStep, onRadio = onRadioToggle,
             )
+        }
+        if (errorDetailsOpen) {
+            val close = remember { FocusRequester() }
+            val detail = rememberScrollState()
+            val scope = rememberCoroutineScope()
+            PrismContentDialog("播放错误详情", song?.title.orEmpty(), { errorDetailsOpen = false },
+                initialFocus = close, closeFocus = close) {
+                Box(
+                    Modifier.fillMaxWidth().heightIn(max = 260.dp)
+                        .auraFocus(scale = 1f, instantRing = true)
+                        .onPreviewKeyEvent { event ->
+                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            val step = when (event.key) {
+                                Key.DirectionUp -> if (detail.canScrollBackward) -80 else return@onPreviewKeyEvent false
+                                Key.DirectionDown -> if (detail.canScrollForward) 80 else return@onPreviewKeyEvent false
+                                else -> return@onPreviewKeyEvent false
+                            }
+                            scope.launch { detail.scrollTo((detail.value + step).coerceIn(0, detail.maxValue)) }
+                            true
+                        }
+                        .focusable().verticalScroll(detail),
+                ) {
+                    Text(
+                        playbackDetail, color = c.foreground, fontSize = 15.sp, lineHeight = 22.sp,
+                        modifier = Modifier.padding(8.dp),
+                    )
+                }
+            }
         }
     }
 }
@@ -986,7 +1045,7 @@ private fun MoreDots(onClick: () -> Unit, modifier: Modifier = Modifier) {
 @Composable
 private fun PlayerIcon(
     icon: String, label: String, onClick: () -> Unit, modifier: Modifier = Modifier,
-    active: Boolean = false, rim: Color? = null, onFocused: () -> Unit = {},
+    active: Boolean = false, onFocused: () -> Unit = {},
     text: String? = null,
 ) {
     val c = LocalPrismColors.current
@@ -1001,7 +1060,6 @@ private fun PlayerIcon(
                 if (focused) 2.dp else 1.dp,
                 when {
                     focused -> c.accent
-                    rim != null -> rim
                     else -> idle
                 },
                 CircleShape,
@@ -1094,7 +1152,7 @@ private fun IdentityText(
             StreamPill(platform, stream)
             if (status.isNotBlank()) {
                 Spacer(Modifier.height(14.dp))
-                Text(status, color = c.muted.copy(alpha = .55f), fontSize = 11.sp, letterSpacing = .8.sp)
+                Text(status, color = c.muted, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         } else {
             /* 左对齐，贴住封面的左边线：这块是偏轴的（封面在左、歌词在右），居中会多出一条
@@ -1122,14 +1180,15 @@ private fun IdentityText(
 
 @Composable
 private fun Immersion(
-    song: Song?, lyrics: List<LyricLine>, lyricStatus: LyricStatus, clock: State<Long>, lyricClock: State<Long>, duration: Long,
+    song: Song?, lyrics: List<LyricLine>, lyricStatus: LyricStatus, showLyricPane: Boolean,
+    clock: State<Long>, lyricClock: State<Long>, duration: Long,
     active: Int, sizes: LyricSizes, subLyrics: Boolean, playing: Boolean,
     level: Int, barVisible: Boolean, motion: Boolean, focus: FocusRequester, onPlay: () -> Unit,
-    onInteraction: () -> Unit, seekHint: String,
+    onInteraction: () -> Unit, seekHint: String, message: String,
 ) {
     val c = LocalPrismColors.current
     val barAlpha by animateFloatAsState(if (barVisible) 1f else 0f, tween(if (motion) 240 else 0), label = "immersion bar")
-    val noLyrics = lyrics.isEmpty() && lyricStatus != LyricStatus.Loading
+    val showLyricNote = !showLyricPane && lyricStatus != LyricStatus.Loading
     val identityAlpha by animateFloatAsState(if (level > 1) .38f else 1f, tween(if (motion) 900 else 0), label = "immersion identity")
     val enter = remember { Animatable(if (motion) 0f else 1f) }
     LaunchedEffect(Unit) { if (motion) enter.animateTo(1f, tween(820, easing = LinearEasing)) }
@@ -1146,15 +1205,11 @@ private fun Immersion(
         List(3) { base[it % base.size] }
     }
     val lamp = remember { Animatable(0f) }
-    LaunchedEffect(noLyrics, motion) {
-        if (noLyrics) {
+    LaunchedEffect(showLyricNote, motion) {
+        if (showLyricNote) {
             delay(if (motion) 500 else 0)
             lamp.animateTo(1f, tween(if (motion) 700 else 0))
         } else lamp.animateTo(0f, tween(if (motion) 260 else 0))
-    }
-    val note = when {
-        lyricStatus is LyricStatus.Empty && lyricStatus.local -> "本地文件没有歌词"
-        else -> "纯音乐 · 暂无歌词"
     }
 
     Box(
@@ -1228,13 +1283,14 @@ private fun Immersion(
             }
         }
 
-        if (noLyrics) {
+        if (showLyricNote) {
             Text(
-                note, color = c.muted.copy(alpha = .62f), fontSize = 14.sp, letterSpacing = 1.4.sp,
+                lyricStatus.message.ifBlank { "暂无歌词" },
+                color = c.muted, fontSize = 14.sp, letterSpacing = 1.4.sp,
                 modifier = Modifier.align(Alignment.Center).offset(y = 108.dp)
                     .graphicsLayer { alpha = lamp.value },
             )
-        } else {
+        } else if (showLyricPane) {
             RollingLyrics(
                 lyrics, active, lyricStatus, lyricClock,
                 sizes.text, sizes.line, sizes.support, subLyrics,
@@ -1281,10 +1337,11 @@ private fun Immersion(
             Glyph(if (playing) "pause" else "play", Modifier.size(22.dp), c.onAccent)
         }
 
-        val hintAlpha by animateFloatAsState(if (seekHint.isNotEmpty()) 1f else 0f, tween(160), label = "seek hint")
+        val barMessage = seekHint.ifEmpty { message }
+        val hintAlpha by animateFloatAsState(if (barMessage.isNotEmpty() && barVisible) 1f else 0f, tween(160), label = "seek hint")
         if (hintAlpha > 0f) {
             Text(
-                seekHint, color = c.accent, fontSize = 13.sp, letterSpacing = 1.6.sp,
+                barMessage, color = c.accent, fontSize = 13.sp, letterSpacing = 1.6.sp,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 104.dp)
                     .graphicsLayer { alpha = hintAlpha * beat(.30f, 1f) },
             )
@@ -1326,7 +1383,7 @@ private fun PlayerMenu(
     lyricStatus: LyricStatus, probes: Map<String, LyricProbe>, onProbe: () -> Unit,
     onLyricSource: (String?) -> Unit,
     onClose: () -> Unit, onQuality: (String) -> Unit, onArtist: () -> Unit, onAlbum: () -> Unit,
-    onOtherSources: (() -> Unit)?,
+    onOtherSources: (() -> Unit)?, onErrorDetails: (() -> Unit)?,
     onFontLevel: (String) -> Unit, onSubLyrics: (Boolean) -> Unit, onCalibration: (Long) -> Unit,
     onMode: () -> Unit, onModeStep: (Int) -> Unit, onRadio: () -> Unit,
 ) {
@@ -1346,6 +1403,13 @@ private fun PlayerMenu(
     var afterClose by remember { mutableStateOf<(() -> Unit)?>(null) }
     fun dismiss(action: (() -> Unit)? = null) {
         if (!closing) { afterClose = action; closing = true }
+    }
+    fun back() {
+        when (level) {
+            2 -> { level = 1; row = parentRow }
+            3 -> { level = 2; row = sourceRow }
+            else -> dismiss()
+        }
     }
     LaunchedEffect(closing) {
         if (closing) {
@@ -1389,6 +1453,7 @@ private fun PlayerMenu(
     /* 拿不到的歌手/专辑直接不出这一行：一行灰字既没有信息量，也挡着下面的入口。
        头部本来就在显示歌手和专辑名，删掉这两行不丢信息。 */
     val level1 = buildList {
+        if (onErrorDetails != null) add(MenuEntry("error", "播放错误详情", "", false, RowKind.Open, icon = "list"))
         add(MenuEntry("quality", "音源档位", qualityValue, !stepping && !canUp && !canDown, RowKind.Step,
             icon = "fader", canUp = canUp && !stepping, canDown = canDown && !stepping, note = qualityNote))
         if (canArtist) add(MenuEntry("artist", "查看歌手", "", false, RowKind.Open, icon = "mic"))
@@ -1413,7 +1478,8 @@ private fun PlayerMenu(
             LyricStatus.Error -> "加载失败"
             is LyricStatus.Empty -> "暂无歌词"
         }
-        add(MenuEntry("source", "歌词来源", currentSource, false, RowKind.Open,
+        if (lrclibEnabled || kugouEnabled || neteaseEnabled)
+            add(MenuEntry("source", "歌词来源", currentSource, false, RowKind.Open,
             note = stateNote, icon = "list"))
         /* 没有歌词就没有可校准的东西，这一行不出现。 */
         if (canCalibrate) add(MenuEntry("calibrate", "时间校准", calibrationText(offsetMs), false, RowKind.Step, icon = "history"))
@@ -1471,7 +1537,7 @@ private fun PlayerMenu(
         if (next != null && next != current) onQuality(next)
     }
 
-    Dialog(onDismissRequest = { dismiss() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = ::back, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize()) {
             Box(
                 Modifier.fillMaxSize()
@@ -1492,13 +1558,6 @@ private fun PlayerMenu(
                         if (closing) return@onPreviewKeyEvent true
                         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                         val n = rows.size
-                        fun back() {
-                            when (level) {
-                                2 -> { level = 1; row = parentRow }
-                                3 -> { level = 2; row = sourceRow }
-                                else -> dismiss()
-                            }
-                        }
                         fun activate() {
                             val entry = rows[index]
                             /* 置灰的行用确定键也不该有动作 —— 箭头可以不动，回车更不该假装能动。 */
@@ -1508,6 +1567,7 @@ private fun PlayerMenu(
                                 "artist" -> dismiss(onArtist)
                                 "album" -> dismiss(onAlbum)
                                 "sources" -> dismiss(onOtherSources)
+                                "error" -> dismiss(onErrorDetails)
                                 "lyric" -> { parentRow = index; level = 2; row = 0 }
                                 "mode" -> onMode()
                                 "radio" -> if (!radioLoading) onRadio()
@@ -1536,7 +1596,7 @@ private fun PlayerMenu(
                                 "calibrate" -> onCalibration((offsetMs + dir * 100L).coerceIn(-LyricCalibration.LIMIT_MS, LyricCalibration.LIMIT_MS))
                                 /* 画了 › 的行，右键就该和确定键做同一件事：那个箭头的含义
                                    就是「往右能进去」。只有确定能进的行，不该有箭头。 */
-                                "artist", "album", "lyric", "source" -> if (dir > 0) activate()
+                                "artist", "album", "lyric", "source", "sources", "error" -> if (dir > 0) activate()
                                 /* 别的行不认左右：一级页按左不该把整个面板收掉——那和
                                    「退出」是两件事，却被同一个键做了。 */
                                 else -> Unit
@@ -2070,6 +2130,7 @@ fun PrismMiniPlayer(
     upRestore: (() -> Boolean)? = null,
     playbackSource: Song? = null,
     visible: Boolean = true,
+    playbackMessage: String = "",
 ) {
     val readLyricPosition by rememberUpdatedState(lyricPosition)
     val line by remember(lyrics, showLyric, visible) {
@@ -2137,7 +2198,7 @@ fun PrismMiniPlayer(
                 if (song == null) {
                     Text("此刻，适合听点什么？", color = c.foreground, fontSize = 14.sp, maxLines = 1,
                         overflow = TextOverflow.Ellipsis)
-                } else if (showLyric && lyric.isNotBlank()) {
+                } else if (playbackMessage.isEmpty() && showLyric && lyric.isNotBlank()) {
                     Text(
                         lyric, color = c.foreground.copy(alpha = .92f), fontSize = 14.sp, maxLines = 1,
                         modifier = Modifier.weight(1f).focusedMarquee(focused),
@@ -2147,7 +2208,7 @@ fun PrismMiniPlayer(
                         Text(song.title, color = c.foreground, fontSize = 14.sp, maxLines = 1,
                             overflow = TextOverflow.Ellipsis)
                         Text(
-                            song.artist.ifBlank { (playbackSource ?: song).sourceLabel },
+                            playbackMessage.ifBlank { song.artist.ifBlank { (playbackSource ?: song).sourceLabel } },
                             color = c.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         )
                     }

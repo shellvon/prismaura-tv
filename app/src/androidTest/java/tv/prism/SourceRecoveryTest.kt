@@ -7,6 +7,12 @@ import tv.prism.library.MusicLibrary
 import tv.prism.sources.PluginClient
 import tv.prism.sources.Plugins
 import tv.prism.playback.ResumeStore
+import tv.prism.playback.ActiveQueue
+import tv.prism.playback.PlaybackMode
+import tv.prism.playback.PlaybackPhase
+import android.os.Bundle
+import androidx.media3.common.Player
+import androidx.media3.common.PlaybackException
 import tv.prism.library.Song
 import tv.prism.playback.SourceRecovery
 import tv.prism.playback.recoveryQualities
@@ -15,10 +21,10 @@ import tv.prism.playback.sameRecording
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
-import androidx.media3.session.MediaController
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import okhttp3.mockwebserver.Dispatcher
@@ -80,6 +86,68 @@ class SourceRecoveryTest {
         backup.getJSONObject("preferences").getJSONObject("playback").remove(SourceRecovery.PREFERENCE)
         LibraryBackup.apply(isolated, library, repository, backup)
         assertFalse(prefs.getBoolean(SourceRecovery.PREFERENCE, false))
+    }
+
+    @Test fun backupRejectsInvalidInputAndRollsBackOnWriteFailure() = runBlocking {
+        val incoming = storage()
+        val incomingLibrary = MusicLibrary(incoming)
+        incomingLibrary.create("备份里的歌单")
+        val incomingPlugins = Plugins(incoming, PluginClient(context))
+        val backup = LibraryBackup.build(incoming, incomingLibrary, incomingPlugins)
+
+        val local = storage()
+        val library = MusicLibrary(local)
+        library.create("本机歌单")
+        val plugins = Plugins(local, PluginClient(context))
+        plugins.importSource("module.exports={platform:'保留的音源', getMediaSource(){return {}}}")
+        val malformed = JSONObject(backup.toString()).apply { remove("plugins") }
+        val malformedType = JSONObject(backup.toString()).put("plugins", JSONObject().put("plugins", "invalid"))
+        for (invalid in listOf(malformed, malformedType)) {
+            assertTrue(runCatching { LibraryBackup.apply(local, library, plugins, invalid) }.isFailure)
+            assertEquals("本机歌单", library.state.value.playlists.single().name)
+            assertEquals("保留的音源", plugins.state.value.plugins.single().name)
+        }
+
+        val failingPrefs = object : ContextWrapper(local) {
+            override fun getSharedPreferences(name: String, mode: Int): android.content.SharedPreferences {
+                val saved = local.getSharedPreferences(name, mode)
+                return if (name != "playback") saved else object : android.content.SharedPreferences by saved {
+                    override fun edit(): android.content.SharedPreferences.Editor {
+                        val editor = saved.edit()
+                        return object : android.content.SharedPreferences.Editor by editor {
+                            override fun clear(): android.content.SharedPreferences.Editor {
+                                editor.clear()
+                                return this
+                            }
+
+                            override fun commit() = false
+                        }
+                    }
+                }
+            }
+        }
+        assertTrue(runCatching { LibraryBackup.apply(failingPrefs, library, plugins, backup) }.isFailure)
+        assertEquals("本机歌单", library.state.value.playlists.single().name)
+        assertEquals("本机歌单", MusicLibrary(local).state.value.playlists.single().name)
+        assertEquals("保留的音源", plugins.state.value.plugins.single().name)
+        assertEquals("保留的音源", Plugins(local, PluginClient(context)).state.value.plugins.single().name)
+    }
+
+    @Test fun exportCanBeRestoredWhileLibraryWrites() = runBlocking {
+        val local = storage()
+        val library = MusicLibrary(local)
+        val plugins = Plugins(local, PluginClient(context))
+        library.create("大量曲目", (1..1000).map { Song("fixture", JSONObject().put("id", it)) })
+        val writes = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            repeat(6) { library.rename(library.state.value.playlists.single().id, "名称 $it") }
+        }
+        try {
+            val backup = LibraryBackup.build(local, library, plugins)
+            val restored = storage()
+            val restoredLibrary = MusicLibrary(restored)
+            LibraryBackup.apply(restored, restoredLibrary, Plugins(restored, PluginClient(context)), JSONObject(backup.toString()))
+            assertEquals(1000, restoredLibrary.state.value.playlists.single().songs.size)
+        } finally { writes.join() }
     }
 
     private inner class Fixture : AutoCloseable {
@@ -162,10 +230,7 @@ class SourceRecoveryTest {
         Fixture().use { f ->
             f.install()
             val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
-            fun field(name: String) = MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }
-            fun call(name: String, vararg args: Any?) = MainActivity::class.java.declaredMethods.first { it.name == name && it.parameterCount == args.size }
-                .apply { isAccessible = true }.invoke(activity, *args)
-            fun player() = call("getController") as? MediaController
+            fun player() = activity.controller
             suspend fun await(label: String, check: () -> Boolean) {
                 try {
                     withTimeout(35_000) {
@@ -177,68 +242,134 @@ class SourceRecoveryTest {
                         }
                     }
                 } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                    throw AssertionError("$label: status=${field("status\$delegate").get(activity)} requests=${f.requests}", e)
+                    throw AssertionError("$label: status=${activity.status} requests=${f.requests}", e)
                 }
             }
             val original = f.a.song(f.item("original"))
             val next = f.a.song(f.item("next", "下一首"))
-            val originalLibrary = field("library").get(activity)
-            val originalPlugins = field("plugins").get(activity)
-            val originalResume = field("resumeStore").get(activity)
+            await("controller connection") { player() != null }
+            val originalLibrary = activity.library
+            val originalPlugins = activity.plugins
+            val originalResume = activity.resumeStore
             try {
-                await("controller connection") { player() != null }
                 instrumentation.runOnMainSync {
-                    field("plugins").set(activity, f.repository)
-                    field("library").set(activity, MusicLibrary(f.store))
-                    field("resumeStore").set(activity, ResumeStore(f.store))
+                    activity.plugins = f.repository
+                    activity.library = MusicLibrary(f.store)
+                    activity.resumeStore = ResumeStore(f.store)
                 }
                 fun start(mode: String, enabled: Boolean) {
                     instrumentation.runOnMainSync {
                         player()!!.pause()
                         f.mode = mode; f.requests.clear()
-                        call("setAutoSourceFallback", enabled, false)
-                        call("setQueue", listOf(original, next))
-                        call("playAt", 0, false, true, 1L, false, null)
+                        activity.setAutoSourceFallback(enabled, false)
+                        activity.queue = listOf(original, next)
+                        activity.playAt(0, openPlayer = false, startAt = 1L)
                     }
                 }
-                fun loaded(song: Song) = field("loadedKey").get(activity) == song.key && player()?.isPlaying == true
+                fun loaded(song: Song) = activity.loadedKey == song.key && player()?.isPlaying == true
                 start("same", true)
-                await("same-source quality recovery") { loaded(original) && call("getPlayingQuality") == "high" }
+                await("same-source quality recovery") { loaded(original) && activity.playingQuality == "high" }
                 assertFalse(f.requests.any { it.startsWith("/search/") })
                 start("fallback", true)
-                await("cross-source recovery after HTTP 403") { loaded(original) && (call("playbackSong") as? Song)?.pluginId == f.b.id }
-                instrumentation.runOnMainSync { assertEquals(original.key, (call("getQueue") as List<*>).filterIsInstance<Song>().first().key) }
+                await("cross-source recovery after HTTP 403") { loaded(original) && activity.playbackSong()?.pluginId == f.b.id }
+                instrumentation.runOnMainSync { assertEquals(original.key, activity.queue.first().key) }
                 assertFalse(f.requests.any { it.startsWith("/search/A") || it.contains("/disabled") })
                 start("unresolvable", true)
-                await("recovery exhaustion advances queue") { loaded(next) && call("getQueueIndex") == 1 }
+                await("recovery exhaustion advances queue") { loaded(next) && activity.queueIndex == 1 }
                 assertTrue(f.requests.any { it.startsWith("/search/B") })
                 start("unresolvable", false)
-                await("disabled recovery retains automatic skip") { loaded(next) && call("getQueueIndex") == 1 }
+                await("disabled recovery retains automatic skip") { loaded(next) && activity.queueIndex == 1 }
                 assertFalse(f.requests.any { it.startsWith("/search/") })
                 start("httpFail", false)
                 await("disabled recovery retains HTTP error behavior") { player()?.playerError != null }
-                instrumentation.runOnMainSync { assertEquals(0, call("getQueueIndex")) }
+                instrumentation.runOnMainSync { assertEquals(0, activity.queueIndex) }
                 assertFalse(f.requests.any { it.startsWith("/search/") })
+                val oldTrackId = ActiveQueue.attempt.item!!.mediaId
                 start("slow", true)
                 await("resolution starts before pause") { f.requests.any { it.startsWith("/resolve/A") } }
-                instrumentation.runOnMainSync { call("togglePlayback") }
+                instrumentation.runOnMainSync { activity.togglePlayback() }
                 delay(2300)
-                instrumentation.runOnMainSync { assertFalse(player()!!.playWhenReady); assertEquals("", field("loadedKey").get(activity)) }
+                instrumentation.runOnMainSync { assertFalse(player()!!.playWhenReady); assertEquals("", activity.loadedKey) }
                 assertFalse(f.requests.any { it.startsWith("/search/") })
                 start("slow", true)
                 await("resolution starts before manual next") { f.requests.any { it.startsWith("/resolve/A") } }
-                instrumentation.runOnMainSync { call("playAt", 1, false, true, 0L, false, null) }
+                instrumentation.runOnMainSync { activity.playAt(1, openPlayer = false) }
                 await("manual next wins") { loaded(next) }
                 delay(2300)
-                instrumentation.runOnMainSync { assertEquals(next.key, field("loadedKey").get(activity)) }
+                fun rejectLateEvents(oldId: String) {
+                    instrumentation.runOnMainSync {
+                        val phase = activity.playbackPhase
+                        val position = activity.positionMs
+                        val duration = activity.durationMs
+                        assertNotEquals(oldId, ActiveQueue.attempt.item?.mediaId)
+                        activity.onAttemptEvent(Bundle().apply {
+                            putString("mediaId", oldId)
+                            putBundle("error", PlaybackException("old connection", null,
+                                PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED).toBundle())
+                        })
+                        for (state in listOf(Player.STATE_ENDED, Player.STATE_READY)) {
+                            activity.onAttemptEvent(Bundle().apply {
+                                putString("mediaId", oldId)
+                                putInt("state", state)
+                                putLong("duration", 111L)
+                            })
+                        }
+                        assertEquals(next.key, activity.queue[activity.queueIndex].key)
+                        assertEquals(next.key, activity.loadedKey)
+                        assertEquals(phase, activity.playbackPhase)
+                        assertEquals(position, activity.positionMs)
+                        assertEquals(duration, activity.durationMs)
+                    }
+                }
+                rejectLateEvents(oldTrackId)
+                for (tier in listOf("high", "standard")) {
+                    val previous = ActiveQueue.attempt.item!!.mediaId
+                    instrumentation.runOnMainSync { activity.switchQuality(tier) }
+                    await("accepted $tier") {
+                        activity.qualitySwitching.isEmpty() && activity.playingQuality == tier &&
+                            ActiveQueue.attempt.item?.mediaId != previous && activity.playbackPhase == PlaybackPhase.Ready
+                    }
+                    rejectLateEvents(previous)
+                }
+                instrumentation.runOnMainSync {
+                    activity.controller!!.pause()
+                    activity.seekPlayback(9_000)
+                    activity.saveResume()
+                }
+                withTimeout(5_000) {
+                    while (activity.resumeStore.read()?.position != 9_000L) delay(30)
+                }
+                instrumentation.runOnMainSync {
+                    activity.seekPlayback(0)
+                    activity.saveResume()
+                }
+                withTimeout(5_000) {
+                    while (activity.resumeStore.read()?.position != 0L) delay(30)
+                }
+                instrumentation.runOnMainSync {
+                    activity.playMode = PlaybackMode.SEQUENTIAL
+                    activity.seekPlayback(activity.durationMs - 250)
+                    activity.resumePlayback()
+                }
+                await("sequential completion keeps final track selected") {
+                    activity.playbackPhase == PlaybackPhase.Finished && activity.queueIndex == 1
+                }
+                instrumentation.runOnMainSync { activity.togglePlayback() }
+                await("play after completion replays final track") { loaded(next) && activity.trustedPosition() < 5_000L }
+                instrumentation.runOnMainSync { activity.removeQueueItem(1) }
+                await("removing the final track stops at the preceding track") {
+                    activity.playbackPhase == PlaybackPhase.Idle && activity.queueIndex == 0 && player()?.isPlaying == false
+                }
             } finally {
                 instrumentation.runOnMainSync {
-                    call("pauseRecoveryIfPending")
-                    player()?.stop(); player()?.clearMediaItems()
-                    call("setQueue", emptyList<Song>()); call("setQueueIndex", -1)
-                    field("library").set(activity, originalLibrary)
-                    field("plugins").set(activity, originalPlugins)
-                    field("resumeStore").set(activity, originalResume)
+                    activity.pauseRecoveryIfPending()
+                    activity.exitingAfterResumeSave = true
+                    activity.resetStream(player())
+                    activity.playbackPhase = PlaybackPhase.Idle
+                    activity.queue = emptyList(); activity.queueIndex = -1
+                    activity.library = originalLibrary
+                    activity.plugins = originalPlugins
+                    activity.resumeStore = originalResume
                     activity.finish()
                 }
             }

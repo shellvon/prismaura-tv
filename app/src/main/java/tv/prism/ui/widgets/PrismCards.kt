@@ -253,19 +253,20 @@ fun PrismSheetCard(title: String, artwork: String, subtitle: String, modifier: M
 @Composable
 fun PrismShelfHeader(
     title: String, count: Int?, action: String, onAction: () -> Unit, actionFocus: FocusRequester? = null,
-    actionEdges: Modifier = Modifier, actionIcon: String? = null,
+    actionEdges: Modifier = Modifier, actionIcon: String? = null, primaryAction: Boolean = false,
+    countUnit: String = "首",
 ) {
     val c = LocalPrismColors.current
     Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(title, color = c.foreground, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
         if (count != null) {
             Spacer(Modifier.width(8.dp))
-            Text("$count 首", color = c.muted, fontSize = 12.sp)
+            Text("$count $countUnit", color = c.muted, fontSize = 12.sp)
         }
         Spacer(Modifier.weight(1f))
         /* The action sits flush against the page's clipped edge; its focus scale would push
            the ring past the clip, so keep a small inset the scale can live inside. */
-        if (action.isNotBlank()) PrismAction(action, onAction, (if (actionFocus != null) Modifier.focusRequester(actionFocus) else Modifier).then(actionEdges).padding(end = 6.dp), icon = actionIcon, instantFocus = true)
+        if (action.isNotBlank()) PrismAction(action, onAction, (if (actionFocus != null) Modifier.focusRequester(actionFocus) else Modifier).then(actionEdges).padding(end = 6.dp), icon = actionIcon, primary = primaryAction)
     }
 }
 
@@ -292,8 +293,9 @@ fun PrismLibraryTab(label: String, count: Int, selected: Boolean, onClick: () ->
                     onLongPress: (() -> Unit)? = null) {
     val c = LocalPrismColors.current
     val shape = RoundedCornerShape(50)
-    Row(modifier.height(42.dp).auraFocus(shape, 1f).clip(shape)
+    Row(modifier.height(42.dp).auraFocus(shape, 1f, instantRing = true).clip(shape)
         .background(if (selected) c.foreground.copy(alpha = .10f) else Color.Transparent)
+        .semantics { this.selected = selected }
         .tvClickable(onClick, onLongPress)
         .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {

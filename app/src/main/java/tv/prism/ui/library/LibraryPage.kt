@@ -50,7 +50,7 @@ import tv.prism.ui.widgets.PrismEmptyState
 import tv.prism.ui.widgets.PrismTrackRow
 import tv.prism.catalog.matchesSearchHistory
 import tv.prism.ui.widgets.Input
-import tv.prism.ui.widgets.AuraIconButton
+import tv.prism.ui.widgets.PhoneFillButton
 
 internal data class LibraryPageFocus(
     val nav: FocusRequester,
@@ -61,6 +61,7 @@ internal data class LibraryPageFocus(
     val empty: FocusAnchor,
     val playAll: FocusAnchor,
     val importPlaylist: FocusAnchor,
+    val batchConfirm: FocusAnchor,
     val tabs: Map<String, FocusAnchor>,
     val playlists: LazyListState,
     val songs: LazyListState,
@@ -255,9 +256,7 @@ internal fun LibraryPage(
                     PrismAction(
                         "返回歌单",
                         { actions.closePlaylist() },
-                        Modifier.focusAnchor(focus.back).onPreviewKeyEvent {
-                            it.key == Key.DirectionUp
-                        },
+                        Modifier.focusAnchor(focus.back).focusProperties { up = focus.nav },
                     )
                 }
             }
@@ -424,8 +423,9 @@ internal fun LibraryPage(
                                 "$batchVerb ${librarySelected.size} $batchUnit"
                             else batchVerb,
                             { actions.confirmSelection() },
-                            modifier = headerEdges,
+                            modifier = Modifier.focusAnchor(focus.batchConfirm).then(headerEdges),
                             primary = librarySelected.isNotEmpty(),
+                            enabled = librarySelected.isNotEmpty(),
                         )
                         Spacer(Modifier.width(8.dp))
                         PrismAction(
@@ -578,8 +578,9 @@ internal fun LibraryPage(
                                 "$batchVerb ${librarySelected.size} $batchUnit"
                             else batchVerb,
                             { actions.confirmSelection() },
-                            modifier = headerEdges,
+                            modifier = Modifier.focusAnchor(focus.batchConfirm).then(headerEdges),
                             primary = librarySelected.isNotEmpty(),
+                            enabled = librarySelected.isNotEmpty(),
                         )
                         Spacer(Modifier.width(8.dp))
                         PrismAction(
@@ -599,6 +600,7 @@ internal fun LibraryPage(
                                     }
                                 else Modifier
                             ),
+                            primary = true,
                             enabled = detailCanAct,
                             icon = "play",
                         )
@@ -819,8 +821,8 @@ private fun LibraryFilterField(
             downTarget = results,
             onSubmit = { if (!results.requestIfAttached()) mini.requestFocus() },
         )
-        AuraIconButton(
-            "qr", "手机代填查找关键词",
+        PhoneFillButton(
+            "手机代填查找关键词",
             {
                 fillOnPhone(field, query, {
                     scope.launch {
@@ -834,7 +836,6 @@ private fun LibraryFilterField(
                 up = button
                 down = if (results.attached) results.requester else mini
             },
-            size = 42.dp,
         )
     }
 }

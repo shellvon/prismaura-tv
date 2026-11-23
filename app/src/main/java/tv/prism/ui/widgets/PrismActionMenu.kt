@@ -62,6 +62,7 @@ internal fun PrismActionMenu(
     title: String, subtitle: String = "", song: Song? = null,
     actions: List<PrismMenuAction>, onDismiss: () -> Unit, notice: String = "",
     replacement: (@Composable () -> Unit)? = null,
+    onBackFromReplacement: (() -> Unit)? = null,
 ) {
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
@@ -81,6 +82,16 @@ internal fun PrismActionMenu(
         visibleNotice = notice
         if (notice.isNotBlank()) { delay(2200); visibleNotice = "" }
     }
+    var hadReplacement by remember { mutableStateOf(false) }
+    LaunchedEffect(replacement != null) {
+        if (replacement != null) hadReplacement = true
+        else if (hadReplacement) {
+            hadReplacement = false
+            val target = focusedRow.takeIf { it in enabledRows }?.let { rowFocus[it] } ?: closeFocus
+            withFrameNanos { }
+            if (!target.requestAfterScroll { }) closeFocus.requestAfterScroll { }
+        }
+    }
     LaunchedEffect(enabledRows, rowFocus) {
         val changed = previousCount != actions.size
         previousCount = actions.size
@@ -98,7 +109,11 @@ internal fun PrismActionMenu(
             }
         }
     }
-    Dialog(onDismissRequest = { dismiss(null) }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    fun back() {
+        if (replacement != null && onBackFromReplacement != null) onBackFromReplacement()
+        else dismiss(null)
+    }
+    Dialog(onDismissRequest = ::back, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         val view = LocalView.current
         DisposableEffect(view) {
             val window = (view.parent as? DialogWindowProvider)?.window
@@ -124,11 +139,11 @@ internal fun PrismActionMenu(
         }
         BoxWithConstraints(Modifier.fillMaxSize().onPreviewKeyEvent {
             if (it.key == Key.Menu) {
-                if (it.type == KeyEventType.KeyUp) dismiss(null)
+                if (it.type == KeyEventType.KeyUp) back()
                 true
             } else false
         }, contentAlignment = Alignment.Center) {
-            Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { dismiss(null) } })
+            Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { back() } })
             if (replacement != null) {
                 replacement()
             } else {
@@ -172,7 +187,10 @@ internal fun PrismActionMenu(
                             }
                             ActionMenuRow(
                                 action,
-                                { if (action.keepOpen) action.run() else dismiss(action.run) },
+                                {
+                                    focusedRow = index
+                                    if (action.keepOpen) action.run() else dismiss(action.run)
+                                },
                                 { dismiss(null) },
                                 Modifier.focusRequester(rowFocus[index])
                                     .onFocusChanged { if (it.isFocused) focusedRow = index }
@@ -204,7 +222,7 @@ private fun ActionMenuRow(action: PrismMenuAction, onClick: () -> Unit, onLongPr
     val ink = if (action.destructive) {
         if (c.panel.luminance() > .5f) Color(0xFF9B3C30) else Color(0xFFE3A098)
     } else c.foreground
-    Row(modifier.fillMaxWidth().heightIn(min = 48.dp)
+    Row(modifier.fillMaxWidth().heightIn(min = 48.dp).keepFocusVisible()
         .then(if (action.enabled) Modifier.auraFocus(RoundedCornerShape(14.dp), 1f, ring = if (action.destructive) ink else null, instantRing = true).tvClickable({
             if (motion) scope.launch { press.snapTo(.975f); press.animateTo(1f, tween(160)) }
             onClick()

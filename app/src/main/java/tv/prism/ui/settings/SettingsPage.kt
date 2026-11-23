@@ -44,7 +44,6 @@ import tv.prism.ui.widgets.SettingsButton
 import tv.prism.ui.widgets.SettingsDivider
 import tv.prism.ui.widgets.PrismSwitchRow
 import tv.prism.sources.Plugin
-import tv.prism.library.LibraryState
 import tv.prism.ui.widgets.SettingsChip
 import tv.prism.ui.widgets.auraFocus
 import tv.prism.ui.widgets.Glyph
@@ -177,7 +176,7 @@ internal fun SettingsPage(
 @Composable
 internal fun AboutSettings(
     updateState: AppUpdateState,
-    cacheSize: Long,
+    cacheBytes: Long?,
     clearingCache: Boolean,
     entry: FocusAnchor,
     entryEdge: Modifier,
@@ -264,10 +263,9 @@ internal fun AboutSettings(
             )
         }
     }
-    SettingsCard("数据") {
+    SettingsCard("缓存") {
         SettingsRow(
-            "缓存",
-            "清理不影响收藏、歌单与登录",
+            "磁盘缓存",
             modifier = edgeToRail.rememberFocus(bodyFocusMemory),
             onActivate = clearCache,
         ) {
@@ -276,7 +274,7 @@ internal fun AboutSettings(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text(
-                    if (cacheSize < 0) "…" else formatBytes(cacheSize),
+                    cacheBytes?.let(::formatBytes) ?: "…",
                     color = c.muted,
                     fontSize = 13.sp,
                     lineHeight = 18.sp,
@@ -290,7 +288,8 @@ internal fun AboutSettings(
                 )
             }
         }
-        SettingsDivider()
+    }
+    SettingsCard("数据") {
         SettingsRow(
             "备份与恢复",
             "曲库、音源和设置",
@@ -307,7 +306,6 @@ internal fun DiscoverySettings(
     activePlugins: List<Plugin>,
     recommendationPluginId: String,
     chartPluginId: String,
-    libraryState: LibraryState,
     homeShelfHidden: Set<String>,
     entry: FocusAnchor,
     entryEdge: Modifier,
@@ -372,12 +370,7 @@ internal fun DiscoverySettings(
             }
         }
     }
-    /* Every shelf is offered, hidden ones included, so a playlist
-    imported after the last choice can be brought back onto 首页
-    instead of staying invisible. */
-    val shelfOptions =
-        listOf("favorites" to "我的收藏", "recent" to "最近播放", "frequent" to "近四周常听") +
-            libraryState.playlists.map { it.id to it.name }
+    val shelfOptions = tv.prism.ui.home.homeSectionOptions
     SettingsCard(
         "首页栏目",
         "已显示 ${shelfOptions.count { it.first !in homeShelfHidden }} / ${shelfOptions.size}",
@@ -538,7 +531,6 @@ internal fun PlaybackSettings(
     lyricFontLevel: String,
     hideHeading: Boolean,
     subLyrics: Boolean,
-    lyricMode: String,
     lyricLrclib: Boolean,
     lyricKugou: Boolean,
     lyricNetease: Boolean,
@@ -660,49 +652,40 @@ internal fun PlaybackSettings(
             subLyrics,
             { updatePreference("subLyrics", it.toString()) },
             edgeToRail.rememberFocus(bodyFocusMemory),
-        )
-        SettingsDivider()
-        val lyricModes = listOf(
-            tv.prism.lyrics.LyricSourcePrefs.MODE_AUTO to "插件优先",
-            tv.prism.lyrics.LyricSourcePrefs.MODE_PLUGIN_ONLY to "仅插件",
-        )
-        fun pickLyricMode(value: String) = updatePreference("lyricMode", value)
-        fun cycleLyricMode() {
-            val i = lyricModes.indexOfFirst { it.first == lyricMode }
-            if (i < 0) return
-            pickLyricMode(lyricModes[(i + 1) % lyricModes.size].first)
-        }
-        SettingsRow(
-            "歌词来源",
-            if (lyricMode == tv.prism.lyrics.LyricSourcePrefs.MODE_AUTO) "插件无可用歌词或等待超过 2 秒时，才查找外部歌词" else "只用插件，不访问外部源",
-            modifier = edgeToRail.rememberFocus(bodyFocusMemory),
-            onActivate = { cycleLyricMode() },
-        ) {
-            SettingsSeg(lyricModes, lyricMode, ::pickLyricMode)
-        }
-        SettingsDivider()
-        PrismSwitchRow(
-            "LRCLIB 外部源",
-            lyricLrclib,
-            { updatePreference("lyricLrclib", it.toString()) },
-            edgeToRail.rememberFocus(bodyFocusMemory),
-            description = "公开逐行歌词库，不需要 Key",
-        )
-        SettingsDivider()
-        PrismSwitchRow(
-            "酷狗外部源",
-            lyricKugou,
-            { updatePreference("lyricKugou", it.toString()) },
-            edgeToRail.rememberFocus(bodyFocusMemory),
-            description = "中文曲库覆盖更好，接口失效时自动忽略",
-        )
-        SettingsDivider()
-        PrismSwitchRow(
-            "网易云外部源",
-            lyricNetease,
-            { updatePreference("lyricNetease", it.toString()) },
-            edgeToRail.rememberFocus(bodyFocusMemory),
-            description = "简体中文曲库，带翻译，不需要 Key",
+            description = "歌词来源提供翻译或注音时显示",
         )
     }
+    SettingsCard("自动查找歌词") {
+        val sources = listOf(
+            LyricChoice("LRCLIB", "开放词库，部分歌曲支持逐词高亮", "lyricLrclib", lyricLrclib),
+            LyricChoice("酷狗", "可查找中文歌曲的逐行歌词", "lyricKugou", lyricKugou),
+            LyricChoice("网易云", "部分歌曲提供逐字歌词和翻译", "lyricNetease", lyricNetease),
+        )
+        var open by remember { mutableStateOf(false) }
+        val trigger = remember { FocusRequester() }
+        val scope = rememberCoroutineScope()
+        val names = sources.filter { it.checked }.map { it.name }
+        val summary = names.take(3).joinToString("、").ifEmpty { "未选择" } +
+            if (names.size > 3) " +${names.size - 3}" else ""
+        SettingsRow("补充词库", "缺少歌词时自动查找，可在播放页「更多」中切换来源。",
+            modifier = edgeToRail.focusRequester(trigger).rememberFocus(bodyFocusMemory),
+            onActivate = { open = true },
+        ) {
+            Box {
+                SettingsButton(summary, { open = true }, icon = "chev", passive = true)
+                if (open) ChoicePopup(
+                    options = sources, selectedIndex = 0, label = { it.name },
+                    description = { it.description }, checked = { it.checked },
+                    onSelect = { updatePreference(it.preference, (!it.checked).toString()) },
+                    onDismiss = {
+                        open = false
+                        scope.launch { withFrameNanos {}; trigger.requestFocus() }
+                    },
+                    icon = {},
+                )
+            }
+        }
+    }
 }
+
+private data class LyricChoice(val name: String, val description: String, val preference: String, val checked: Boolean)

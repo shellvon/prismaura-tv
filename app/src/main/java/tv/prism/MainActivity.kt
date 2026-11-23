@@ -177,6 +177,11 @@ import tv.prism.lyrics.LyricSources
 import tv.prism.lyrics.withoutOpeningHeading
 import tv.prism.sources.MusicPlatform
 import tv.prism.sources.SyncResult
+import tv.prism.playback.PlaybackPhase
+import tv.prism.playback.playbackAttemptCommand
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
+import com.google.common.util.concurrent.Futures
 import tv.prism.playback.PlaybackResume
 import tv.prism.ui.playback.lyricFontLevels
 import tv.prism.remote.PhoneRemoteSnapshot
@@ -184,15 +189,15 @@ import tv.prism.library.LibraryBackup
 import tv.prism.ui.widgets.requestIfAttached
 import tv.prism.ui.playback.PrismLoadingSkeleton
 
-internal class PlaybackRecovery(val sources: SourceRecovery, val onFailure: (Boolean) -> Unit) {
-    var ready: CompletableDeferred<Unit>? = null
+internal class PlaybackRecovery(val sources: SourceRecovery, val onFailure: () -> Unit) {
+    var ready: CompletableDeferred<Long>? = null
     var mediaId = ""
-    var hasAcceptedStream = false
     var position = 0L
 }
 
-internal class QualitySwitch(val songKey: String, var mediaId: String, var position: Long) {
-    var ready: CompletableDeferred<Unit>? = null
+internal class QualitySwitch(val songKey: String, var position: Long) {
+    var mediaId = ""
+    var ready: CompletableDeferred<Long>? = null
     var replaced = false
 }
 
@@ -229,10 +234,16 @@ class MainActivity : ComponentActivity() {
     internal lateinit var resumeStore: ResumeStore
     /* Position to restore once the controller connects; -1 means nothing is waiting. */
     internal var resumePending = -1L
+    internal var exitingAfterResumeSave = false
     internal var connection: ListenableFuture<MediaController>? = null
     internal var controller by mutableStateOf<MediaController?>(null)
     internal var status by mutableStateOf("正在连接播放器…")
-    internal var playbackStatus by mutableStateOf("正在连接播放器…")
+    internal var playbackPhase: PlaybackPhase
+        get() = ActiveQueue.phase
+        set(value) { ActiveQueue.phase = value }
+    internal var playbackDetail: String
+        get() = ActiveQueue.failureDetail
+        set(value) { ActiveQueue.failureDetail = value }
 
     /* 持焦节点被换掉后按键会整页落空；记一次，由界面按当前页面补落焦。 */
     internal var focusRecovery by mutableStateOf(0)
@@ -245,7 +256,6 @@ class MainActivity : ComponentActivity() {
     )
 
     internal fun reportPlayback(message: String) {
-        playbackStatus = message
         status = message
     }
     internal var page by mutableStateOf("home")
@@ -371,7 +381,7 @@ class MainActivity : ComponentActivity() {
     /* Automatic skips share one failure pass; manual selection or normal track advancement resets it. */
     internal val failedSongs = mutableSetOf<String>()
     internal var autoSkipToken = 0
-    internal var pendingSeekMs: Long? = null
+
     internal var lyricJob: Job? = null
     internal var lyrics by mutableStateOf<List<LyricLine>>(emptyList())
     internal var lyricStatus by mutableStateOf<LyricStatus>(LyricStatus.Empty())
@@ -381,10 +391,9 @@ class MainActivity : ComponentActivity() {
     internal var hideHeading by mutableStateOf(true)
     internal var subLyrics by mutableStateOf(true)
     internal var lyricCalibrationMs by mutableStateOf(0L)
-    internal var lyricMode by mutableStateOf(LyricSourcePrefs.MODE_AUTO)
-    internal var lyricLrclib by mutableStateOf(true)
-    internal var lyricKugou by mutableStateOf(true)
-    internal var lyricNetease by mutableStateOf(true)
+    internal var lyricLrclib by mutableStateOf(false)
+    internal var lyricKugou by mutableStateOf(false)
+    internal var lyricNetease by mutableStateOf(false)
     internal var lyricSourceLabel by mutableStateOf("")
     internal var lyricActiveSource by mutableStateOf("")
     internal var lyricSourceOverride by mutableStateOf<String?>(null)
@@ -393,6 +402,7 @@ class MainActivity : ComponentActivity() {
     private var lyricProbeJob: Job? = null
     private var lyricProbeKey = ""
     internal var positionMs by mutableLongStateOf(0L)
+    private var pendingSeek: Job? = null
     internal var durationMs by mutableLongStateOf(0L)
     internal var theme by mutableStateOf("gold")
     internal var showMiniLyrics by mutableStateOf(false)
@@ -417,128 +427,206 @@ class MainActivity : ComponentActivity() {
     internal val listener = object : Player.Listener {
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             playing = playWhenReady
-            if (!playWhenReady && controller?.playWhenReady == false && recovery?.mediaId?.isNotBlank() == true) pauseRecoveryIfPending()
-        }
-        /* A failed resolve pauses the old track and leaves its title in the status line. When
-           the user resumes that track, the failure belongs to a song that is no longer on
-           screen; replace it with what is actually playing. */
-        override fun onIsPlayingChanged(isPlaying: Boolean) {
-            playbackActive = isPlaying
-            if (!isPlaying) { lastPlayingSample = 0L; return }
-            val pass = recovery
-            if (pass != null && loadedKey != pass.sources.original.key) {
-                if (controller?.currentMediaItem?.mediaId == pass.mediaId) pass.ready?.complete(Unit)
-                return
-            }
-            if (pass == null) failedSongs.clear()
-            if (ActiveQueue.radio) {
-                queue.getOrNull(queueIndex)?.let { song ->
-                    val key = Discovery.radioIdentity(song)
-                    ActiveQueue.radioRecent = (ActiveQueue.radioRecent.filterNot { it == key } + key).takeLast(80)
-                }
-                ensureRadioTail()
-            }
-            if (playbackStatus.startsWith("解析失败") || playbackStatus.startsWith("播放失败")) {
-                reportPlayback(queue.getOrNull(queueIndex)?.let { "正在播放：${it.title}" }.orEmpty())
-            }
-        }
-        override fun onPlayerError(error: PlaybackException) {
-            /* The stream died; re-picking this song must go through the resolver again
-               instead of taking the "already loaded" shortcut. */
-            loadedKey = ""
-            qualitySwap?.takeIf { controller?.currentMediaItem?.mediaId == it.mediaId }?.let {
-                // The manual switch owns this error and will try the next lower tier.
-                it.ready?.completeExceptionally(error)
-                return
-            }
-            val original = queue.getOrNull(queueIndex)
-            val httpCode = generateSequence(error as Throwable) { it.cause }.take(6)
-                .mapNotNull { Regex("Response code: (\\d{3})").find(it.message.orEmpty())?.groupValues?.get(1) }.firstOrNull()
-            // Refresh an expired URL once before the usual failure recovery.
-            if (recovery == null && httpCode in setOf("403", "404", "410") && original != null && original.pluginId != "local" &&
-                remintKey != original.key) {
-                val owner = plugins.state.value.plugins.firstOrNull { it.id == (playbackSong() ?: original).pluginId }
-                if (owner != null) {
-                    remintKey = original.key
-                    val tier = playingQuality.ifBlank { quality }
-                    val at = maxOf(positionMs, controller?.currentPosition ?: 0L)
-                    val wasPlaying = controller?.playWhenReady == true
-                    streamSwap?.cancel()
-                    streamSwap = lifecycleScope.launch {
-                        val source = try { plugins.mediaSource(owner, playbackSong() ?: original, tier, refresh = true) }
-                            catch (e: kotlinx.coroutines.CancellationException) { throw e }
-                            catch (e: Exception) { null }
-                        val uri = Uri.parse(source?.optString("url").orEmpty())
-                        if (source == null || uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank()) {
-                            onPlayerError(error)
-                            return@launch
-                        }
-                        playingQuality = source.optString("quality").ifBlank { tier }
-                        loadedKey = original.key
-                        controller?.setMediaItem(audioMediaItem(original, source))
-                        controller?.prepare()
-                        if (at > 0L) { controller?.seekTo(at); positionMs = at }
-                        if (wasPlaying) controller?.play()
-                    }
-                    return
-                }
-            }
-            if (autoSourceFallback && controller?.playWhenReady == true && original != null && original.pluginId != "local") {
-                val existing = recovery?.takeIf { it.sources.original.key == original.key }
-                val sources = existing?.sources ?: SourceRecovery(plugins, original, playbackSong() ?: original, tierFor(original))
-                val pass = existing ?: PlaybackRecovery(sources) {
-                    val reason = sources.protectionFailure?.let { "$it；其他音质或音源也未能播放" } ?: "未找到可播放的同版本"
-                    advanceAfterFailure(original, "播放失败", "播放失败：${original.title}，$reason") { }
-                }.also { it.hasAcceptedStream = true; recovery = it }
-                if (existing != null) {
-                    if (controller?.currentMediaItem?.mediaId != pass.mediaId) return
-                    if (pass.ready != null) { pass.ready?.completeExceptionally(error); return }
-                    pass.sources.failed()
-                }
-                continueRecovery(pass, maxOf(positionMs, controller?.currentPosition ?: 0L))
-                return
-            }
-            val qmcFailure = generateSequence(error as Throwable) { it.cause }.take(8).filterIsInstance<QmcDecryptionException>().firstOrNull()
-            val reason = when {
-                qmcFailure != null -> qmcFailure.message ?: "加密音频解密失败，请尝试其他音质"
-                httpCode != null -> "音频地址不可访问（HTTP $httpCode）"
-                error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "音频地址请求失败，可重试或更换音源"
-                error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED -> "网络连接失败"
-                error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "网络连接超时"
-                else -> error.message ?: "未知错误"
-            }
-            reportPlayback("播放失败：$reason")
-            if (ActiveQueue.radio) queue.getOrNull(queueIndex)?.let {
-                advanceAfterFailure(it, "播放失败", playbackStatus, controller?.playWhenReady == true) { }
-            }
         }
         override fun onTracksChanged(tracks: Tracks) {
+            if (!ActiveQueue.attempt.accepts(controller?.currentMediaItem?.mediaId)) return
             val group = tracks.groups.firstOrNull { it.type == C.TRACK_TYPE_AUDIO && it.isSelected }
             val format = group?.let { g -> (0 until g.length).firstOrNull { g.isTrackSelected(it) }?.let { g.getTrackFormat(it) } }
             streamFormat = format?.let(::audioStreamLabel).orEmpty()
         }
-        override fun onPlaybackStateChanged(playbackState: Int) {
-            this@MainActivity.playbackState = playbackState
-            if (playbackState == Player.STATE_READY) pendingSeekMs?.let { at -> controller?.seekTo(at); pendingSeekMs = null }
-            if (playbackState == Player.STATE_READY) recovery?.takeIf { controller?.currentMediaItem?.mediaId == it.mediaId }?.ready?.complete(Unit)
-            val switching = qualitySwap?.takeIf { controller?.currentMediaItem?.mediaId == it.mediaId }
-            if (playbackState == Player.STATE_READY) switching?.ready?.complete(Unit)
-            if (playbackState == Player.STATE_ENDED && (controller?.duration ?: 0L) > 0L) {
-                recovery?.takeIf { controller?.currentMediaItem?.mediaId == it.mediaId }?.ready?.complete(Unit)
-                switching?.ready?.complete(Unit)
-            }
-            if (playbackState == Player.STATE_ENDED && queue.isNotEmpty() && resolving?.isActive != true && switching == null) {
-                ActiveQueue.listenKey = ""
-                when {
-                    ActiveQueue.radio -> step(1)
-                    playMode == PlaybackMode.REPEAT_ONE -> playAt(queueIndex, openPlayer = false)
-                    playMode == PlaybackMode.SEQUENTIAL && queueIndex == queue.lastIndex -> reportPlayback("播放完毕")
-                    else -> {
-                        step(1)
-                    }
+    }
+
+    private fun installStream(player: Player, source: MediaItem, at: Long): String {
+        pendingSeek?.cancel()
+        val item = ActiveQueue.attempt.begin(source)
+        playbackState = Player.STATE_BUFFERING
+        playbackActive = false
+        positionMs = at
+        if (playbackPhase != PlaybackPhase.Switching) playbackPhase = PlaybackPhase.Buffering
+        player.setMediaItem(item, at)
+        return item.mediaId
+    }
+
+    internal fun resetStream(player: Player?, pause: Boolean = true) {
+        pendingSeek?.cancel()
+        ActiveQueue.attempt.clear()
+        playbackState = Player.STATE_IDLE
+        playbackActive = false
+        loadedKey = ""
+        if (pause) player?.pause()
+        player?.stop()
+        player?.clearMediaItems()
+    }
+
+    internal fun trustedPosition(player: Player? = controller): Long {
+        val p = player ?: return positionMs
+        if (pendingSeek?.isActive == true || resumePending >= 0 || playbackPhase.holdControls ||
+            !ActiveQueue.attempt.accepts(p.currentMediaItem?.mediaId) ||
+            (playbackState != Player.STATE_READY && playbackState != Player.STATE_ENDED) ||
+            (p.playbackState != Player.STATE_READY && p.playbackState != Player.STATE_ENDED) ||
+            qualitySwap?.replaced == true || recovery?.ready != null) return positionMs
+        return p.currentPosition.coerceAtLeast(0L)
+    }
+
+    internal fun onAttemptEvent(data: Bundle) {
+        val id = data.getString("mediaId") ?: return
+        if (!ActiveQueue.attempt.accepts(id)) return
+        data.getBundle("error")?.let {
+            handleStreamError(id, PlaybackException.fromBundle(it), data.getString("httpCode"), data.getString("protection"))
+            return
+        }
+        if (data.getBoolean("pause")) {
+            if (controller?.playWhenReady == false && recovery?.mediaId == id) pauseRecoveryIfPending()
+            return
+        }
+        if (data.containsKey("active")) {
+            onAttemptActive(data.getBoolean("active"))
+            return
+        }
+        val state = data.getInt("state")
+        playbackState = state
+        val duration = data.getLong("duration").coerceAtLeast(0L)
+        val pendingRecovery = recovery?.takeIf { it.mediaId == id }?.ready
+        val pendingQuality = qualitySwap?.takeIf { it.mediaId == id }?.ready
+        when (state) {
+            Player.STATE_BUFFERING -> if (playbackPhase == PlaybackPhase.Ready) playbackPhase = PlaybackPhase.Buffering
+            Player.STATE_READY, Player.STATE_ENDED -> {
+                if (duration > 0) durationMs = duration
+                if (state == Player.STATE_READY || duration > 0) {
+                    pendingRecovery?.complete(duration)
+                    pendingQuality?.complete(duration)
                 }
+                if (pendingRecovery != null || pendingQuality != null || playbackPhase == PlaybackPhase.Failed) return
+                if (state == Player.STATE_READY) {
+                    if (qualitySwap == null || playbackPhase != PlaybackPhase.Switching) playbackPhase = PlaybackPhase.Ready
+                } else if (qualitySwap == null) finishCurrentTrack()
             }
         }
+    }
+
+    private fun onAttemptActive(active: Boolean) {
+        playbackActive = active
+        if (!active) { lastPlayingSample = 0L; return }
+        if (recovery?.ready != null || qualitySwap?.ready != null) return
+        failedSongs.clear()
+        if (ActiveQueue.radio) {
+            queue.getOrNull(queueIndex)?.let { song ->
+                val key = Discovery.radioIdentity(song)
+                ActiveQueue.radioRecent = (ActiveQueue.radioRecent.filterNot { it == key } + key).takeLast(80)
+            }
+            ensureRadioTail()
+        }
+    }
+
+    private fun finishCurrentTrack() {
+        if (playbackState != Player.STATE_ENDED || queue.isEmpty() || playbackPhase == PlaybackPhase.Failed ||
+            playbackPhase == PlaybackPhase.Finished) return
+        ActiveQueue.listenKey = ""
+        when {
+            ActiveQueue.radio -> step(1)
+            playMode == PlaybackMode.REPEAT_ONE -> {
+                val player = controller
+                if (player != null && ActiveQueue.attempt.accepts(player.currentMediaItem?.mediaId) &&
+                    player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) &&
+                    player.isCurrentMediaItemSeekable
+                ) {
+                    positionMs = 0L
+                    lastPlayingSample = 0L
+                    player.seekTo(0L)
+                    player.play()
+                    playbackState = player.playbackState
+                    playbackPhase = if (playbackState == Player.STATE_READY) PlaybackPhase.Ready else PlaybackPhase.Buffering
+                } else {
+                    playAt(queueIndex, openPlayer = false, restart = true, sourceSong = ActiveQueue.source?.song)
+                }
+            }
+            playMode == PlaybackMode.SEQUENTIAL && queueIndex == queue.lastIndex -> {
+                positionMs = durationMs
+                playbackPhase = PlaybackPhase.Finished
+                controller?.pause()
+                playing = false
+                reportPlayback(PlaybackPhase.Finished.message)
+            }
+            else -> step(1) // Shuffle wraps within the current random order.
+        }
+    }
+
+    private fun handleStreamError(id: String, error: PlaybackException, httpCode: String?, protection: String?) {
+        if (!ActiveQueue.attempt.accepts(id)) return
+        val player = controller ?: return
+        val at = trustedPosition()
+        positionMs = at
+        loadedKey = ""
+        val prepareFailure = protection?.let(::QmcDecryptionException) ?: error
+        qualitySwap?.takeIf { it.mediaId == id }?.ready?.let {
+            it.completeExceptionally(prepareFailure)
+            return
+        }
+        recovery?.takeIf { it.mediaId == id }?.ready?.let {
+            it.completeExceptionally(prepareFailure)
+            return
+        }
+        if (qualitySwap != null) {
+            qualitySwap = null
+            qualitySwitching = ""
+            streamSwap?.cancel()
+        }
+        val original = queue.getOrNull(queueIndex) ?: return
+        val streamSong = playbackSong() ?: original
+        val wasPlaying = player.playWhenReady
+        if (error.errorCode == PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED) {
+            pendingSeek?.cancel()
+            showPlaybackFailure(original, "设备暂时无法输出声音")
+            return
+        }
+        // Refresh an expired URL once before the usual failure recovery.
+        if (recovery == null && httpCode in setOf("403", "404", "410") && original.pluginId != "local" &&
+            remintKey != original.key) {
+            val owner = plugins.state.value.plugins.firstOrNull { it.id == streamSong.pluginId }
+            if (owner != null) {
+                remintKey = original.key
+                val tier = playingQuality.ifBlank { quality }
+                streamSwap?.cancel()
+                playbackPhase = PlaybackPhase.Switching
+                streamSwap = lifecycleScope.launch {
+                    val source = try { plugins.mediaSource(owner, streamSong, tier, refresh = true) }
+                        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                        catch (e: Exception) { null }
+                    if (!ActiveQueue.attempt.accepts(id)) return@launch
+                    val replacement = source?.let { runCatching { audioMediaItem(original, it) }.getOrNull() }
+                    if (replacement == null) {
+                        handleStreamError(id, error, httpCode, protection)
+                        return@launch
+                    }
+                    playingQuality = source.optString("quality").ifBlank { tier }
+                    loadedKey = original.key
+                    installStream(player, replacement, positionMs)
+                    player.prepare()
+                }
+                return
+            }
+        }
+        if (autoSourceFallback && wasPlaying && original.pluginId != "local") {
+            val existing = recovery?.takeIf { it.sources.original.key == original.key }
+            val sources = existing?.sources ?: SourceRecovery(plugins, original, streamSong, tierFor(streamSong))
+            val pass = existing ?: PlaybackRecovery(sources) {
+                val detail = sources.protectionFailure ?: sources.failureDetail ?: "未找到可播放的同版本"
+                advanceAfterFailure(original, detail)
+            }.also { recovery = it }
+            if (existing != null) pass.sources.failed(prepareFailure)
+            playbackPhase = PlaybackPhase.Switching
+            continueRecovery(pass, at)
+            return
+        }
+        val reason = when {
+            protection != null -> protection
+            httpCode != null -> "音频地址不可访问（HTTP $httpCode）"
+            error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "音频地址请求失败"
+            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED -> "网络连接失败"
+            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "网络连接超时"
+            else -> "当前音频暂时无法播放"
+        }
+        advanceAfterFailure(original, reason, wasPlaying && (autoSourceFallback || ActiveQueue.radio))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -563,7 +651,7 @@ class MainActivity : ComponentActivity() {
         lyricFontLevel = getSharedPreferences("appearance", MODE_PRIVATE).getString("lyric_font_level", "标准") ?: "标准"
         hideHeading = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("hide_heading", true)
         subLyrics = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("sub_lyrics", true)
-        lyricMode = LyricSourcePrefs.mode(this)
+        LyricSourcePrefs.migrateMode(this)
         lyricLrclib = LyricSourcePrefs.lrclib(this)
         lyricKugou = LyricSourcePrefs.kugou(this)
         lyricNetease = LyricSourcePrefs.netease(this)
@@ -597,7 +685,10 @@ class MainActivity : ComponentActivity() {
                 ActiveQueue.order = ActiveQueue.order.restored(saved.shuffleOrder, saved.index,
                     playMode == PlaybackMode.SHUFFLE && !saved.radio)
                 positionMs = saved.position
-                resumePending = saved.position
+                if (saved.finished) {
+                    durationMs = saved.position
+                    playbackPhase = PlaybackPhase.Finished
+                } else resumePending = saved.position
             }
             plugins = pluginLoad.await()
             ready = true
@@ -625,10 +716,10 @@ class MainActivity : ComponentActivity() {
                 val p = controller
                 /* While a restored track is still being prepared, the controller reports 0 and
                    would overwrite the saved position with it. */
-                if (p != null && resumePending < 0 && pendingSeekMs == null && qualitySwap?.replaced != true && !(recovery != null && resolving?.isActive == true)) {
-                    val duration = p.duration.coerceAtLeast(0)
-                    if (duration > 0 || p.playbackState != Player.STATE_IDLE) {
-                        positionMs = p.currentPosition.coerceAtLeast(0)
+                if (p != null && ActiveQueue.attempt.accepts(p.currentMediaItem?.mediaId)) {
+                    positionMs = trustedPosition(p)
+                    val duration = p.duration
+                    if (duration > 0 && playbackState == Player.STATE_READY && qualitySwap?.replaced != true && recovery?.ready == null) {
                         if (durationMs != duration) durationMs = duration
                     }
                     if (ActiveQueue.radio && p.isPlaying) ensureRadioTail()
@@ -667,32 +758,57 @@ class MainActivity : ComponentActivity() {
         } else lastPlayingSample = 0
     }
 
-    internal fun connect() {
+    internal fun connect(retryPlayback: Boolean = false) {
         connection?.let(MediaController::releaseFuture)
         val future = MediaController.Builder(this, SessionToken(this, ComponentName(this, PlaybackService::class.java)))
             .setListener(object : MediaController.Listener {
                 override fun onDisconnected(controller: MediaController) {
+                    if (this@MainActivity.controller !== controller) return
                     this@MainActivity.controller = null
-                    reportPlayback("播放器已断开，请选择重新连接")
+                    playbackPhase = PlaybackPhase.Failed
+                    playbackDetail = "播放器连接中断，按播放重新连接"
+                    reportPlayback(playbackDetail)
+                }
+
+                override fun onCustomCommand(controller: MediaController, command: SessionCommand, args: Bundle): ListenableFuture<SessionResult> {
+                    if (this@MainActivity.controller === controller && command == playbackAttemptCommand) {
+                        onAttemptEvent(args)
+                    }
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
             }).buildAsync()
         connection = future
         future.addListener({
             if (connection !== future || isDestroyed) return@addListener
             try {
-                controller = future.get().also { it.addListener(listener); playing = it.playWhenReady; playbackActive = it.isPlaying; playbackState = it.playbackState; listener.onTracksChanged(it.currentTracks) }
+                val player = future.get()
+                controller = player
+                player.addListener(listener)
+                playing = player.playWhenReady
+                playbackActive = player.isPlaying
+                playbackState = player.playbackState
+                if (ActiveQueue.attempt.accepts(player.currentMediaItem?.mediaId)) {
+                    loadedKey = queue.getOrNull(queueIndex)?.key.orEmpty()
+                    listener.onTracksChanged(player.currentTracks)
+                    if (playbackPhase == PlaybackPhase.Connecting) {
+                        playbackPhase = if (playbackState == Player.STATE_READY) PlaybackPhase.Ready else PlaybackPhase.Buffering
+                    }
+                    if (playbackState == Player.STATE_ENDED) finishCurrentTrack()
+                } else if (playbackPhase == PlaybackPhase.Connecting) playbackPhase = PlaybackPhase.Idle
                 /* Restore paused: reopening the app should show where you stopped, not start
                    talking to the room on its own. */
                 val at = resumePending
                 if (at >= 0 && queue.isNotEmpty()) {
-                    /* Gate the position poll until the prepared stream reaches READY, otherwise
-                       it reports 0 before the seek lands and the saved point is lost. */
-                    pendingSeekMs = at.takeIf { it > 0 }
                     resumePending = -1
-                    playAt(queueIndex, openPlayer = false, autoplay = false, startAt = at)
+                    playAt(queueIndex, openPlayer = false, autoplay = retryPlayback, startAt = at)
+                } else if (retryPlayback && queue.isNotEmpty()) {
+                    playAt(queueIndex, openPlayer = false, startAt = positionMs, sourceSong = playbackSong())
                 }
+            } catch (e: Exception) {
+                playbackPhase = PlaybackPhase.Failed
+                playbackDetail = "播放器连接失败：${e.cause?.message ?: e.message}"
+                reportPlayback(playbackDetail)
             }
-            catch (e: Exception) { reportPlayback("播放器连接失败：${e.cause?.message ?: e.message}") }
         }, ContextCompat.getMainExecutor(this))
     }
 
@@ -906,9 +1022,10 @@ class MainActivity : ComponentActivity() {
     }
 
     internal fun playQueue(songs: List<Song>, index: Int = 0, radio: Boolean = false) {
+        if (songs.isEmpty()) return
         if (!radio) leaveRadio()
         ActiveQueue.replace(songs, index, radio, playMode == PlaybackMode.SHUFFLE)
-        playAt(index)
+        playAt(index, restart = true)
     }
 
     internal fun playCollection(songs: List<Song>, shuffle: Boolean = false) {
@@ -953,23 +1070,27 @@ class MainActivity : ComponentActivity() {
         if (index !in queue.indices) return
         val autoplay = controller?.playWhenReady == true
         val removingCurrent = index == queueIndex
+        val stopAtTail = removingCurrent && index == queue.lastIndex && playMode == PlaybackMode.SEQUENTIAL && !ActiveQueue.radio
         val following = if (removingCurrent && playMode == PlaybackMode.SHUFFLE && !ActiveQueue.radio && queue.size > 1)
             nextIndex(1) else null
         queue = queue.toMutableList().also { it.removeAt(index) }
         when {
-            queue.isEmpty() -> {
+            queue.isEmpty() || stopAtTail -> {
                 autoSkipToken++
                 resolving?.cancel(); streamSwap?.cancel(); lyricJob?.cancel(); lyricToken++
+                qualitySwap = null; qualitySwitching = ""
                 recovery?.ready?.cancel(); recovery = null
                 leaveRadio()
-                queueIndex = -1; loadedKey = ""; ActiveQueue.source = null
+                queueIndex = queue.lastIndex
+                ActiveQueue.source = null
                 lyrics = emptyList(); lyricStatus = LyricStatus.Empty()
-                positionMs = 0; durationMs = 0; pendingSeekMs = null
-                controller?.stop(); controller?.clearMediaItems()
+                positionMs = 0; durationMs = 0
+                playbackPhase = PlaybackPhase.Idle
+                playbackDetail = ""
+                resetStream(controller)
+                if (queue.isNotEmpty()) reportPlayback("已停止，按播放从当前曲目继续")
             }
             index < queueIndex -> queueIndex -= 1
-            /* Removing the song under the needle: the next one takes its place and plays,
-               so the title on screen and the audio never disagree. */
             removingCurrent -> {
                 queueIndex = following?.let { it - if (it > index) 1 else 0 } ?: index.coerceAtMost(queue.lastIndex)
                 playAt(queueIndex, openPlayer = false, autoplay = autoplay)
@@ -1113,12 +1234,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    internal fun playAt(index: Int, openPlayer: Boolean = true, autoplay: Boolean = true, startAt: Long = 0L, autoSkip: Boolean = false, sourceSong: Song? = null) {
+    internal fun playAt(
+        index: Int, openPlayer: Boolean = true, autoplay: Boolean = true, startAt: Long = 0L,
+        autoSkip: Boolean = false, sourceSong: Song? = null, restart: Boolean = false,
+    ) {
         val song = queue.getOrNull(index) ?: return
         val player = controller ?: run { reportPlayback("播放器未连接"); return }
         /* The loaded track needs no second pass: the audio is mid-phrase and its title is on
            screen, so re-picking it only moves the needle within the queue. */
-        if (sourceSong == null && !autoSkip && startAt <= 0L && song.key == loadedKey && playbackState != Player.STATE_ENDED && playbackState != Player.STATE_IDLE) {
+        if (sourceSong == null && !restart && !autoSkip && startAt <= 0L && song.key == loadedKey &&
+            playbackPhase == PlaybackPhase.Ready && ActiveQueue.attempt.accepts(player.currentMediaItem?.mediaId)) {
             resolving?.cancel()
             failedSongs.clear(); autoSkipToken++
             queueIndex = index
@@ -1130,38 +1255,23 @@ class MainActivity : ComponentActivity() {
         }
         /* A manual pick starts a fresh pass; an automatic skip is part of the current one. */
         if (!autoSkip) { failedSongs.clear(); autoSkipToken++ }
-        val previousIndex = queueIndex
-        val previousSong = queue.getOrNull(previousIndex)
-        val previousSource = ActiveQueue.source
-        /* The queue often changes before this call (search results, playlists), so the old
-           position alone would point at a different song afterwards. Restore by identity. */
-        val restorePrevious: () -> Unit = {
-            val at = previousSong?.let { old -> queue.indexOfFirst { it.key == old.key } } ?: -1
-            if (at >= 0) {
-                queueIndex = at
-                ActiveQueue.source = previousSource
-                /* 回退到旧歌时校准也要回到旧歌的，不能留着目标歌曲的校准串用。 */
-                lyricCalibrationMs = LyricCalibration.load(this, playbackSong()?.key ?: queue[at].key)
-            }
-        }
         if (openPlayer) playerOpen = true
         streamFormat = ""
         qualityNoticeJob?.cancel(); qualityNotice = ""
         playingQuality = ""
         recovery?.ready?.cancel()
         recovery = null
-        ActiveQueue.source = null
+        ActiveQueue.source = sourceSong?.let { PlayingSource(song.key, it) }
         resolving?.cancel()
         streamSwap?.cancel()
         remintKey = ""
         lyricJob?.cancel()
         lyricToken++
-        loadedKey = ""
-        pendingSeekMs = null
-        player.stop()
-        player.clearMediaItems()
-        val previousLyrics = lyrics
-        val previousLyricStatus = lyricStatus
+        qualitySwap = null
+        qualitySwitching = ""
+        playbackDetail = ""
+        playbackPhase = PlaybackPhase.Resolving
+        resetStream(player)
         lyrics = emptyList()
         lyricStatus = LyricStatus.Loading
         queueIndex = index
@@ -1176,10 +1286,9 @@ class MainActivity : ComponentActivity() {
                 val uri = Uri.parse(song.data.optString("uri"))
                 require(uri.scheme == "content") { "本地文件地址无效" }
                 val metadata = MediaMetadata.Builder().setTitle(song.title).setArtist(song.artist).build()
-                player.setMediaItem(MediaItem.Builder().setUri(uri).setMediaMetadata(metadata).build())
+                installStream(player, MediaItem.Builder().setUri(uri).setMediaMetadata(metadata).build(), positionMs)
                 player.prepare()
                 loadedKey = song.key
-                if (startAt > 0) { player.seekTo(startAt); pendingSeekMs = startAt; positionMs = startAt }
                 if (autoplay) player.play()
                 lyricStatus = LyricStatus.Empty("本地文件暂无歌词", local = true)
                 reportPlayback(when {
@@ -1189,15 +1298,7 @@ class MainActivity : ComponentActivity() {
                 })
                 if (autoplay && song.data.optBoolean("persisted")) lifecycleScope.launch { runCatching { library.record(song) } }
             } catch (e: Exception) {
-                pendingSeekMs = null
-                /* The file may have prepared and then failed; the next track is the one on screen. */
-                loadedKey = ""
-                advanceAfterFailure(song, "本地文件播放失败", "本地文件播放失败：${e.message}", autoplay) {
-                    if (!autoSkip) {
-                        lyrics = previousLyrics; lyricStatus = previousLyricStatus
-                        restorePrevious()
-                    }
-                }
+                advanceAfterFailure(song, e.message ?: "本地文件无法读取", autoplay)
             }
             return
         }
@@ -1208,15 +1309,8 @@ class MainActivity : ComponentActivity() {
             positionMs = startAt
             durationMs = (song.durationSeconds * 1000).toLong().coerceAtLeast(0L)
             val sources = SourceRecovery(plugins, song, streamSong, tierFor(streamSong))
-            val pass = PlaybackRecovery(sources) { hasAcceptedStream ->
-                val reason = sources.protectionFailure?.let { "$it；其他音质或音源也未能播放" } ?: "未找到可播放的同版本"
-                advanceAfterFailure(song, "播放失败", "播放失败：${song.title}，$reason", autoplay) {
-                    if (!hasAcceptedStream && !autoSkip) {
-                        /* Lyrics travel with the title: they go back only when the display does. */
-                        lyrics = previousLyrics; lyricStatus = previousLyricStatus
-                        restorePrevious()
-                    }
-                }
+            val pass = PlaybackRecovery(sources) {
+                advanceAfterFailure(song, sources.protectionFailure ?: sources.failureDetail ?: "未找到可播放的同版本", autoplay)
             }
             recovery = pass
             continueRecovery(pass, startAt)
@@ -1224,9 +1318,7 @@ class MainActivity : ComponentActivity() {
         }
         val plugin = plugins.state.value.plugins.firstOrNull { it.id == streamSong.pluginId }
         if (plugin == null) {
-            lyrics = previousLyrics
-            lyricStatus = previousLyricStatus
-            advanceAfterFailure(song, "所需插件已删除", "所需插件已删除 · ${song.title}", autoplay) { if (!autoSkip) restorePrevious() }
+            advanceAfterFailure(song, "所需音源已删除", autoplay)
             return
         }
         /* Resolving can take a second or longer. Leaving the previous track audible under the
@@ -1268,12 +1360,11 @@ class MainActivity : ComponentActivity() {
                 val actualTier = result.optString("quality").ifBlank { resolvedTier }
                 playingQuality = actualTier
                 if (unsupported.isNotEmpty()) unsupportedTiers[streamSong.key] = unsupportedTiers[streamSong.key].orEmpty() + unsupported
-                player.setMediaItem(audioMediaItem(song, result))
+                installStream(player, audioMediaItem(song, result), positionMs)
                 player.prepare()
                 loadedKey = song.key
-                if (startAt > 0) { player.seekTo(startAt); pendingSeekMs = startAt; positionMs = startAt }
                 if (autoplay) {
-                    player.play(); failedSongs.clear()
+                    player.play()
                     reportPlayback(when {
                         protectionFailure != null -> "$protectionFailure；已回退至${audioQualityLabel(actualTier)}：${song.title}"
                         attempts.firstOrNull() != resolvedTier || actualTier != resolvedTier -> "正在播放：${song.title} · 已回退至 ${audioQualityLabel(actualTier)}"
@@ -1285,15 +1376,7 @@ class MainActivity : ComponentActivity() {
                 loadLyrics(plugin, streamSong)
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) {
-                pendingSeekMs = null
-                /* The old track is paused, not replaced. If no skip follows, put the needle back
-                   where it was so the title on screen and the audio agree. */
-                advanceAfterFailure(song, "解析失败", "解析失败：${song.title} · ${e.message ?: "插件没有返回播放地址"}", autoplay) {
-                    if (!autoSkip) {
-                        lyrics = previousLyrics; lyricStatus = previousLyricStatus
-                        restorePrevious()
-                    }
-                }
+                advanceAfterFailure(song, e.message ?: "插件没有返回播放地址", autoplay)
             }
         }
     }
@@ -1324,11 +1407,12 @@ class MainActivity : ComponentActivity() {
         if (resolving?.isActive == true) { qualityFailure("请等待当前曲目加载完成"); return }
         if (tier == playingQuality.ifBlank { tierFor(streamSong) } && player.playerError == null && player.playbackState != Player.STATE_IDLE) return
         val plugin = plugins.state.value.plugins.firstOrNull { it.id == streamSong.pluginId } ?: return
-        val previousItem = player.currentMediaItem ?: return
+        val previousItem = ActiveQueue.attempt.item ?: return
         val previousQuality = playingQuality.ifBlank { tierFor(streamSong) }
-        val pass = QualitySwitch(song.key, previousItem.mediaId, player.currentPosition.coerceAtLeast(0L).takeIf { it > 0L } ?: positionMs)
+        val pass = QualitySwitch(song.key, trustedPosition(player))
         streamSwap?.cancel()
         qualitySwap = pass
+        playbackPhase = PlaybackPhase.Switching
         qualitySwitching = tier
         qualityNoticeJob?.cancel()
         qualityNotice = ""
@@ -1367,22 +1451,19 @@ class MainActivity : ComponentActivity() {
                         if (!current()) return@withTimeoutOrNull null
                         if (!pass.replaced) {
                             // The old song kept advancing while its replacement was resolving.
-                            pass.position = player.currentPosition.coerceAtLeast(0L).takeIf { it > 0L } ?: pass.position
+                            pass.position = trustedPosition(player)
                             recovery?.ready?.cancel(); recovery = null
                             pass.replaced = true
                         }
-                        val ready = CompletableDeferred<Unit>()
+                        val ready = CompletableDeferred<Long>()
                         pass.ready = ready
-                        pass.mediaId = java.util.UUID.randomUUID().toString()
                         var prepared = false
                         try {
                             loadedKey = ""
-                            pendingSeekMs = pass.position.takeIf { it > 0L }
-                            player.setMediaItem(audioMediaItem(song, source, pass.mediaId))
-                            if (pass.position > 0L) player.seekTo(pass.position)
+                            pass.mediaId = installStream(player, audioMediaItem(song, source), pass.position)
                             // prepare retains the latest play/pause intent, including presses during the swap.
                             player.prepare()
-                            prepared = withTimeoutOrNull(SourceRecovery.PREPARE_MS) { ready.await(); true } == true && player.playerError == null
+                            prepared = withTimeoutOrNull(SourceRecovery.PREPARE_MS) { ready.await(); true } == true
                         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
                           catch (e: Exception) {
                             generateSequence(e as Throwable) { it.cause }.take(8).filterIsInstance<QmcDecryptionException>().firstOrNull()?.let { protectionFailure = it.message }
@@ -1391,7 +1472,7 @@ class MainActivity : ComponentActivity() {
                         if (!current()) return@withTimeoutOrNull null
                         if (prepared) return@withTimeoutOrNull attempt to source
                         android.util.Log.w("PrismQuality", "Rejected $attempt; trying lower tier")
-                        player.stop(); pendingSeekMs = null; positionMs = pass.position
+                        resetStream(player, pause = false); positionMs = pass.position
                     }
                     null
                 }
@@ -1399,10 +1480,8 @@ class MainActivity : ComponentActivity() {
                 if (accepted == null) {
                     if (pass.replaced) {
                         // Every lower tier failed or timed out: return to the last working stream.
-                        pass.mediaId = previousItem.mediaId
-                        pendingSeekMs = pass.position.takeIf { it > 0L }
-                        player.setMediaItem(previousItem)
-                        if (pass.position > 0L) player.seekTo(pass.position)
+                        playbackPhase = PlaybackPhase.Buffering
+                        installStream(player, previousItem, pass.position)
                         player.prepare()
                         loadedKey = song.key; positionMs = pass.position
                     }
@@ -1417,7 +1496,9 @@ class MainActivity : ComponentActivity() {
                 if (actual != resolvedTier) unsupportedTiers[streamSong.key] = unsupportedTiers[streamSong.key].orEmpty() + resolvedTier
                 songTier[song.key] = actual
                 songTier[streamSong.key] = actual
-                loadedKey = song.key; pendingSeekMs = null; positionMs = pass.position
+                loadedKey = song.key; positionMs = pass.position
+                playbackPhase = PlaybackPhase.Ready
+                if (playbackActive) onAttemptActive(true)
                 ActiveQueue.source = PlayingSource(song.key, streamSong)
                 failedSongs.clear()
                 val message = when {
@@ -1431,7 +1512,10 @@ class MainActivity : ComponentActivity() {
             } finally {
                 if (qualitySwap === pass) {
                     qualitySwap = null; qualitySwitching = ""
-                    if (player.playbackState == Player.STATE_ENDED && queue.getOrNull(queueIndex)?.key == song.key) listener.onPlaybackStateChanged(Player.STATE_ENDED)
+                    if (!pass.replaced && playbackPhase == PlaybackPhase.Switching) {
+                        playbackPhase = if (playbackState == Player.STATE_BUFFERING) PlaybackPhase.Buffering else PlaybackPhase.Ready
+                    }
+                    if (queue.getOrNull(queueIndex)?.key == song.key) finishCurrentTrack()
                 }
             }
         }
@@ -1455,36 +1539,56 @@ class MainActivity : ComponentActivity() {
         val pass = recovery?.takeIf { resolving?.isActive == true } ?: return false
         recovery = null
         pass.ready?.cancel(); resolving?.cancel()
-        controller?.pause(); controller?.stop()
-        loadedKey = ""; pendingSeekMs = null; positionMs = pass.position
+        resetStream(controller)
+        playbackPhase = PlaybackPhase.Idle
+        positionMs = pass.position
         reportPlayback("已暂停：${pass.sources.original.title}")
         return true
     }
 
     internal fun togglePlayback() {
         if (pauseRecoveryIfPending()) return
-        val player = controller ?: return
-        if (player.playWhenReady) player.pause() else resumePlayback()
+        val player = controller ?: run { resumePlayback(); return }
+        if (playbackPhase == PlaybackPhase.Finished || playbackPhase == PlaybackPhase.Failed || !player.playWhenReady) {
+            resumePlayback()
+        } else player.pause()
     }
 
     internal fun resumePlayback() {
-        if (recovery != null && resolving?.isActive == true) return
-        val player = controller ?: return
-        val needsResolution = player.currentMediaItem == null || player.playbackState == Player.STATE_IDLE || player.playerError != null
-        if (needsResolution && queue.isNotEmpty()) {
-            playAt(queueIndex, openPlayer = false, startAt = positionMs, sourceSong = playbackSong())
-        } else player.play()
+        val player = controller ?: run {
+            if (playbackPhase == PlaybackPhase.Failed) {
+                playbackPhase = PlaybackPhase.Connecting
+                connect(retryPlayback = true)
+            }
+            return
+        }
+        if (resolving?.isActive == true || playbackPhase == PlaybackPhase.Switching) return
+        if (queue.isEmpty()) return
+        when {
+            playbackPhase == PlaybackPhase.Finished || playbackState == Player.STATE_ENDED ->
+                playAt(queueIndex, openPlayer = false, sourceSong = playbackSong())
+            playbackPhase == PlaybackPhase.Failed || !ActiveQueue.attempt.accepts(player.currentMediaItem?.mediaId) ||
+                playbackState == Player.STATE_IDLE -> playAt(queueIndex, openPlayer = false, startAt = positionMs, sourceSong = playbackSong())
+            else -> player.play()
+        }
     }
 
     internal fun seekPlayback(target: Long) {
         val at = target.coerceAtLeast(0L)
-        qualitySwap?.let { it.position = at; if (it.ready != null) pendingSeekMs = at }
-        val pass = recovery?.takeIf { resolving?.isActive == true }
-        if (pass != null) {
-            pass.position = at
-            if (pass.ready != null) { pendingSeekMs = at; controller?.seekTo(at) }
-        } else controller?.seekTo(at)
+        if (playbackPhase == PlaybackPhase.Finished || playbackPhase == PlaybackPhase.Failed) return
         positionMs = at
+        if (resumePending >= 0) resumePending = at
+        qualitySwap?.position = at
+        recovery?.takeIf { resolving?.isActive == true }?.position = at
+        pendingSeek?.cancel()
+        val player = controller ?: return
+        val id = player.currentMediaItem?.mediaId ?: return
+        if (!ActiveQueue.attempt.accepts(id)) return
+        pendingSeek = lifecycleScope.launch {
+            delay(250)
+            if (ActiveQueue.attempt.accepts(id) && player.currentMediaItem?.mediaId == id &&
+                playbackPhase != PlaybackPhase.Failed && playbackPhase != PlaybackPhase.Finished) player.seekTo(at)
+        }
     }
 
     internal fun continueRecovery(pass: PlaybackRecovery, startAt: Long) {
@@ -1496,42 +1600,40 @@ class MainActivity : ComponentActivity() {
             fun current() = recovery === pass && autoSourceFallback && queue.getOrNull(queueIndex)?.key == original.key
             val succeeded = withTimeoutOrNull(SourceRecovery.BUDGET_MS) {
                 while (current()) {
-                    reportPlayback(if (pass.sources.current == null) "正在解析：${original.title}" else "正在尝试其他音质或音源：${original.title}")
+                    if (pass.sources.current != null) playbackPhase = PlaybackPhase.Switching
+                    reportPlayback(playbackPhase.message)
                     val stream = pass.sources.next() ?: return@withTimeoutOrNull false
                     if (!current()) return@withTimeoutOrNull false
-                    val ready = CompletableDeferred<Unit>()
+                    val ready = CompletableDeferred<Long>()
                     pass.ready = ready
-                    pass.mediaId = java.util.UUID.randomUUID().toString()
                     var started = false
                     var preparationFailure: Exception? = null
                     try {
-                        player.setMediaItem(audioMediaItem(original, stream.source, pass.mediaId))
-                        pendingSeekMs = pass.position.takeIf { it > 0 }
-                        if (pass.position > 0) player.seekTo(pass.position)
+                        pass.mediaId = installStream(player, audioMediaItem(original, stream.source), pass.position)
                         player.prepare(); player.play()
-                        started = withTimeoutOrNull(SourceRecovery.PREPARE_MS) { ready.await(); true } == true && player.playerError == null
-                        if (started && original.durationSeconds > 0 && player.duration > 0L) {
-                            started = recordingDurationMatches(original, player.duration / 1000.0)
-                        }
+                        val duration = withTimeoutOrNull(SourceRecovery.PREPARE_MS) { ready.await() }
+                        started = duration != null && (original.durationSeconds <= 0 || duration <= 0 ||
+                            recordingDurationMatches(original, duration / 1000.0))
+                        if (started && duration != null && duration > 0) durationMs = duration
                     } catch (e: kotlinx.coroutines.CancellationException) { throw e }
                       catch (e: Exception) { preparationFailure = e }
                     finally { if (pass.ready === ready) pass.ready = null }
                     /* Abandoned mid-prepare: stop the orphan here. Letting it run leaves the
                        player on one track while the display names another. */
                     if (!current()) {
-                        if (player.currentMediaItem?.mediaId == pass.mediaId) player.stop()
+                        if (ActiveQueue.attempt.accepts(pass.mediaId)) resetStream(player)
                         return@withTimeoutOrNull false
                     }
                     if (started) {
-                        pendingSeekMs = null
-                        pass.hasAcceptedStream = true
+                        positionMs = pass.position
+                        playbackPhase = PlaybackPhase.Ready
                         loadedKey = original.key
                         ActiveQueue.source = PlayingSource(original.key, stream.song)
                         playingQuality = stream.source.optString("quality").ifBlank { stream.quality }
                         pass.sources.unsupported.forEach { (key, tiers) -> unsupportedTiers[key] = unsupportedTiers[key].orEmpty() + tiers }
                         lyricCalibrationMs = LyricCalibration.load(this@MainActivity, stream.song.key)
                         loadLyrics(stream.plugin, stream.song)
-                        if (player.isPlaying) listener.onIsPlayingChanged(true)
+                        if (playbackActive) onAttemptActive(true)
                         reportPlayback("正在播放：${original.title}" + when {
                             stream.song.pluginId != original.pluginId -> " · 已由${original.sourceLabel}切到${stream.song.sourceLabel}"
                             pass.sources.protectionFailure != null -> " · ${pass.sources.protectionFailure}；已回退至${audioQualityLabel(playingQuality)}"
@@ -1540,55 +1642,61 @@ class MainActivity : ComponentActivity() {
                         lifecycleScope.launch { runCatching { library.record(original) } }
                         return@withTimeoutOrNull true
                     }
-                    pendingSeekMs = null
-                    player.stop()
+                    resetStream(player)
                     pass.sources.failed(preparationFailure)
                 }
                 false
             } == true
             if (!succeeded && current()) {
-                recovery = null; loadedKey = ""; pendingSeekMs = null
-                player.stop()
-                pass.onFailure(pass.hasAcceptedStream)
-            } else if (!succeeded && controller?.currentMediaItem?.mediaId == pass.mediaId) {
-                /* The pass was abandoned (queue moved on) but its last stream is still in
-                   the player; silence it instead of leaking it into the new track's display. */
-                player.stop(); pendingSeekMs = null
-            } else if (succeeded && current() && player.playbackState == Player.STATE_ENDED) {
-                // A short stream or a seek near its end can finish before this job returns.
+                recovery = null
+                resetStream(player)
+                pass.onFailure()
+            } else if (!succeeded && ActiveQueue.attempt.accepts(pass.mediaId)) {
+                resetStream(player)
+            } else if (succeeded && current()) {
                 resolving = null
-                listener.onPlaybackStateChanged(Player.STATE_ENDED)
+                finishCurrentTrack()
             }
         }
     }
 
-    /* A source that cannot resolve one track used to leave the old song paused and the queue
-       stuck there. Skip to the next track that has not failed yet in this pass; once every
-       track has failed, stop instead of cycling through the same failures forever. */
-    internal fun advanceAfterFailure(song: Song, label: String, detail: String, autoplay: Boolean = true, restore: () -> Unit) {
-        if (!autoplay) { reportPlayback(detail); restore(); return }
-        failedSongs += song.key
-        val order = playbackIndices()
-        val current = order.indexOf(queueIndex).coerceAtLeast(0)
-        val next = (if (ActiveQueue.radio) (queueIndex + 1 until queue.size).toList() else
-            (1 until order.size).map { offset -> order[(current + offset) % order.size] })
-            .firstOrNull { index -> queue[index].key !in failedSongs }
-        if (next == null || ActiveQueue.radio && failedSongs.size >= 5) {
-            if (ActiveQueue.radio) { controller?.pause(); radioJob?.cancel(); radioRetryAt = android.os.SystemClock.elapsedRealtime() + 30_000 }
-            failedSongs.clear()
-            reportPlayback(detail)
-            restore()
+    internal fun advanceAfterFailure(song: Song, detail: String, autoplay: Boolean = true) {
+        if (!autoplay) {
+            showPlaybackFailure(song, detail)
             return
         }
-        /* queueIndex stays on the failed song until the skip fires, so the pass continues
-           from here instead of jumping back to an already-failed neighbour. */
-        reportPlayback("$label，正在尝试下一首：${song.title}")
+        failedSongs += song.key
+        val order = playbackIndices()
+        val current = order.indexOf(queueIndex)
+        val sequential = ActiveQueue.radio || playMode == PlaybackMode.SEQUENTIAL
+        val candidates = order.drop(current + 1) + if (sequential) emptyList() else order.take(current.coerceAtLeast(0))
+        val next = candidates.firstOrNull { queue[it].key !in failedSongs }
+        if (next == null || ActiveQueue.radio && failedSongs.size >= 5) {
+            if (ActiveQueue.radio) { radioJob?.cancel(); radioRetryAt = android.os.SystemClock.elapsedRealtime() + 30_000 }
+            failedSongs.clear()
+            showPlaybackFailure(song, detail)
+            return
+        }
+        playbackPhase = PlaybackPhase.Switching
+        reportPlayback("正在尝试下一首：${song.title}")
         val token = ++autoSkipToken
+        val nextKey = queue[next].key
         lifecycleScope.launch {
             delay(600)
-            /* A manual pick while we wait cancels this skip. */
-            if (token == autoSkipToken) playAt(next, openPlayer = false, autoSkip = true)
+            if (token != autoSkipToken) return@launch
+            val index = queue.indexOfFirst { it.key == nextKey }
+            if (index >= 0) playAt(index, openPlayer = false, autoSkip = true)
+            else advanceAfterFailure(song, detail, autoplay)
         }
+    }
+
+    private fun showPlaybackFailure(song: Song, detail: String) {
+        controller?.pause()
+        playing = false
+        playbackPhase = PlaybackPhase.Failed
+        playbackDetail = detail
+        if (lyricStatus == LyricStatus.Loading && lyricJob?.isActive != true) lyricStatus = LyricStatus.Empty("暂无歌词")
+        reportPlayback("播放失败：${song.title} · $detail")
     }
 
     internal fun loadLyrics(plugin: Plugin, song: Song) {
@@ -1606,16 +1714,8 @@ class MainActivity : ComponentActivity() {
             lyricActiveSource = ""
             lyricStatus = LyricStatus.Loading
             try {
-                val direct = song.data.optString("rawLrc").ifBlank { song.data.optString("lrc") }
-                val override = lyricSourceOverride
-                if (direct.isNotBlank() && override == null) {
-                    publishLyric(LyricPayload(
-                        direct,
-                        source = LyricSources.label(LyricSources.PLUGIN),
-                        sourceId = LyricSources.PLUGIN,
-                    ), token)
-                    return@launch
-                }
+                val externalSources = enabledExternalLyricSources()
+                val override = lyricSourceOverride?.takeIf { it == LyricSources.PLUGIN || it in externalSources }
                 val payload = when {
                     override == LyricSources.PLUGIN -> pluginLyric(plugin, song)
                     override != null -> when (val found = LyricSources.lookup(override, song)) {
@@ -1623,19 +1723,29 @@ class MainActivity : ComponentActivity() {
                         LyricLookup.Missing -> null
                         LyricLookup.Failed -> error("歌词源连接失败")
                     }
-                    lyricMode == LyricSourcePrefs.MODE_PLUGIN_ONLY -> pluginLyric(plugin, song)
+                    externalSources.isEmpty() -> pluginLyric(plugin, song)
                     else -> {
                         val primary = try {
-                            withTimeoutOrNull(2_000) { pluginLyric(plugin, song) }
+                            withTimeout(2_000) { pluginLyric(plugin, song) }
+                                ?.takeIf { payload ->
+                                    isInstrumentalLyric(payload.text) || withContext(Dispatchers.Default) {
+                                        payload.lines().isNotEmpty()
+                                    }
+                                }
+                                ?.let { LyricLookup.Found(it) } ?: LyricLookup.Missing
+                        } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+                            LyricLookup.Failed
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             throw e
                         } catch (_: Exception) {
-                            null
+                            LyricLookup.Failed
                         }
-                        primary?.takeIf { it.text.isNotBlank() } ?: LyricSources.fetchExternal(
-                            song, lyricLrclib, lyricKugou,
-                            lyricNetease && !(plugin.platform == MusicPlatform.NETEASE && plugin.capabilities.has("lyric")),
-                        )
+                        (primary as? LyricLookup.Found)?.payload?.takeIf { it.text.isNotBlank() }
+                            ?: when (val external = LyricSources.fetchExternal(song, externalSources)) {
+                                is LyricLookup.Found -> external.payload
+                                LyricLookup.Failed -> error("歌词源连接失败")
+                                LyricLookup.Missing -> if (primary == LyricLookup.Failed) error("插件歌词获取失败") else null
+                            }
                     }
                 }
                 if (token != lyricToken) return@launch
@@ -1651,7 +1761,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private suspend fun publishLyric(payload: LyricPayload, token: Int) {
-        val parsed = withContext(Dispatchers.Default) { Lyrics.parse(payload.text, payload.translation) }
+        val parsed = withContext(Dispatchers.Default) { payload.lines() }
         if (token != lyricToken) return
         lyrics = parsed
         lyricSourceLabel = payload.source
@@ -1659,10 +1769,13 @@ class MainActivity : ComponentActivity() {
         lyricStatus = when {
             parsed.isNotEmpty() -> LyricStatus.Ready
             payload.text.trimStart('\uFEFF', ' ', '\t', '\r', '\n').startsWith("<") -> LyricStatus.Empty("暂无可用歌词")
-            payload.text.isNotBlank() && !payload.text.trimStart().startsWith("[") -> LyricStatus.Empty(payload.text.take(3000))
+            isInstrumentalLyric(payload.text) -> LyricStatus.Empty("纯音乐 · 暂无歌词")
             else -> LyricStatus.Empty()
         }
     }
+
+    private fun isInstrumentalLyric(text: String): Boolean =
+        text.trim() in setOf("纯音乐，请欣赏", "纯音乐", "Instrumental")
 
     private suspend fun pluginLyric(plugin: Plugin, song: Song): LyricPayload? {
         val supplied = song.data.optString("rawLrc").ifBlank { song.data.optString("lrc") }
@@ -1677,7 +1790,25 @@ class MainActivity : ComponentActivity() {
             LyricSources.label(LyricSources.PLUGIN), sourceId = LyricSources.PLUGIN)
     }
 
+    internal fun enabledExternalLyricSources(): Set<String> = buildSet {
+        if (lyricLrclib) add(LyricSources.LRCLIB)
+        if (lyricKugou) add(LyricSources.KUGOU)
+        if (lyricNetease) add(LyricSources.NETEASE)
+    }
+
+    private fun refreshLyricSources() {
+        lyricProbeJob?.cancel()
+        lyricProbeKey = ""
+        lyricProbes = emptyMap()
+        if (lyricSourceOverride != LyricSources.PLUGIN && lyricSourceOverride !in enabledExternalLyricSources())
+            lyricSourceOverride = null
+        val song = playbackSong() ?: return
+        val plugin = plugins.state.value.plugins.firstOrNull { it.id == song.pluginId } ?: return
+        loadLyrics(plugin, song)
+    }
+
     internal fun selectLyricSource(source: String?) {
+        if (source != null && source != LyricSources.PLUGIN && source !in enabledExternalLyricSources()) return
         val song = playbackSong() ?: return
         val plugin = plugins.state.value.plugins.firstOrNull { it.id == song.pluginId } ?: return
         lyricSourceOverride = source
@@ -1704,6 +1835,8 @@ class MainActivity : ComponentActivity() {
     }
 
     internal fun probeLyricSources() {
+        val external = enabledExternalLyricSources()
+        if (external.isEmpty()) return
         val song = playbackSong() ?: return
         val sameSong = lyricProbeKey == song.key
         val settled = sameSong && lyricProbes.isNotEmpty() &&
@@ -1712,11 +1845,6 @@ class MainActivity : ComponentActivity() {
         lyricProbeJob?.cancel()
         lyricProbeKey = song.key
         val plugin = plugins.state.value.plugins.firstOrNull { it.id == song.pluginId }
-        val external = buildList {
-            if (lyricLrclib) add(LyricSources.LRCLIB)
-            if (lyricKugou) add(LyricSources.KUGOU)
-            if (lyricNetease) add(LyricSources.NETEASE)
-        }
         lyricProbes = (listOf(LyricSources.PLUGIN) + external).associateWith { id ->
             /* 重试只补没问到的源：已经拿到的结果留着，列表不会整体闪回「查询中」。 */
             (if (sameSong) lyricProbes[id]?.takeIf {
@@ -1857,13 +1985,12 @@ class MainActivity : ComponentActivity() {
     /* Written every 15 seconds and on the way out: a TV is usually stopped, not closed, so
        onStop is the one signal that reliably precedes the process going away. */
     internal fun saveResume() {
-        if (queue.isEmpty()) return
-        val position = recovery?.takeIf { resolving?.isActive == true }?.position
-            ?: controller?.currentPosition?.coerceAtLeast(0L) ?: positionMs
+        val position = trustedPosition()
         // Snapshot on the main thread, serialise and write off it (one writer keeps saves ordered).
         val songs = queue; val index = queueIndex; val radio = ActiveQueue.radio; val recent = ActiveQueue.radioRecent
         val order = if (playMode == PlaybackMode.SHUFFLE && !radio) ActiveQueue.order.indices else emptyList()
-        resumeStore.enqueueWrite(PlaybackResume(songs, index, position, radio, recent, order))
+        resumeStore.enqueueWrite(PlaybackResume(songs, index, position, radio, recent, order,
+            finished = playbackPhase == PlaybackPhase.Finished))
     }
 
     internal fun step(direction: Int) {
@@ -1940,11 +2067,6 @@ class MainActivity : ComponentActivity() {
                 lyricFontLevel = value
                 getSharedPreferences("appearance", MODE_PRIVATE).edit().putString("lyric_font_level", value).apply()
             }
-            "lyricMode" -> {
-                require(value in setOf(LyricSourcePrefs.MODE_AUTO, LyricSourcePrefs.MODE_PLUGIN_ONLY)) { "未知歌词来源" }
-                lyricMode = value
-                getSharedPreferences(LyricSourcePrefs.PREFS, MODE_PRIVATE).edit().putString("mode", value).apply()
-            }
             "lyricLrclib", "lyricKugou", "lyricNetease" -> {
                 val enabled = value.toBooleanStrictOrNull() ?: error("开关值无效")
                 val preference = when (key) {
@@ -1953,6 +2075,7 @@ class MainActivity : ComponentActivity() {
                     else -> { lyricNetease = enabled; "netease" }
                 }
                 getSharedPreferences(LyricSourcePrefs.PREFS, MODE_PRIVATE).edit().putBoolean(preference, enabled).apply()
+                refreshLyricSources()
             }
             "pluginWorkerLimit" -> {
                 val limit = value.toIntOrNull() ?: error("并发数无效")
@@ -1995,10 +2118,11 @@ class MainActivity : ComponentActivity() {
         lyricFontLevel = getSharedPreferences("appearance", MODE_PRIVATE).getString("lyric_font_level", "标准") ?: "标准"
         hideHeading = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("hide_heading", true)
         subLyrics = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("sub_lyrics", true)
-        lyricMode = LyricSourcePrefs.mode(this)
+        LyricSourcePrefs.migrateMode(this)
         lyricLrclib = LyricSourcePrefs.lrclib(this)
         lyricKugou = LyricSourcePrefs.kugou(this)
         lyricNetease = LyricSourcePrefs.netease(this)
+        refreshLyricSources()
         lyricCalibrationMs = playbackSong()?.let { LyricCalibration.load(this, it.key) } ?: 0L
         pluginWorkerLimit = PluginWorkers.saved(this)
         homeShelfHidden = getSharedPreferences("home", MODE_PRIVATE).getStringSet("hidden_shelves", null)?.toSet() ?: emptySet()
@@ -2117,8 +2241,7 @@ class MainActivity : ComponentActivity() {
         val qualities = if (stream != null && streamPlugin != null) {
             qualityOptions(streamPlugin, stream).filterNot { it in unsupportedTiers[stream.key].orEmpty() }
         } else emptyList()
-        val shelves = listOf("favorites" to "我的收藏", "recent" to "最近播放", "frequent" to "近四周常听") +
-            libraryState.playlists.map { it.id to it.name }
+        val shelves = tv.prism.ui.home.homeSectionOptions
 
         return PhoneRemoteSnapshot().apply {
             playback(
@@ -2148,17 +2271,7 @@ class MainActivity : ComponentActivity() {
         }.encode()
     }
 
-    internal fun togglePhonePlayback() {
-        val player = controller ?: error("播放器未连接")
-        when {
-            pauseRecoveryIfPending() -> Unit
-            player.playWhenReady -> player.pause()
-            (loadedKey.isBlank() || player.playerError != null) && queue.isNotEmpty() -> togglePlayback()
-            queue.isNotEmpty() && (player.currentMediaItem == null || player.playbackState == Player.STATE_ENDED) ->
-                playAt(queueIndex, openPlayer = false)
-            else -> player.play()
-        }
-    }
+    internal fun togglePhonePlayback() = togglePlayback()
 
     internal fun changePhoneSearchType(type: String) {
         require(!busy) { "电视正在搜索，稍后再改筛选" }
@@ -2272,7 +2385,7 @@ class MainActivity : ComponentActivity() {
                 KeyEvent.KEYCODE_MEDIA_NEXT -> { step(1); return true }
                 KeyEvent.KEYCODE_MEDIA_PREVIOUS -> { step(-1); return true }
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { togglePlayback(); return true }
-                KeyEvent.KEYCODE_MEDIA_PAUSE -> { if (pauseRecoveryIfPending()) return true }
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> { if (!pauseRecoveryIfPending()) controller?.pause(); return true }
                 KeyEvent.KEYCODE_MEDIA_PLAY -> { resumePlayback(); return true }
                 KeyEvent.KEYCODE_SEARCH -> { page = "search"; return true }
                 /* Remotes have a MENU key that long-press does not cover. The queue is the
@@ -2341,7 +2454,7 @@ class MainActivity : ComponentActivity() {
         playerScreenOff = false
         screenOffSettled = true
         wakeKeys.clear()
-        saveResume()
+        if (::resumeStore.isInitialized && !exitingAfterResumeSave) saveResume()
         closePhoneSessions()
         super.onStop()
     }
@@ -2362,8 +2475,8 @@ internal fun clock(ms: Long) = "%d:%02d".format(ms / 60_000, (ms / 1000) % 60)
 internal fun directorySize(dir: java.io.File): Long =
     dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
 
-internal fun clearDirectory(dir: java.io.File) {
-    dir.listFiles()?.forEach { it.deleteRecursively() }
+internal fun clearDirectory(dir: java.io.File, except: java.io.File? = null) {
+    dir.listFiles()?.forEach { if (it != except) it.deleteRecursively() }
 }
 
 

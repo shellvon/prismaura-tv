@@ -41,7 +41,6 @@ internal fun MainActivity.TrackActionsMenu(
     val albumSearch = activePlugins.any { supportsSubjectSearch(it, "album") }
     PrismActionMenu(song.title, song.artist, song, onDismiss = onDismiss, notice = menuNotice, replacement = picker, actions = buildList {
             add(PrismMenuAction("下一首播放", "queueNext") { onDismiss(); enqueueSong(song, next = true) })
-            add(PrismMenuAction("添加到播放队列", "queueAdd") { onDismiss(); enqueueSong(song, next = false) })
             add(PrismMenuAction(if (favoritePending) "正在保存…" else if (saved) "取消收藏" else "收藏歌曲", if (saved) "heartFilled" else "heart", active = saved, keepOpen = true) {
                 if (!favoritePending) {
                     favoritePending = true; menuNotice = "正在保存…"
@@ -53,6 +52,7 @@ internal fun MainActivity.TrackActionsMenu(
                 }
             })
             add(PrismMenuAction("添加到歌单", "list", navigates = true, keepOpen = true) { pickingPlaylist = true })
+            add(PrismMenuAction("添加到播放队列", "queueAdd") { onDismiss(); enqueueSong(song, next = false) })
             if (openOtherSources != null) add(PrismMenuAction("其他音源", "layers", section = PrismMenuSection.RELATED) {
                 openOtherSources()
             })
@@ -171,7 +171,7 @@ internal fun MainActivity.CollectionActionsMenu(
             }
         }, confirmIcon = if (target.playlistId != null) "trash" else "heart")
     else PrismActionMenu(target.title, "本机 · ${target.songs.size} 首", onDismiss = onDismiss,
-        replacement = renamePanel, actions = buildList {
+        replacement = renamePanel, onBackFromReplacement = { renaming = false }, actions = buildList {
         add(PrismMenuAction("播放全部", "play", enabled = target.songs.isNotEmpty(), description = if (target.songs.isEmpty()) "这个歌单还没有歌曲" else "") {
             onDismiss(); playCollection(target.songs)
         })
@@ -179,7 +179,7 @@ internal fun MainActivity.CollectionActionsMenu(
             onDismiss(); playCollection(target.songs, shuffle = true)
         })
         if (target.playlistId != null) {
-            add(PrismMenuAction("重命名歌单", "keyboard", navigates = true, section = PrismMenuSection.MANAGEMENT) {
+            add(PrismMenuAction("重命名歌单", "keyboard", navigates = true, keepOpen = true, section = PrismMenuSection.MANAGEMENT) {
                 renaming = true
             })
         }

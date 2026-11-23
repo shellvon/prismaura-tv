@@ -127,7 +127,11 @@ internal fun QueueDialog(
                         Column(Modifier.weight(1f)) {
                             Text("接下来播放", color = c.foreground, fontSize = 19.sp, fontWeight = FontWeight.Medium)
                             Text(following?.let { "下一曲 · ${it.title}" }
-                                ?: if (radio) "等待电台续播" else "队列为空",
+                                ?: when {
+                                    radio -> "等待电台续播"
+                                    queue.isEmpty() -> "队列为空"
+                                    else -> "已到队列末尾"
+                                },
                                 color = c.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         PrismAction("关闭", closeQueue, Modifier.focusRequester(queueRootFocus).focusAnchor(queueCloseFocus)

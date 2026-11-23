@@ -6,6 +6,10 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Timeline
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.session.MediaSession.ControllerInfo
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -77,7 +81,7 @@ class PlaybackService : MediaSessionService() {
             .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
             .setHandleAudioBecomingNoisy(true).build()
         val callback = object : MediaSession.Callback {
-            override fun onAddMediaItems(session: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: List<MediaItem>): ListenableFuture<List<MediaItem>> {
+            override fun onAddMediaItems(session: MediaSession, controller: ControllerInfo, mediaItems: List<MediaItem>): ListenableFuture<List<MediaItem>> {
                 val configured = mediaItems.map { item ->
                     val extras = item.mediaMetadata.extras ?: return@map item
                     val bundle = extras.getBundle("headers")
@@ -96,6 +100,48 @@ class PlaybackService : MediaSessionService() {
             }
         }
         session = MediaSession.Builder(this, player).setCallback(callback).build()
+        player.addAnalyticsListener(object : AnalyticsListener {
+            private val window = Timeline.Window()
+
+            private fun send(time: AnalyticsListener.EventTime, data: Bundle) {
+                // Use the timeline that produced the event, before crossing the process boundary.
+                if (time.windowIndex !in 0 until time.timeline.windowCount) return
+                val id = time.timeline.getWindow(time.windowIndex, window).mediaItem.mediaId
+                data.putString("mediaId", id)
+                session?.let { session ->
+                    session.connectedControllers.filter { it.uid == applicationInfo.uid }.forEach {
+                        session.sendCustomCommand(it, playbackAttemptCommand, data)
+                    }
+                }
+            }
+
+            override fun onPlaybackStateChanged(eventTime: AnalyticsListener.EventTime, state: Int) {
+                send(eventTime, Bundle().apply {
+                    putInt("state", state)
+                    putLong("duration", player.duration)
+                })
+            }
+
+            override fun onIsPlayingChanged(eventTime: AnalyticsListener.EventTime, isPlaying: Boolean) {
+                send(eventTime, Bundle().apply { putBoolean("active", isPlaying) })
+            }
+
+            override fun onPlayWhenReadyChanged(eventTime: AnalyticsListener.EventTime, playWhenReady: Boolean, reason: Int) {
+                if (!playWhenReady) send(eventTime, Bundle().apply { putBoolean("pause", true) })
+            }
+
+            override fun onPlayerError(eventTime: AnalyticsListener.EventTime, error: PlaybackException) {
+                val causes = generateSequence(error as Throwable) { it.cause }.take(8).toList()
+                send(eventTime, Bundle().apply {
+                    putBundle("error", error.toBundle())
+                    putString("httpCode", causes.firstNotNullOfOrNull {
+                        (it as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)?.responseCode?.toString()
+                            ?: Regex("Response code: (\\d{3})").find(it.message.orEmpty())?.groupValues?.get(1)
+                    })
+                    putString("protection", causes.filterIsInstance<QmcDecryptionException>().firstOrNull()?.message)
+                })
+            }
+        })
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session

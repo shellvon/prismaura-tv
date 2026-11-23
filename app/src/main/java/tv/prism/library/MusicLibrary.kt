@@ -3,6 +3,9 @@ package tv.prism.library
 import android.content.Context
 import android.util.AtomicFile
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import android.content.SharedPreferences
+import java.io.FileNotFoundException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -94,26 +97,26 @@ class MusicLibrary(context: Context) {
     val state: StateFlow<LibraryState> = mutable
 
     private fun read(): LibraryState = try {
-        if (!file.baseFile.exists()) LibraryState() else parse(JSONObject(file.openRead().bufferedReader().use { it.readText() }))
+        readBackupFile(file)?.let { parse(JSONObject(it.toString(Charsets.UTF_8))) } ?: LibraryState()
     } catch (e: Exception) { LibraryState(error = "曲库读取失败，已停止写入：${e.message}") }
 
     private fun parse(root: JSONObject): LibraryState {
-        val lists = root.optJSONArray("playlists") ?: JSONArray()
-        val subjects = root.optJSONArray("subjects") ?: JSONArray()
-        val history = root.optJSONArray("listens") ?: JSONArray()
+        val lists = root.backupArray("playlists")
+        val subjects = root.backupArray("subjects")
+        val history = root.backupArray("listens")
         return LibraryState(
-            songs(root.optJSONArray("favorites")), songs(root.optJSONArray("recent")),
+            songs(root.backupArray("favorites")), songs(root.backupArray("recent")),
             (0 until lists.length()).map { i ->
                 val item = lists.getJSONObject(i)
-                MusicPlaylist(item.getString("id"), item.getString("name"), songs(item.optJSONArray("songs")), item.optString("platform", "custom"))
+                MusicPlaylist(item.getString("id"), item.getString("name"), songs(item.backupArray("songs")), item.optString("platform", "custom"))
             },
             (0 until subjects.length()).map { i ->
                 val item = subjects.getJSONObject(i)
                 SavedSubject(item.getString("pluginId"), item.getString("kind"), item.getJSONObject("data"), item.optString("sourceName"), primaryKeys(item))
             },
-            listens = (0 until history.length()).mapNotNull { index ->
+            listens = (0 until history.length()).map { index ->
                 val entry = history.getJSONObject(index)
-                val days = entry.optJSONObject("days") ?: return@mapNotNull null
+                val days = entry.getJSONObject("days")
                 ListenedTrack(readSong(entry), days.keys().asSequence().associate { it.toLong() to days.getInt(it) },
                     entry.getLong("lastPlayed"))
             },
@@ -154,17 +157,16 @@ class MusicLibrary(context: Context) {
 
     /* 备份导出/恢复共用磁盘上的原始 JSON：插件的自定义字段必须原样保留，
        重新拼装一次只会丢掉应用不认识的东西。 */
-    suspend fun backupJson(): JSONObject = withContext(Dispatchers.IO) {
-        if (!file.baseFile.exists()) JSONObject() else JSONObject(file.baseFile.readText())
+    suspend fun backupJson(): JSONObject = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            readBackupFile(file)?.let { JSONObject(it.toString(Charsets.UTF_8)) } ?: JSONObject()
+        }
     }
 
-    suspend fun restoreBackup(root: JSONObject) = mutex.withLock {
-        val next = parse(root)
-        withContext(Dispatchers.IO) {
-            val stream = file.startWrite()
-            try { stream.write(root.toString().toByteArray(Charsets.UTF_8)); file.finishWrite(stream) }
-            catch (e: Exception) { file.failWrite(stream); throw e }
-        }
+    internal fun parseBackup(root: JSONObject): LibraryState = parse(root)
+
+    internal suspend fun restoreBackup(root: JSONObject, next: LibraryState, afterWrite: suspend () -> Unit) = mutex.withLock {
+        replaceBackupFile(file, root, afterWrite)
         mutable.value = next
     }
 
@@ -276,25 +278,96 @@ object LibraryBackup {
     suspend fun apply(context: Context, library: MusicLibrary, plugins: Plugins, root: JSONObject) {
         require(root.optString("app") == "PrismAura") { "这不是 PrismAura 的备份文件" }
         require(root.optInt("format", 0) in 1..1) { "备份格式版本不受支持" }
-        library.restoreBackup(root.getJSONObject("library"))
-        plugins.restoreBackup(root.optJSONObject("plugins") ?: JSONObject())
-        val preferences = root.optJSONObject("preferences") ?: return
-        preferences.keys().forEach { name ->
-            if (name !in prefFiles) return@forEach
-            val values = preferences.optJSONObject(name) ?: return@forEach
-            val edit = context.getSharedPreferences(name, Context.MODE_PRIVATE).edit().clear()
-            values.keys().forEach { key ->
-                when (val value = values.opt(key)) {
-                    is Boolean -> edit.putBoolean(key, value)
-                    is Int -> edit.putInt(key, value)
-                    is Long -> edit.putLong(key, value)
-                    is Double -> edit.putFloat(key, value.toFloat())
-                    is String -> edit.putString(key, value)
-                    is JSONArray -> edit.putStringSet(key, (0 until value.length()).map { value.optString(it) }.toSet())
-                    else -> Unit
+        val libraryRoot = root.getJSONObject("library")
+        val pluginRoot = root.getJSONObject("plugins")
+        val nextLibrary = library.parseBackup(libraryRoot)
+        val nextPlugins = plugins.parseBackup(pluginRoot)
+        val preferences = root.backupObject("preferences")
+        val changes = prefFiles.mapNotNull { name ->
+            if (!preferences.has(name)) return@mapNotNull null
+            val values = preferences.getJSONObject(name)
+            val entries = values.keys().asSequence().associateWith { key ->
+                when (val value = values.get(key)) {
+                    is Boolean, is Int, is Long, is String -> value
+                    is Double -> value.toFloat()
+                    is JSONArray -> (0 until value.length()).map { i ->
+                        requireNotNull(value.opt(i) as? String) { "设置格式无效：$name/$key" }
+                    }.toSet()
+                    else -> error("设置格式无效：$name/$key")
                 }
             }
-            check(edit.commit()) { "无法写入设置" }
+            context.getSharedPreferences(name, Context.MODE_PRIVATE) to entries
         }
+        withContext(Dispatchers.IO + NonCancellable) {
+            library.restoreBackup(libraryRoot, nextLibrary) {
+                plugins.restoreBackup(pluginRoot, nextPlugins) {
+                    val previous = mutableListOf<Pair<SharedPreferences, Map<String, *>>>()
+                    try {
+                        for ((prefs, entries) in changes) {
+                            previous += prefs to prefs.all
+                            writePreferences(prefs, entries)
+                        }
+                    } catch (failure: Exception) {
+                        for ((prefs, entries) in previous.asReversed()) {
+                            runCatching { writePreferences(prefs, entries) }.exceptionOrNull()?.let { failure.addSuppressed(it) }
+                        }
+                        throw failure
+                    }
+                }
+            }
+        }
+    }
+
+    private fun writePreferences(prefs: SharedPreferences, entries: Map<String, *>) {
+        val edit = prefs.edit().clear()
+        entries.forEach { (key, value) ->
+            when (value) {
+                is Boolean -> edit.putBoolean(key, value)
+                is Int -> edit.putInt(key, value)
+                is Long -> edit.putLong(key, value)
+                is Float -> edit.putFloat(key, value)
+                is String -> edit.putString(key, value)
+                is Set<*> -> edit.putStringSet(key, value.filterIsInstance<String>().toSet())
+            }
+        }
+        check(edit.commit()) { "无法写入设置" }
+    }
+}
+
+internal fun JSONObject.backupArray(key: String): JSONArray = if (has(key)) getJSONArray(key) else JSONArray()
+internal fun JSONObject.backupObject(key: String): JSONObject = if (has(key)) getJSONObject(key) else JSONObject()
+
+internal fun readBackupFile(file: AtomicFile): ByteArray? = try {
+    file.openRead().use { it.readBytes() }
+} catch (e: FileNotFoundException) {
+    if (file.baseFile.exists() || File(file.baseFile.path + ".bak").exists()) throw e
+    null
+}
+
+internal suspend fun replaceBackupFile(file: AtomicFile, root: JSONObject, afterWrite: suspend () -> Unit) {
+    val previous = readBackupFile(file)
+    fun write(bytes: ByteArray) {
+        val stream = file.startWrite()
+        try {
+            stream.write(bytes)
+            file.finishWrite(stream)
+        } catch (e: Exception) {
+            file.failWrite(stream)
+            throw e
+        }
+        // AtomicFile reports some rename failures through the log.
+        check(readBackupFile(file)?.contentEquals(bytes) == true) { "无法写入备份数据" }
+    }
+    try {
+        write(root.toString().toByteArray(Charsets.UTF_8))
+        afterWrite()
+    } catch (failure: Exception) {
+        runCatching {
+            if (previous != null) write(previous) else {
+                file.delete()
+                check(readBackupFile(file) == null) { "无法撤销备份写入" }
+            }
+        }.exceptionOrNull()?.let { failure.addSuppressed(it) }
+        throw failure
     }
 }

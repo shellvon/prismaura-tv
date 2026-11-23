@@ -29,7 +29,7 @@
 
 - 📺 **用遥控器，舒服地选歌**：方向键浏览，按确定打开或播放；选中歌曲、歌手、专辑或歌单后，长按确定键或按菜单键，查看对应操作。
 - 📱 **告别遥控器逐字输入**：同一局域网扫码，用手机搜索、管理音源与播放队列，调整播放、歌词和主题偏好，还能备份与恢复，无需另装手机 App。
-- 🎤 **歌词跟着音乐走**：插件提供歌词时显示原文、翻译或注音；返回词级时间戳时逐字高亮，否则按句同步滚动。插件没有歌词时，可由 LRCLIB、酷狗、网易云并发兜底，并在设置或播放页切换来源。播放页可调字号、歌词显示和时间校准，也能进入沉浸模式。
+- 🎤 **歌词跟着音乐走**：插件提供歌词时显示原文、翻译或注音；返回词级时间戳时逐字高亮，否则按句同步滚动。插件没有歌词时，可由 [LRCLIB](https://lrclib.net/)、[酷狗](https://www.kugou.com/)、[网易云](https://music.163.com/) 并发兜底；默认关闭，可在设置「补充词库」开启，播放页也可切换来源。播放页可调字号、歌词显示和时间校准，也能进入沉浸模式。
 - 💡 **熄屏播放**：纯黑画面继续播放，音量和媒体键照常操作，按确定或返回恢复画面；不保证关闭电视背光。
 - 🎨 **三套外观主题**：极夜暖金、晨光白瓷、静谧黑白；只改变界面配色，不会滤镜化封面图片。
 - 📻 **不想选歌，就交给极光电台**：混播收藏、最近播放和音源提供的推荐／榜单曲目，自动续曲，在熟悉的歌里穿插新发现。
@@ -198,5 +198,5 @@ APK：`app/build/outputs/apk/debug/app-debug.apk`。release 沿用已有 APK 的
 
 ## 许可与致谢
 
-客户端采用 [MIT](LICENSE)。感谢 [MusicFree](https://github.com/maotoumao/MusicFree) 的插件协议与生态，以及 Compose for TV、Media3 等开源项目。第三方依赖保留各自的版权与许可，参见 [依赖声明](app/src/main/assets/THIRD_PARTY_NOTICES.txt)。
+客户端采用 [MIT](LICENSE)。感谢 [MusicFree](https://github.com/maotoumao/MusicFree) 的插件协议与生态，以及 Compose for TV、Media3 等开源项目；歌词兜底能力来自 [LRCLIB](https://lrclib.net/)、[酷狗音乐](https://www.kugou.com/)、[网易云音乐](https://music.163.com/) 的公开接口。第三方依赖保留各自的版权与许可，参见 [依赖声明](app/src/main/assets/THIRD_PARTY_NOTICES.txt)。
 

@@ -205,8 +205,7 @@ class CoreTest {
                 search.setPage(SearchResultsPage(songs = (0 until 15).map {
                     Song("fixture", JSONObject().put("id", it).put("title", "验证歌曲 $it"))
                 }))
-                MainActivity::class.java.getDeclaredMethod("setFocusSearchResults", Boolean::class.javaPrimitiveType!!)
-                    .apply { isAccessible = true }.invoke(activity, true)
+                activity.focusSearchResults = true
             }
             focused("验证歌曲 0")
             for (i in 1..14) key(android.view.KeyEvent.KEYCODE_DPAD_DOWN, "验证歌曲 $i")
@@ -545,18 +544,26 @@ class CoreTest {
     @Test fun bilingualPlayerShowsTranslationAndPronunciationBelowTheOriginal() = runBlocking {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         context.stopService(Intent(context, PlaybackService::class.java))
-        val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
         try {
             val lyrics = Lyrics.parse("[00:00.00]<00:00.00>暗<00:00.50>涌<00:02.00>\n" +
                 "[00:00.00]Undercurrent\n[00:00.00]am cung")
+            withTimeout(10_000) {
+                while (activity.controller == null) delay(50)
+            }
             instrumentation.runOnMainSync {
-                fun set(name: String, type: Class<*>, value: Any) {
-                    MainActivity::class.java.getDeclaredMethod(name, type).apply { isAccessible = true }.invoke(activity, value)
-                }
-                set("setTheme", String::class.java, "mono")
-                set("setLyrics", List::class.java, lyrics)
-                set("setPositionMs", Long::class.javaPrimitiveType!!, 0L)
-                set("setPlayerOpen", Boolean::class.javaPrimitiveType!!, true)
+                activity.resumePending = -1
+                activity.resolving?.cancel()
+                activity.lyricJob?.cancel()
+                activity.lyricToken++
+                activity.resetStream(activity.controller)
+                activity.queue = listOf(Song("fixture", JSONObject().put("id", "bilingual").put("title", "歌词验证")))
+                activity.queueIndex = 0
+                activity.theme = "mono"
+                activity.lyrics = lyrics
+                activity.lyricStatus = tv.prism.lyrics.LyricStatus.Ready
+                activity.positionMs = 0L
+                activity.playerOpen = true
             }
             withTimeout(5000) {
                 while (true) {
@@ -582,7 +589,14 @@ class CoreTest {
                     delay(50)
                 }
             }
-        } finally { instrumentation.runOnMainSync { activity.finish() } }
+        } finally {
+            instrumentation.runOnMainSync {
+                activity.exitingAfterResumeSave = true
+                activity.queue = emptyList()
+                activity.queueIndex = -1
+                activity.finish()
+            }
+        }
     }
 
     @Test fun wordTimedLyricsKeepEnglishSpacesAndAbsoluteTimes() {
@@ -973,6 +987,80 @@ class CoreTest {
         }
     }
 
+    @Test fun externalLyricsRequireMatchingSongAndRecording() {
+        val song = Song("fixture", JSONObject().put("id", "1").put("title", "Track")
+            .put("artist", "Alice / Bob").put("album", "Album").put("duration", 180))
+        fun score(title: String = "Track", artist: String = "Bob & Alice", album: String = "Album", duration: Double = 180.0) =
+            tv.prism.lyrics.LyricSources.matchScore(title, artist, album, duration, song, timed = true)
+        assertNotNull(score())
+        assertNotNull(score(album = ""))
+        assertNull(score(title = "Track (Live)"))
+        assertNull(score(artist = "Alice"))
+        assertNull(score(album = "Remixes"))
+        assertNull(score(duration = 195.0))
+        assertNull(score(album = "", duration = 0.0))
+    }
+
+    @Test fun repeatOneSeeksToStartWithoutReplacingTheMediaItem() {
+        val file = java.io.File.createTempFile("repeat-one", ".wav", context.cacheDir)
+        file.writeBytes(wave())
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val activity = instrumentation.startActivitySync(
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        ) as MainActivity
+        try {
+            var controller: MediaController? = null
+            val deadline = android.os.SystemClock.elapsedRealtime() + 10_000
+            while (controller == null && android.os.SystemClock.elapsedRealtime() < deadline) {
+                instrumentation.runOnMainSync { controller = activity.controller }
+                if (controller == null) Thread.sleep(50)
+            }
+            val player = requireNotNull(controller)
+            val audio = MediaItem.fromUri(android.net.Uri.fromFile(file))
+            val loops = CountDownLatch(2)
+            instrumentation.runOnMainSync {
+                activity.resumePending = -1
+                activity.resolving?.cancel()
+                activity.resetStream(player)
+                activity.playbackPhase = tv.prism.playback.PlaybackPhase.Buffering
+                activity.queue = listOf(Song("fixture", JSONObject().put("id", "repeat")))
+                activity.queueIndex = 0
+                tv.prism.playback.ActiveQueue.radio = false
+                activity.playMode = tv.prism.playback.PlaybackMode.REPEAT_ONE
+                val item = tv.prism.playback.ActiveQueue.attempt.begin(audio)
+                player.addListener(object : Player.Listener {
+                    override fun onPositionDiscontinuity(
+                        oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int,
+                    ) {
+                        if (reason == Player.DISCONTINUITY_REASON_SEEK &&
+                            newPosition.positionMs == 0L && newPosition.mediaItem?.mediaId == item.mediaId
+                        ) loops.countDown()
+                    }
+                })
+                player.setMediaItem(item)
+                player.prepare()
+                player.play()
+            }
+            val replayed = loops.await(15, TimeUnit.SECONDS)
+            instrumentation.runOnMainSync {
+                assertTrue(
+                    "Expected two replays. Remaining: ${loops.count}, phase: ${activity.playbackPhase}, " +
+                        "state: ${player.playbackState}, position: ${player.currentPosition}, seekable: ${player.isCurrentMediaItemSeekable}",
+                    replayed,
+                )
+            }
+        } finally {
+            instrumentation.runOnMainSync {
+                activity.exitingAfterResumeSave = true
+                activity.resetStream(activity.controller)
+                activity.queue = emptyList()
+                activity.queueIndex = -1
+                activity.finish()
+            }
+            file.delete()
+        }
+    }
+
     @Test fun playerAcceptsAudioAndForwardsPluginHeaders() {
         val server = MockWebServer(); server.start()
         try {
@@ -1025,7 +1113,14 @@ class CoreTest {
             // Injected BACK events carry no FLAG_SYSTEM, so Compose's key flow consumes the down
             // event and the platform never reaches the activity's back callback. Drive that
             // callback directly to cover the app's own back handling.
-            instrumentation.runOnMainSync { @Suppress("DEPRECATION") activity.onBackPressed() }
+            instrumentation.runOnMainSync {
+                @Suppress("DEPRECATION")
+                activity.onBackPressed()
+                if (!activity.isFinishing) {
+                    @Suppress("DEPRECATION")
+                    activity.onBackPressed()
+                }
+            }
             assertTrue("退出首页后播放服务未停止", stopped.await(10, TimeUnit.SECONDS))
             instrumentation.runOnMainSync { MediaController.releaseFuture(future); if (!activity.isFinishing) activity.finish() }
         } finally { server.shutdown() }
@@ -1053,6 +1148,43 @@ class CoreTest {
         assertEquals(12345L, snapshot.position)
         assertTrue(snapshot.radio)
         assertEquals(listOf("recent-track"), snapshot.radioRecent)
+    }
+
+    @Test fun resumeRemapsInvalidEntriesAndClearsAnEmptyQueue() {
+        val storage = isolatedContext()
+        val file = File(storage.filesDir, "playback-resume.json")
+        fun entry(id: String) = JSONObject().put("pluginId", "fixture").put("data", JSONObject().put("id", id))
+        val root = JSONObject().put("queue", JSONArray().put(entry("a")).put("bad").put(entry("b")).put(entry("c")))
+            .put("index", 2).put("position", 90_000).put("shuffleOrder", JSONArray(listOf(2, 1, 3, 0)))
+        val resume = ResumeStore(storage)
+        file.writeText(root.toString())
+        val kept = resume.read()!!
+        assertEquals("fixture:b", kept.songs[kept.index].key)
+        assertEquals(90_000L, kept.position)
+        assertEquals(listOf(1, 2, 0), kept.shuffleOrder)
+        file.writeText(root.put("index", 1).toString())
+        val moved = resume.read()!!
+        assertEquals("fixture:b", moved.songs[moved.index].key)
+        assertEquals(0L, moved.position)
+        resume.write(emptyList(), -1, 0)
+        assertNull(resume.read())
+        assertFalse(file.exists())
+    }
+
+    @Test fun libraryRecoversLegacyBackupAndKeepsUnreadableFile() = runBlocking {
+        val storage = isolatedContext()
+        val library = MusicLibrary(storage)
+        library.create("要保留的歌单")
+        val file = File(storage.filesDir, "music-library.json")
+        assertTrue(file.renameTo(File(storage.filesDir, "music-library.json.bak")))
+        val recovered = MusicLibrary(storage)
+        assertEquals("要保留的歌单", recovered.state.value.playlists.single().name)
+        val broken = """{"playlists":"corrupt"}"""
+        file.writeText(broken)
+        val unreadable = MusicLibrary(storage)
+        assertNotNull(unreadable.state.value.error)
+        assertTrue(runCatching { unreadable.create("不应写入") }.isFailure)
+        assertEquals(broken, file.readText())
     }
 
     @Test fun pluginUpdatesFollowSrcUrlAndRejectVersionDowngrades() = runBlocking {

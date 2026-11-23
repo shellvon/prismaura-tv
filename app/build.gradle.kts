@@ -95,6 +95,7 @@ tasks.register("prepareReleaseAssets") {
 }
 
 dependencies {
+    implementation("org.yaml:snakeyaml:2.5")
     implementation(platform("androidx.compose:compose-bom:2026.09.00"))
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.compose.foundation:foundation")
