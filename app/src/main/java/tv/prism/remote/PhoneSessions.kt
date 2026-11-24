@@ -70,7 +70,7 @@ internal class PhoneSessions(
 
     /* The remote panel is meant to stay open while someone browses the TV. It lives half an
        hour; hiding the QR only hides the dialog. */
-    internal fun openRemote(snapshot: () -> String, command: (String) -> String) {
+    internal fun openRemote(snapshot: () -> String, command: suspend (String) -> String) {
         closeSession(true)
         try {
             remoteSession = PhoneInput(context, snapshot = snapshot, command = command)

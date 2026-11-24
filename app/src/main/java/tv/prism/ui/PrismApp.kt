@@ -68,7 +68,6 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancelChildren
@@ -400,7 +399,7 @@ internal fun MainActivity.PrismApp() {
                         page = destination
                         playerOpen = false
                     },
-                    backup = { runBlocking { LibraryBackup.build(this@PrismApp, library, plugins) }.toString() },
+                    backup = { withContext(Dispatchers.IO) { LibraryBackup.build(this@PrismApp, library, plugins).toString() } },
                     restore = ::restorePhoneBackup,
                 ),
             )

@@ -4,6 +4,11 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import org.json.JSONObject
@@ -40,7 +45,7 @@ class PhoneInput(
     private val context: Context,
     private val fields: List<Pair<String, String>> = emptyList(),
     private val snapshot: (() -> String)? = null,
-    private val command: ((String) -> String)? = null,
+    private val command: (suspend (String) -> String)? = null,
     private val initialValues: Map<String, String> = emptyMap(),
     private val formTitle: String = "填写配置",
     private val formMessage: String = "留空的配置项不修改。填写后回到电视确认并保存。",
@@ -168,7 +173,15 @@ class PhoneInput(
                     /* Commands are tiny; the large case is the backup restore upload. */
                     require(length in 1..(4 * 1024 * 1024)) { "请求过大" }
                     val payload = body(length)
-                    val result = onMain { command!!.invoke(payload) }
+                    // Only the HTTP worker waits; commands may suspend for backup IO.
+                    val result = runBlocking {
+                        withTimeout(30_000) {
+                            withContext(Dispatchers.Main) {
+                                check(!this@PhoneInput.socket.isClosed) { "会话已结束" }
+                                command!!.invoke(payload)
+                            }
+                        }
+                    }
                     reply(client, 200, "application/json; charset=utf-8", result)
                 }
                 request[0] == "POST" && !isState -> {
@@ -275,21 +288,23 @@ internal class PhoneRemoteCommands(
         val homeShelf: (id: String, visible: Boolean) -> Unit,
         val showPlayer: (Boolean) -> Unit,
         val page: (String) -> Unit,
-        val backup: () -> String,
+        val backup: suspend () -> String,
         val restore: (String) -> Unit,
     )
 
-    fun execute(raw: String): String = try {
+    suspend fun execute(raw: String): String = try {
         val request = JSONObject(raw)
         check(!isRestoring()) { "正在恢复备份，请稍候" }
         val type = request.optString("type")
         val value = request.optString("value").trim()
         dispatch(type, value)
+    } catch (error: CancellationException) {
+        throw error
     } catch (error: Exception) {
         JSONObject().put("ok", false).put("error", error.message ?: "操作失败").toString()
     }
 
-    private fun dispatch(type: String, value: String): String {
+    private suspend fun dispatch(type: String, value: String): String {
         when (type) {
             "playPause" -> playback.toggle()
             "next" -> playback.step(1)
