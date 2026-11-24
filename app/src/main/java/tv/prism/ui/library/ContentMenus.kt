@@ -26,6 +26,7 @@ internal fun MainActivity.TrackActionsMenu(
     onDismiss: () -> Unit,
 ) {
     val song = target.song
+    val canEnqueue = target.list != "player" && song.key != queue.getOrNull(queueIndex)?.key
     var pickingPlaylist by remember(song.key) { mutableStateOf(false) }
     val picker: (@Composable () -> Unit)? = if (pickingPlaylist) {
         { PlaylistPickerPanel(song, libraryState, onDismiss) }
@@ -40,7 +41,7 @@ internal fun MainActivity.TrackActionsMenu(
        music-only source returns nothing, so fall back to a song search. */
     val albumSearch = activePlugins.any { supportsSubjectSearch(it, "album") }
     PrismActionMenu(song.title, song.artist, song, onDismiss = onDismiss, notice = menuNotice, replacement = picker, actions = buildList {
-            add(PrismMenuAction("下一首播放", "queueNext") { onDismiss(); enqueueSong(song, next = true) })
+            if (canEnqueue) add(PrismMenuAction("下一首播放", "queueNext") { onDismiss(); enqueueSong(song, next = true) })
             add(PrismMenuAction(if (favoritePending) "正在保存…" else if (saved) "取消收藏" else "收藏歌曲", if (saved) "heartFilled" else "heart", active = saved, keepOpen = true) {
                 if (!favoritePending) {
                     favoritePending = true; menuNotice = "正在保存…"
@@ -52,7 +53,7 @@ internal fun MainActivity.TrackActionsMenu(
                 }
             })
             add(PrismMenuAction("添加到歌单", "list", navigates = true, keepOpen = true) { pickingPlaylist = true })
-            add(PrismMenuAction("添加到播放队列", "queueAdd") { onDismiss(); enqueueSong(song, next = false) })
+            if (canEnqueue) add(PrismMenuAction("添加到播放队列", "queueAdd") { onDismiss(); enqueueSong(song, next = false) })
             if (openOtherSources != null) add(PrismMenuAction("其他音源", "layers", section = PrismMenuSection.RELATED) {
                 openOtherSources()
             })
@@ -72,7 +73,7 @@ internal fun MainActivity.TrackActionsMenu(
                 onDismiss()
                 lifecycleScope.launch { try { library.removeRecent(song); status = "已删除播放记录" } catch (e: Exception) { status = e.message ?: "删除失败" } }
             })
-            if (target.list == "queue") add(PrismMenuAction("移出播放队列", "trash", section = PrismMenuSection.MANAGEMENT) {
+            if (target.list in setOf("player", "queue") && queue.any { it.key == song.key }) add(PrismMenuAction("移出播放队列", "trash", section = PrismMenuSection.MANAGEMENT) {
                 onDismiss()
                 removeQueueItem(queue.indexOfFirst { it.key == song.key })
                 status = "已移出播放队列：${song.title}"

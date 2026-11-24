@@ -50,7 +50,8 @@ private class PrismMediaSourceFactory(private val context: Context) : MediaSourc
         val upstream = DefaultDataSource.Factory(context, http)
         val cipher = config?.cipher
         val dataSources = if (cipher == null) upstream else DataSource.Factory { QmcDataSource(upstream.createDataSource(), cipher) }
-        val factory = DefaultMediaSourceFactory(context).setDataSourceFactory(dataSources)
+        val extractors = androidx.media3.extractor.DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true)
+        val factory = DefaultMediaSourceFactory(dataSources, extractors)
         val clearKey = config?.clearKey
         if (clearKey == null) drm?.let(factory::setDrmSessionManagerProvider)
         else factory.setDrmSessionManagerProvider { clearKeyManager(clearKey) }

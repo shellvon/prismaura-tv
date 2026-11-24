@@ -40,15 +40,6 @@ internal data class LyricProbe(
 
 object LyricSourcePrefs {
     const val PREFS = "lyrics"
-    fun migrateMode(context: Context) {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val mode = prefs.getString("mode", null) ?: return
-        val editor = prefs.edit().remove("mode")
-        if (mode == "pluginOnly") {
-            for (source in listOf("lrclib", "kugou", "netease")) editor.putBoolean(source, false)
-        }
-        editor.apply()
-    }
 
     fun lrclib(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("lrclib", false)

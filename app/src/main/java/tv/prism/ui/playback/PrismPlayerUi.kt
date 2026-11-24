@@ -416,6 +416,7 @@ internal fun PrismPlayer(
     playing: Boolean, playMode: PlaybackMode, favorite: Boolean, quality: String, playingQuality: String,
     queueIndex: Int, queueSize: Int, phase: PlaybackPhase, playbackDetail: String,
     streamFormat: String,
+    streamSeekable: Boolean,
     hasMv: Boolean,
     mvResolving: Boolean = false,
     mvError: String = "",
@@ -431,6 +432,7 @@ internal fun PrismPlayer(
     radioActive: Boolean = false,
     radioLoading: Boolean = false,
     onSeek: (Long) -> Unit,
+    onSongMenu: (Song, FocusRequester) -> Unit,
     onArtist: (() -> Unit)? = null,
     onAlbum: (() -> Unit)? = null,
     onOtherSources: (() -> Unit)? = null,
@@ -478,12 +480,32 @@ internal fun PrismPlayer(
     var hint by remember { mutableStateOf("") }
     var wakeKey by remember { mutableStateOf<Key?>(null) }
     var progressFocused by remember { mutableStateOf(false) }
+    var playFocused by remember { mutableStateOf(false) }
     var interaction by remember { mutableIntStateOf(0) }
     var l2Tick by remember { mutableIntStateOf(0) }
     var l2Level by remember { mutableIntStateOf(0) }
     var l2Bar by remember { mutableStateOf(true) }
-    var l2SeekText by remember { mutableStateOf("") }
-    var l2SeekSeq by remember { mutableIntStateOf(0) }
+    val seekControlsFocused = visible && !popupOpen && !menuOpen && !mvOpen &&
+        androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused &&
+        (if (immersive) l2Bar else controlsVisible && progressFocused)
+    val supportsSeek = streamSeekable && duration > 0
+    val canSeek = seekControlsFocused && supportsSeek && phase != PlaybackPhase.Failed && phase != PlaybackPhase.Finished
+    val explainUnavailable = seekControlsFocused && !supportsSeek && phase == PlaybackPhase.Ready
+    var seekNotice by remember(song?.key, immersive, explainUnavailable) { mutableIntStateOf(0) }
+    LaunchedEffect(seekNotice) {
+        if (seekNotice > 0) {
+            delay(2_000)
+            seekNotice = 0
+        }
+    }
+    var seekKey by remember(song?.key, immersive, canSeek) { mutableStateOf<Key?>(null) }
+    var repeatingSeek by remember(seekKey, song?.key, immersive, canSeek) { mutableStateOf(false) }
+    val seekHint = when {
+        repeatingSeek -> "松开跳转"
+        seekNotice > 0 -> "当前音源暂不支持跳转"
+        else -> ""
+    }
+    val preview = remember(song?.key, immersive, canSeek) { mutableStateOf<Long?>(null) }
 
     val parkFocus = remember { FocusRequester() }
     val playFocus = remember { FocusRequester() }
@@ -500,6 +522,9 @@ internal fun PrismPlayer(
 
     // Transport and lyrics share the actual playhead, including tracks without lyrics.
     val rawLyricPosition = rememberLyricPosition(song?.key, position, playing && visible, readPosition)
+    val transportClock = remember(rawLyricPosition, preview) {
+        derivedStateOf { preview.value ?: rawLyricPosition.value }
+    }
     // Calibration affects lyric timing only; transport controls use the playback clock.
     val lyricPosition = remember(rawLyricPosition, lyricOffsetMs) {
         derivedStateOf { rawLyricPosition.value - lyricOffsetMs }
@@ -526,9 +551,9 @@ internal fun PrismPlayer(
     }
     val needsAttention = phase.holdControls
 
-    LaunchedEffect(interaction, playing, immersive, menuOpen, mvOpen, popupOpen, needsAttention, mvError, idleTimeout, visible) {
+    LaunchedEffect(interaction, playing, immersive, menuOpen, mvOpen, popupOpen, needsAttention, mvError, idleTimeout, visible, seekKey) {
         controlsVisible = true
-        if (visible && playing && !immersive && !menuOpen && !mvOpen && !popupOpen && !needsAttention) {
+        if (visible && playing && !immersive && !menuOpen && !mvOpen && !popupOpen && !needsAttention && seekKey == null) {
             delay(idleTimeout)
             controlsVisible = false
         }
@@ -551,7 +576,7 @@ internal fun PrismPlayer(
         SleeveEntrance.done = true
     }
 
-    var lastControl by remember { mutableStateOf(playFocus) }
+    var lastControl by remember { mutableStateOf(railFocus) }
     fun rememberControl(target: FocusRequester) = Modifier.onFocusChanged {
         if (it.isFocused) lastControl = target
     }
@@ -572,42 +597,52 @@ internal fun PrismPlayer(
             return@LaunchedEffect
         }
         withFrameNanos { }
-        if (!runCatching { lastControl.requestFocus() }.getOrDefault(false)) playFocus.requestAfterScroll { }
+        if (!runCatching { lastControl.requestFocus() }.getOrDefault(false)) railFocus.requestAfterScroll { }
     }
-    LaunchedEffect(immersive, l2Tick, playing, needsAttention, idleTimeout, popupOpen, visible) {
+    LaunchedEffect(immersive, l2Tick, playing, needsAttention, idleTimeout, popupOpen, visible, seekKey) {
         if (!immersive || !visible) return@LaunchedEffect
         l2Bar = true
         l2Level = 0
-        if (!playing || needsAttention || popupOpen) return@LaunchedEffect
+        if (!playing || needsAttention || popupOpen || seekKey != null) return@LaunchedEffect
         delay(idleTimeout)
         l2Bar = false
         l2Level = 1
         delay(5000)
         l2Level = 2
     }
-    LaunchedEffect(l2SeekSeq) {
-        if (l2SeekSeq == 0) return@LaunchedEffect
-        delay(1_200)
-        l2SeekText = ""
+    fun stepPreview(key: Key) {
+        val step = if (key == Key.DirectionLeft) -10_000L else 10_000L
+        preview.value = ((preview.value ?: readPosition()) + step).coerceIn(0, duration)
     }
-
-    fun seekBy(delta: Long) {
-        if (duration <= 0) return
-        currentSeek((readPosition() + delta).coerceIn(0, duration))
-    }
-
-    fun immersiveSeek(delta: Long) {
-        if (duration <= 0) return
-        val from = readPosition()
-        val to = (from + delta).coerceIn(0, duration)
-        if (to == from) return
-        currentSeek(to)
-        val seconds = abs(to - from) / 1000
-        l2SeekText = if (to < from) "‹ $seconds 秒" else "$seconds 秒 ›"
-        l2SeekSeq++
+    LaunchedEffect(seekKey, preview) {
+        val key = seekKey ?: return@LaunchedEffect
+        delay(android.view.ViewConfiguration.getLongPressTimeout().toLong())
+        while (seekKey == key) {
+            repeatingSeek = true
+            stepPreview(key)
+            delay(200)
+        }
     }
 
     val chromeEnabled = visible && controlsVisible && !immersive && !menuOpen && !mvOpen && !popupOpen
+    val songControl = when {
+        !chromeEnabled -> null
+        progressFocused -> railFocus
+        playFocused -> playFocus
+        else -> null
+    }
+    var confirmKey by remember(song?.key, songControl) { mutableStateOf<Key?>(null) }
+    LaunchedEffect(confirmKey, song?.key, songControl) {
+        if (confirmKey == null || song == null || songControl == null) return@LaunchedEffect
+        delay(android.view.ViewConfiguration.getLongPressTimeout().toLong())
+        confirmKey = null
+        onSongMenu(song, songControl)
+    }
+    val playAction = when {
+        phase == PlaybackPhase.Failed -> "重试"
+        playing -> "暂停"
+        else -> "播放"
+    }
     val controlSemantics = if (chromeEnabled) Modifier else Modifier.clearAndSetSemantics { }
     val controlFocus = Modifier.focusProperties { canFocus = chromeEnabled }
     val sizes = lyricSizes(lyricFontLevel, immersion = false)
@@ -621,6 +656,34 @@ internal fun PrismPlayer(
             .onPreviewKeyEvent { event ->
                 if (wakeKey == event.key) {
                     if (event.type == KeyEventType.KeyUp) wakeKey = null
+                    return@onPreviewKeyEvent true
+                }
+                if (seekControlsFocused && (event.key == Key.DirectionLeft || event.key == Key.DirectionRight)) {
+                    if (!canSeek) {
+                        if (explainUnavailable && event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount == 0) {
+                            seekNotice++
+                            if (immersive) l2Tick++ else interaction++
+                        }
+                        return@onPreviewKeyEvent true
+                    }
+                    if (event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount == 0) {
+                        stepPreview(event.key)
+                        seekKey = event.key
+                    } else if (event.type == KeyEventType.KeyUp && seekKey == event.key) {
+                        if (!event.nativeKeyEvent.isCanceled) preview.value?.let(currentSeek)
+                        seekKey = null
+                        preview.value = null
+                    }
+                    return@onPreviewKeyEvent true
+                }
+                if (songControl != null && event.key in setOf(Key.DirectionCenter, Key.Enter, Key.NumPadEnter)) {
+                    if (event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount == 0) {
+                        interaction++
+                        confirmKey = event.key
+                    } else if (event.type == KeyEventType.KeyUp && confirmKey == event.key) {
+                        confirmKey = null
+                        if (!event.nativeKeyEvent.isCanceled) onPlay()
+                    }
                     return@onPreviewKeyEvent true
                 }
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
@@ -643,8 +706,7 @@ internal fun PrismPlayer(
                     l2Tick++
                     when (event.key) {
                         Key.Back, Key.Escape -> { immersive = false; true }
-                        Key.DirectionLeft -> { immersiveSeek(-10_000); true }
-                        Key.DirectionRight -> { immersiveSeek(10_000); true }
+                        Key.DirectionLeft, Key.DirectionRight -> true
                         Key.DirectionUp, Key.DirectionDown -> true
                         Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
                             onPlay(); wakeKey = event.key; true
@@ -829,46 +891,44 @@ internal fun PrismPlayer(
                 Box(Modifier.fillMaxWidth().height(26.dp).focusRequester(railFocus).then(rememberControl(railFocus)).then(controlFocus)
                     .onFocusChanged {
                         progressFocused = it.isFocused
-                        if (it.isFocused) hint = "← →  快退 / 快进 10 秒"
                     }
-                    .pointerInput(duration, chromeEnabled) {
-                        detectTapGestures { if (chromeEnabled && duration > 0 && size.width > 0) currentSeek((duration * (it.x / size.width).coerceIn(0f, 1f)).toLong()) }
-                    }
-                    .onPreviewKeyEvent { e ->
-                        if (e.type == KeyEventType.KeyDown && e.key in setOf(Key.DirectionLeft, Key.DirectionRight)) {
-                            seekBy(if (e.key == Key.DirectionLeft) -10_000 else 10_000)
-                            true
-                        } else false
+                    .pointerInput(duration, chromeEnabled, streamSeekable) {
+                        detectTapGestures { if (chromeEnabled && streamSeekable && duration > 0 && size.width > 0) currentSeek((duration * (it.x / size.width).coerceIn(0f, 1f)).toLong()) }
                     }
                     .focusProperties { down = playFocus; up = when { hasMv -> mvFocus; else -> offFocus } }
                     .semantics {
                         contentDescription = "播放进度"
+                        onClick(label = playAction) { onPlay(); true }
                         progressBarRangeInfo = ProgressBarRangeInfo(
                             if (duration > 0) (position().toFloat() / duration).coerceIn(0f, 1f) else 0f, 0f..1f,
                         )
                         setProgress { v ->
-                            if (chromeEnabled && duration > 0) { currentSeek((duration * v.coerceIn(0f, 1f)).toLong()); true } else false
+                            if (chromeEnabled && streamSeekable && duration > 0) { currentSeek((duration * v.coerceIn(0f, 1f)).toLong()); true } else false
                         }
                     }
                     .focusable(),
             ) {
                 ProgressRail(
-                    progress = { if (duration > 0) (rawLyricPosition.value.toFloat() / duration).coerceIn(0f, 1f) else 0f },
+                    progress = { if (duration > 0) (transportClock.value.toFloat() / duration).coerceIn(0f, 1f) else 0f },
                     focused = progressFocused,
                     playing = playing && visible && controlsVisible,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
             Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                ClockText(rawLyricPosition, duration, forward = true)
+                ClockText(transportClock, duration, forward = true)
                 Text(
-                    transportMessage.ifBlank { hint },
+                    transportMessage.ifBlank {
+                        if (!progressFocused) hint else seekHint.ifBlank {
+                            if (supportsSeek) "← → 调进度 · 确定$playAction" else "确定$playAction"
+                        }
+                    },
                     color = if (transportMessage.isNotBlank()) c.foreground else c.accent.copy(alpha = .72f),
                     fontSize = 11.sp, letterSpacing = 1.1.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Center, modifier = Modifier.weight(1f).padding(horizontal = 16.dp),
                 )
-                ClockText(rawLyricPosition, duration, forward = false)
+                ClockText(transportClock, duration, forward = false)
             }
             if (phase == PlaybackPhase.Failed && playbackDetail.isNotBlank()) {
                 Text(playbackDetail, color = c.muted, fontSize = 12.sp, textAlign = TextAlign.Center,
@@ -893,6 +953,7 @@ internal fun PrismPlayer(
                         onFocused = { hint = "上一首" })
                     PlayButton(playing, onPlay,
                         Modifier.focusRequester(playFocus).then(rememberControl(playFocus)).then(controlFocus)
+                            .onFocusChanged { playFocused = it.isFocused }
                             .focusProperties { left = prevFocus; right = nextFocus; up = railFocus },
                         onFocused = { hint = if (playing) "暂停" else "播放" })
                     PlayerIcon("next", "下一首", onNext,
@@ -940,10 +1001,10 @@ internal fun PrismPlayer(
         ) {
             Immersion(
                 song = song, lyrics = lyrics, lyricStatus = lyricStatus, showLyricPane = showLyricPane,
-                clock = rawLyricPosition, lyricClock = lyricPosition, duration = duration,
+                clock = transportClock, lyricClock = lyricPosition, duration = duration,
                 active = active, sizes = immersionSizes, subLyrics = subLyrics, playing = playing,
                 level = l2Level, barVisible = l2Bar, motion = motion, focus = l2Focus,
-                onPlay = onPlay, onInteraction = { l2Tick++ }, seekHint = l2SeekText,
+                onPlay = onPlay, onInteraction = { l2Tick++ }, seekHint = seekHint,
                 message = transportMessage,
             )
         }

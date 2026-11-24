@@ -402,7 +402,7 @@ class MainActivity : ComponentActivity() {
     private var lyricProbeJob: Job? = null
     private var lyricProbeKey = ""
     internal var positionMs by mutableLongStateOf(0L)
-    private var pendingSeek: Job? = null
+    internal var streamSeekable by mutableStateOf(false)
     internal var durationMs by mutableLongStateOf(0L)
     internal var theme by mutableStateOf("gold")
     internal var showMiniLyrics by mutableStateOf(false)
@@ -425,6 +425,9 @@ class MainActivity : ComponentActivity() {
     internal val pluginReplacements = mutableStateListOf<PluginReplacement>()
     internal var lastPlayingSample = 0L
     internal val listener = object : Player.Listener {
+        override fun onAvailableCommandsChanged(availableCommands: Player.Commands) {
+            streamSeekable = availableCommands.contains(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+        }
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             playing = playWhenReady
         }
@@ -437,7 +440,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun installStream(player: Player, source: MediaItem, at: Long): String {
-        pendingSeek?.cancel()
         val item = ActiveQueue.attempt.begin(source)
         playbackState = Player.STATE_BUFFERING
         playbackActive = false
@@ -448,7 +450,6 @@ class MainActivity : ComponentActivity() {
     }
 
     internal fun resetStream(player: Player?, pause: Boolean = true) {
-        pendingSeek?.cancel()
         ActiveQueue.attempt.clear()
         playbackState = Player.STATE_IDLE
         playbackActive = false
@@ -460,7 +461,7 @@ class MainActivity : ComponentActivity() {
 
     internal fun trustedPosition(player: Player? = controller): Long {
         val p = player ?: return positionMs
-        if (pendingSeek?.isActive == true || resumePending >= 0 || playbackPhase.holdControls ||
+        if (resumePending >= 0 || playbackPhase.holdControls ||
             !ActiveQueue.attempt.accepts(p.currentMediaItem?.mediaId) ||
             (playbackState != Player.STATE_READY && playbackState != Player.STATE_ENDED) ||
             (p.playbackState != Player.STATE_READY && p.playbackState != Player.STATE_ENDED) ||
@@ -575,7 +576,6 @@ class MainActivity : ComponentActivity() {
         val streamSong = playbackSong() ?: original
         val wasPlaying = player.playWhenReady
         if (error.errorCode == PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED) {
-            pendingSeek?.cancel()
             showPlaybackFailure(original, "设备暂时无法输出声音")
             return
         }
@@ -651,7 +651,6 @@ class MainActivity : ComponentActivity() {
         lyricFontLevel = getSharedPreferences("appearance", MODE_PRIVATE).getString("lyric_font_level", "标准") ?: "标准"
         hideHeading = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("hide_heading", true)
         subLyrics = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("sub_lyrics", true)
-        LyricSourcePrefs.migrateMode(this)
         lyricLrclib = LyricSourcePrefs.lrclib(this)
         lyricKugou = LyricSourcePrefs.kugou(this)
         lyricNetease = LyricSourcePrefs.netease(this)
@@ -784,6 +783,7 @@ class MainActivity : ComponentActivity() {
                 val player = future.get()
                 controller = player
                 player.addListener(listener)
+                streamSeekable = player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
                 playing = player.playWhenReady
                 playbackActive = player.isPlaying
                 playbackState = player.playbackState
@@ -1574,21 +1574,14 @@ class MainActivity : ComponentActivity() {
     }
 
     internal fun seekPlayback(target: Long) {
+        if (!streamSeekable && playbackPhase == PlaybackPhase.Ready) return
         val at = target.coerceAtLeast(0L)
         if (playbackPhase == PlaybackPhase.Finished || playbackPhase == PlaybackPhase.Failed) return
         positionMs = at
         if (resumePending >= 0) resumePending = at
         qualitySwap?.position = at
         recovery?.takeIf { resolving?.isActive == true }?.position = at
-        pendingSeek?.cancel()
-        val player = controller ?: return
-        val id = player.currentMediaItem?.mediaId ?: return
-        if (!ActiveQueue.attempt.accepts(id)) return
-        pendingSeek = lifecycleScope.launch {
-            delay(250)
-            if (ActiveQueue.attempt.accepts(id) && player.currentMediaItem?.mediaId == id &&
-                playbackPhase != PlaybackPhase.Failed && playbackPhase != PlaybackPhase.Finished) player.seekTo(at)
-        }
+        controller?.takeIf { ActiveQueue.attempt.accepts(it.currentMediaItem?.mediaId) }?.seekTo(at)
     }
 
     internal fun continueRecovery(pass: PlaybackRecovery, startAt: Long) {
@@ -2118,7 +2111,6 @@ class MainActivity : ComponentActivity() {
         lyricFontLevel = getSharedPreferences("appearance", MODE_PRIVATE).getString("lyric_font_level", "标准") ?: "标准"
         hideHeading = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("hide_heading", true)
         subLyrics = getSharedPreferences("appearance", MODE_PRIVATE).getBoolean("sub_lyrics", true)
-        LyricSourcePrefs.migrateMode(this)
         lyricLrclib = LyricSourcePrefs.lrclib(this)
         lyricKugou = LyricSourcePrefs.kugou(this)
         lyricNetease = LyricSourcePrefs.netease(this)

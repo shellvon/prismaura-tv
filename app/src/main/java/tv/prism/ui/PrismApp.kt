@@ -1955,6 +1955,7 @@ internal fun MainActivity.PrismApp() {
                                 song != null && libraryState.favorites.any { it.key == song.key }, tierFor(song), playingQuality,
                                 playbackIndices().indexOf(queueIndex).coerceAtLeast(0), queue.size, playbackPhase, playbackDetail,
                                 streamFormat,
+                                streamSeekable = streamSeekable,
                                 playbackSource = streamSong,
                                 onOtherSources = if (streamSong != null && otherSources.isNotEmpty()) {
                                     { playerSourceChooser = streamSong to otherSources }
@@ -2016,6 +2017,10 @@ internal fun MainActivity.PrismApp() {
                                 onRadioMenu = { radioMenuOpen = true },
                                 onFavorite = { toggleFavorite(song) },
                                 onSeek = { target -> seekPlayback(target) },
+                                onSongMenu = { current, focus ->
+                                    menuReturnFocus = focus
+                                    trackMenu = TrackMenuTarget(current, list = "player")
+                                },
                                 onArtist = song?.let { { openSubject(it, "artist") } },
                                 onAlbum = song?.let { { openSubject(it, "album") } },
                                 onQueue = { queueOpen = true },
