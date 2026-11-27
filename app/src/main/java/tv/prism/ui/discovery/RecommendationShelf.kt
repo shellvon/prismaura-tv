@@ -8,26 +8,25 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
 import androidx.tv.material3.Text
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -35,6 +34,7 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 import tv.prism.catalog.Discovery
 import tv.prism.ui.widgets.LocalPrismColors
+import tv.prism.ui.widgets.ChoicePopup
 import tv.prism.ui.widgets.FocusAnchor
 import tv.prism.ui.widgets.PrismShelfHeader
 import tv.prism.ui.widgets.PrismAction
@@ -186,24 +186,23 @@ internal fun RecommendationShelf(
                 }.then(if (!moreChip && index == tailChips.lastIndex) stopRight else Modifier))
             }
             if (moreChip) item {
-                Box {
+                var anchor by remember { mutableStateOf(Rect.Zero) }
+                Box(Modifier.onGloballyPositioned { anchor = it.boundsInWindow() }) {
                     val selected = choices.drop(3).firstOrNull { it.second.optString("id") == recommendationTag.optString("id") }
-                    PrismAction(selected?.let { "${it.first} ▾" } ?: "全部分类 ▾", { categoriesOpen = true },
+                    PrismAction(selected?.first ?: "全部分类", { categoriesOpen = true },
                         categoryKeys("more", selectedCategory).focusProperties {
                             this.up = up
 
-                        }.then(stopRight))
-                    if (categoriesOpen) Popup(onDismissRequest = { closeCategories() }, properties = PopupProperties(focusable = true)) {
-                        val first = remember { FocusRequester() }
-                        LaunchedEffect(Unit) { repeat(2) { withFrameNanos { } }; first.requestFocus() }
-                        Column(Modifier.width(250.dp).heightIn(max = 230.dp).background(c.panel)
-                            .border(1.dp, c.line).verticalScroll(rememberScrollState()).padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            choices.forEachIndexed { index, (label, tag) ->
-                                PrismAction(label, { onSelectTag(tag); closeCategories() },
-                                    if (index == 0) Modifier.focusRequester(first) else Modifier)
-                            }
-                        }
-                    }
+                        }.then(stopRight), trailingIcon = "chev")
+                    if (categoriesOpen) ChoicePopup(
+                        options = choices,
+                        selectedIndex = choices.indexOfFirst { it.second.optString("id") == recommendationTag.optString("id") },
+                        label = { it.first },
+                        onDismiss = ::closeCategories,
+                        onSelect = { onSelectTag(it.second); closeCategories() },
+                        icon = {},
+                        anchor = anchor,
+                    )
                 }
             }
         }

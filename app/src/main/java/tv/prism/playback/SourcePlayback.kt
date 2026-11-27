@@ -81,6 +81,35 @@ internal fun audioStreamLabel(format: Format): String {
 
 data class VideoSource(val url: String, val headers: Map<String, String> = emptyMap())
 
+data class MvRemoteState(
+    val playing: Boolean,
+    val advancing: Boolean,
+    val position: Long,
+    val duration: Long,
+    val seekable: Boolean,
+    val buffering: Boolean,
+    val ended: Boolean,
+    val quality: String,
+    val loopOne: Boolean,
+    val speed: Float,
+    val fillScreen: Boolean,
+    val canPrev: Boolean,
+    val canNext: Boolean,
+)
+
+class MvRemoteSession(
+    val read: () -> MvRemoteState,
+    val togglePlay: () -> Unit,
+    val seekTo: (Long) -> Unit,
+    val stepBy: (Long) -> Unit,
+    val prevOrRewind: () -> Unit,
+    val nextOrForward: () -> Unit,
+    val restart: () -> Unit,
+    val toggleLoop: () -> Unit,
+    val cycleSpeed: () -> Unit,
+    val toggleFill: () -> Unit,
+)
+
 internal class UnsupportedAudioEncryptionException(message: String = "此音质采用的加密格式暂不支持") : IllegalStateException(message)
 
 internal const val QMC_EKEY_EXTRA = "prism.qmc2.ekey"
@@ -140,11 +169,57 @@ internal fun audioMediaItem(song: Song, source: JSONObject): MediaItem {
     return builder.build()
 }
 
+private fun videoQualityRank(label: String): Int {
+    val key = label.trim().lowercase(Locale.ROOT)
+    Regex("(\\d{3,4})").find(key)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { return it }
+    return when {
+        key in setOf("4k", "uhd", "2160p") -> 2160
+        key in setOf("2k", "qhd", "1440p") -> 1440
+        key in setOf("fhd", "1080p", "high", "super", "hd_high", "blue", "bluray", "蓝光", "超清") -> 1080
+        key in setOf("hd", "720p", "standard", "高清") -> 720
+        key in setOf("sd", "480p", "标清") -> 480
+        key in setOf("ld", "360p", "low", "流畅") -> 360
+        else -> 0
+    }
+}
+
+private fun validVideoUrl(raw: String?): String? {
+    val url = raw?.trim().orEmpty()
+    if (url.isBlank()) return null
+    val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
+    return if (uri.scheme in listOf("http", "https") && !uri.host.isNullOrBlank() && uri.userInfo == null) url else null
+}
+
 fun videoSource(result: Any?): VideoSource? {
     val obj = result as? JSONObject ?: return null
-    val url = obj.optString("url").trim()
-    val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
-    if (uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank() || uri.userInfo != null) return null
+    val candidates = mutableListOf<Pair<Int, String>>()
+    // Prefer the highest available resolution/bitrate when a plugin returns multiple streams.
+    for (mapKey in listOf("urls", "qualities", "brs")) {
+        val map = obj.optJSONObject(mapKey) ?: continue
+        map.keys().forEach { qualityKey ->
+            val value = map.opt(qualityKey)
+            val candidateUrl = when (value) {
+                is String -> validVideoUrl(value)
+                is JSONObject -> validVideoUrl(value.optString("url"))
+                else -> null
+            }
+            if (candidateUrl != null) candidates += videoQualityRank(qualityKey) to candidateUrl
+        }
+    }
+    obj.optJSONArray("sources")?.let { arr ->
+        for (i in 0 until arr.length()) {
+            val item = arr.optJSONObject(i) ?: continue
+            val candidateUrl = validVideoUrl(item.optString("url")) ?: continue
+            val rank = maxOf(
+                item.optInt("height", 0),
+                item.optInt("resolution", 0),
+                item.optInt("bitrate", 0) / 1000,
+                videoQualityRank(item.optString("quality").ifBlank { item.optString("label") }),
+            )
+            candidates += rank to candidateUrl
+        }
+    }
+    val url = candidates.maxByOrNull { it.first }?.second ?: validVideoUrl(obj.optString("url")) ?: return null
     return VideoSource(url, sourceHeaders(obj))
 }
 

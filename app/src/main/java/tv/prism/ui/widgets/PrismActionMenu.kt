@@ -24,10 +24,10 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -115,6 +115,12 @@ internal fun PrismActionMenu(
     }
     Dialog(onDismissRequest = ::back, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         val view = LocalView.current
+        val windowFocused = LocalWindowInfo.current.isWindowFocused
+        LaunchedEffect(windowFocused) {
+            if (windowFocused && focusedRow in enabledRows && replacement == null && !closing) {
+                rowFocus[focusedRow].requestAfterScroll { }
+            }
+        }
         DisposableEffect(view) {
             val window = (view.parent as? DialogWindowProvider)?.window
             val original = window?.attributes?.let { WindowManager.LayoutParams().apply { copyFrom(it) } }
@@ -165,7 +171,7 @@ internal fun PrismActionMenu(
                             up = FocusRequester.Cancel; down = enabledRows.firstOrNull()?.let { rowFocus[it] } ?: FocusRequester.Cancel
                             left = FocusRequester.Cancel; right = FocusRequester.Cancel
                         }.onFocusChanged { if (it.isFocused) focusedRow = -1 }
-                            .auraFocus(RoundedCornerShape(50), 1.04f).semantics { contentDescription = "关闭菜单" }
+                            .auraFocus(RoundedCornerShape(50), 1f).semantics { contentDescription = "关闭菜单" }
                             .tvClickable({ dismiss(null) }, { dismiss(null) }), contentAlignment = Alignment.Center) {
                             Glyph("close", Modifier.size(20.dp), c.muted)
                         }
@@ -191,7 +197,6 @@ internal fun PrismActionMenu(
                                     focusedRow = index
                                     if (action.keepOpen) action.run() else dismiss(action.run)
                                 },
-                                { dismiss(null) },
                                 Modifier.focusRequester(rowFocus[index])
                                     .onFocusChanged { if (it.isFocused) focusedRow = index }
                                     .focusProperties {
@@ -204,7 +209,7 @@ internal fun PrismActionMenu(
                             )
                         }
                     }
-                    Text(visibleNotice.ifBlank { "↑ ↓ 选择    OK 确认    返回或长按关闭" },
+                    Text(visibleNotice.ifBlank { "↑ ↓ 选择    OK 执行    返回关闭" },
                         color = if (visibleNotice.isBlank()) c.muted else c.foreground, fontSize = 11.sp,
                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().heightIn(min = 16.dp))
                 }
@@ -214,19 +219,17 @@ internal fun PrismActionMenu(
 }
 
 @Composable
-private fun ActionMenuRow(action: PrismMenuAction, onClick: () -> Unit, onLongPress: () -> Unit, modifier: Modifier) {
+private fun ActionMenuRow(action: PrismMenuAction, onClick: () -> Unit, modifier: Modifier) {
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
     val press = remember { Animatable(1f) }
     val scope = rememberCoroutineScope()
-    val ink = if (action.destructive) {
-        if (c.panel.luminance() > .5f) Color(0xFF9B3C30) else Color(0xFFE3A098)
-    } else c.foreground
+    val ink = if (action.destructive) c.danger else c.foreground
     Row(modifier.fillMaxWidth().heightIn(min = 48.dp).keepFocusVisible()
-        .then(if (action.enabled) Modifier.auraFocus(RoundedCornerShape(14.dp), 1f, ring = if (action.destructive) ink else null, instantRing = true).tvClickable({
+        .then(if (action.enabled) Modifier.auraFocus(RoundedCornerShape(14.dp), 1f, ring = if (action.destructive) ink else null).tvClickable({
             if (motion) scope.launch { press.snapTo(.975f); press.animateTo(1f, tween(160)) }
             onClick()
-        }, onLongPress) else Modifier)
+        }) else Modifier)
         .graphicsLayer { alpha = if (action.enabled) 1f else .42f; scaleX = press.value; scaleY = press.value }
         .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {

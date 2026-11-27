@@ -41,6 +41,7 @@ import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.requireDensity
 import androidx.compose.ui.relocation.bringIntoView
 import androidx.compose.ui.platform.InspectorInfo
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
@@ -94,6 +95,29 @@ fun FocusAnchor?.requestIfAttached(): Boolean {
     val anchor = this ?: return false
     if (!anchor.attached) return false
     return runCatching { anchor.requester.requestFocus() }.getOrDefault(false)
+}
+
+/** Restore only after the dialog has released its window; the opener owns the return target. */
+@Composable
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+internal fun RestoreFocusAfterDialog(
+    open: Boolean,
+    origin: FocusRequester?,
+    fallback: FocusRequester?,
+    enabled: Boolean = true,
+) {
+    val windowFocused = LocalWindowInfo.current.isWindowFocused
+    var wasOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(open, windowFocused, enabled) {
+        if (open) wasOpen = true
+        else if (wasOpen) {
+            if (!enabled) wasOpen = false
+            else if (windowFocused) {
+                wasOpen = false
+                if (origin?.requestAfterScroll { } != true) fallback?.requestAfterScroll { }
+            }
+        }
+    }
 }
 
 /** Reveal the card plus the focus border. */
@@ -272,12 +296,12 @@ fun Modifier.tvClickable(onClick: () -> Unit, onLongPress: (() -> Unit)? = null)
 /* The ring is painted after the content, not as a border before it. A border sits underneath
    whatever background the caller adds next, so a gold ring on a gold primary pill vanished
    entirely. `ring` lets the primary button use warm white: the same light, one step up. */
-private const val FOCUS_TRANSITION_MS = 180
-private const val CARD_FOCUS_SCALE = 1.05f
+private const val FOCUS_TRANSITION_MS = 160
+private const val CARD_FOCUS_SCALE = 1.035f
+internal val PrismCardShape = RoundedCornerShape(14.dp)
 
 @Composable internal fun Modifier.auraFocus(
-    shape: RoundedCornerShape = RoundedCornerShape(12.dp), scale: Float = CARD_FOCUS_SCALE, ring: Color? = null,
-    instantRing: Boolean = false,
+    shape: RoundedCornerShape = PrismCardShape, scale: Float = CARD_FOCUS_SCALE, ring: Color? = null,
 ): Modifier {
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
@@ -285,16 +309,17 @@ private const val CARD_FOCUS_SCALE = 1.05f
     var focused by remember { mutableStateOf(false) }
     val rapidNavigation = LocalMarqueeSuspended.current
     val listScrolling = LocalListScrolling.current
-    val emphasis by animateFloatAsState(if (focused) 1f else 0f, tween(if (motion && !rapidNavigation) FOCUS_TRANSITION_MS else 0, easing = FastOutSlowInEasing), label = "focus light")
+    val emphasis by animateFloatAsState(if (focused) 1f else 0f, tween(if (!motion || rapidNavigation) 0 else if (focused) FOCUS_TRANSITION_MS else 110, easing = FastOutSlowInEasing), label = "focus light")
     return this.onFocusChanged { focused = it.isFocused }
         .graphicsLayer {
             val zoom = if (rapidNavigation || listScrolling()) 0f else emphasis
             scaleX = 1f + (scale - 1f) * zoom
             scaleY = scaleX
+            translationY = if (scale > 1f) -1.5.dp.toPx() * zoom else 0f
         }
         .drawWithContent {
             val radius = CornerRadius(shape.topStart.toPx(size, this))
-            val amount = if (instantRing) { if (focused) 1f else 0f } else emphasis
+            val amount = if (focused) 1f else 0f
             if (amount > 0f) drawRoundRect(c.accent.copy(alpha = amount * .09f), cornerRadius = radius)
             drawContent()
             if (amount > 0f) {
@@ -315,14 +340,14 @@ private const val CARD_FOCUS_SCALE = 1.05f
     val c = LocalPrismColors.current
     val motion = LocalAuraMotion.current
     var focused by remember { mutableStateOf(false) }
-    val emphasis by animateFloatAsState(if (focused) 1f else 0f, tween(if (motion) FOCUS_TRANSITION_MS else 0, easing = FastOutSlowInEasing), label = "row focus")
+    val emphasis by animateFloatAsState(if (focused) 1f else 0f, tween(if (!motion || LocalMarqueeSuspended.current) 0 else FOCUS_TRANSITION_MS, easing = FastOutSlowInEasing), label = "row focus")
     val shape = RoundedCornerShape(10.dp)
     return this.onFocusChanged { focused = it.isFocused }
         .clip(shape)
         .drawWithContent {
             if (emphasis > 0f) drawRoundRect(c.accent.copy(alpha = emphasis * .085f), cornerRadius = CornerRadius(10.dp.toPx()))
             drawContent()
-            if (emphasis <= 0f) return@drawWithContent
+            if (emphasis <= 0f && !focused) return@drawWithContent
             /* The bar lives inside the row's left padding so focused text never shifts —
                focusable and read-only rows in one card must stay aligned. */
             val barW = 2.dp.toPx()
@@ -333,9 +358,9 @@ private const val CARD_FOCUS_SCALE = 1.05f
                 size = androidx.compose.ui.geometry.Size(barW, barH),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(barW / 2f),
             )
-            val stroke = 1.dp.toPx()
+            val stroke = 2.dp.toPx()
             drawRoundRect(
-                color = c.accent.copy(alpha = emphasis * .34f),
+                color = c.accent.copy(alpha = if (focused) .85f else 0f),
                 topLeft = Offset(stroke / 2f, stroke / 2f),
                 size = androidx.compose.ui.geometry.Size(size.width - stroke, size.height - stroke),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(shape.topStart.toPx(androidx.compose.ui.geometry.Size(size.width, size.height), this)),

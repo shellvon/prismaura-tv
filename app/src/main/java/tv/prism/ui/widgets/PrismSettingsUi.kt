@@ -66,7 +66,7 @@ internal fun PrismSwitchRow(
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(label, color = c.foreground, fontSize = 15.sp, lineHeight = 21.sp)
-            if (description != null) Text(description, color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (description != null) Text(description, color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         PrismCapsule(checked)
     }
@@ -128,51 +128,15 @@ internal fun SettingsRow(
     val c = LocalPrismColors.current
     val actionable = onActivate != null
     Row(modifier.fillMaxWidth().heightIn(min = if (actionable) 56.dp else 48.dp)
-        .then(if (!actionable) Modifier else Modifier.rowFocus()
-            .onPreviewKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown) false
-                else when (event.key) {
-                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
-                        if (onActivate != null) { onActivate(); true } else false
-                    }
-                    else -> false
-                }
-            }
-            .focusable())
+        .then(if (onActivate == null) Modifier else Modifier.rowFocus()
+            .clickable(role = Role.Button, onClick = onActivate))
         .padding(start = 14.dp, top = 8.dp, end = 14.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(label, color = if (labelDim) c.muted else c.foreground, fontSize = 15.sp, lineHeight = 21.sp)
-            if (description != null) Text(description, color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (description != null) Text(description, color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         control()
-    }
-}
-
-/* 设置页是两栏：左边那一栏是导航，所以「左键」属于左栏，行内不能再借它改值。
-   改值只剩 OK（原地循环），控件也就得长成「可按的东西」——一枚显示当前值的胶囊，
-   右边一个小循环标记，和布尔开关同族：按下去，这一格自己变。
-   （播放页的弹层没有左栏，左键空闲，那里仍然用 ‹ 值 › 让左右键直接改。）
-   值夹在胶囊里，宽度给下限，循环时左边缘不会跳。 */
-@Composable
-internal fun <T> SettingsSeg(
-    options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val c = LocalPrismColors.current
-    val index = options.indexOfFirst { it.first == selected }
-    val shape = RoundedCornerShape(9.dp)
-    Row(modifier.height(34.dp).clip(shape)
-        .background(c.foreground.copy(alpha = .06f))
-        .border(1.dp, c.foreground.copy(alpha = .10f), shape)
-        .focusProperties { canFocus = false }
-        .clickable { if (options.isNotEmpty()) onSelect(options[(index + 1).mod(options.size)].first) }
-        .padding(start = 12.dp, end = 10.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(options.getOrNull(index)?.second.orEmpty(), Modifier.widthIn(min = 72.dp),
-            color = c.foreground, fontSize = 14.sp, lineHeight = 20.sp,
-            fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, maxLines = 1)
-        Glyph("refresh", Modifier.size(11.dp), c.accent.copy(alpha = .55f))
     }
 }
 
@@ -201,7 +165,7 @@ internal fun SettingsRailItem(label: String, icon: String, selected: Boolean, on
     val c = LocalPrismColors.current
     val shape = RoundedCornerShape(10.dp)
     var focused by remember { mutableStateOf(false) }
-    Box(modifier.fillMaxWidth().height(46.dp).auraFocus(shape, 1f)
+    Box(modifier.fillMaxWidth().heightIn(min = 46.dp).auraFocus(shape, 1f)
         .clip(shape)
         .then(if (selected) Modifier.background(Brush.horizontalGradient(listOf(c.accent.copy(alpha = .17f), c.accent.copy(alpha = .05f), Color.Transparent))) else Modifier)
         .onFocusChanged {
@@ -213,7 +177,7 @@ internal fun SettingsRailItem(label: String, icon: String, selected: Boolean, on
         /* The gold bar sits where the focus ring is, so both together would read as a
            double line; when focused, the ring alone marks the item. */
         if (selected && !focused) Box(Modifier.align(Alignment.CenterStart).padding(start = 1.dp).size(2.dp, 24.dp).background(c.accent))
-        Row(Modifier.fillMaxSize().padding(start = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth().padding(start = 14.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Glyph(icon, Modifier.size(20.dp), if (selected) c.accent else c.muted)
             Text(label, color = if (selected) c.foreground else c.muted, fontSize = 16.sp,
                 fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal)
@@ -227,20 +191,28 @@ internal fun SettingsRailItem(label: String, icon: String, selected: Boolean, on
 internal fun SettingsButton(
     label: String, onClick: () -> Unit, modifier: Modifier = Modifier,
     primary: Boolean = false, icon: String? = null, passive: Boolean = false,
+    leading: (@Composable () -> Unit)? = null, trailingIcon: String? = null,
 ) {
     val c = LocalPrismColors.current
     val shape = RoundedCornerShape(9.dp)
     val contentColor = if (primary) c.onAccent else c.foreground
-    Row(modifier.height(36.dp).then(if (passive) Modifier else Modifier.auraFocus(shape, 1f, ring = if (primary) c.foreground else null, instantRing = true))
+    Row(modifier.heightIn(min = 36.dp).then(if (passive) Modifier else Modifier.auraFocus(shape, 1f, ring = if (primary) c.foreground else null))
         .clip(shape)
         .then(if (passive) Modifier.focusProperties { canFocus = false } else Modifier)
         .background(if (primary) c.accent else c.panel)
         .clickable(onClick = onClick)
-        .padding(horizontal = 14.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        if (icon != null) Glyph(icon, Modifier.size(18.dp), if (primary) c.onAccent else c.muted)
-        Text(label, color = contentColor, fontSize = 15.sp,
-            fontWeight = if (primary) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
+        .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            leading?.invoke()
+            if (icon != null) Glyph(icon, Modifier.size(18.dp), if (primary) c.onAccent else c.muted)
+            Text(label, color = contentColor, fontSize = 15.sp,
+                fontWeight = if (primary) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
+        }
+        if (trailingIcon != null) {
+            Spacer(Modifier.width(8.dp))
+            Glyph(trailingIcon, Modifier.size(15.dp), if (primary) c.onAccent else c.muted)
+        }
     }
 }
 
@@ -354,7 +326,7 @@ internal fun AppUpdateDialog(
                         .focusRequester(notesFocus).focusProperties {
                             up = closeFocus; down = focus; left = focus; right = focus
                         }
-                        .auraFocus(scale = 1f, instantRing = true).onPreviewKeyEvent { event ->
+                        .auraFocus(scale = 1f).onPreviewKeyEvent { event ->
                             if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                             val delta = when (event.key) { Key.DirectionDown -> 90f; Key.DirectionUp -> -90f; else -> return@onPreviewKeyEvent false }
                             if ((delta > 0 && scroll.canScrollForward) || (delta < 0 && scroll.canScrollBackward)) {

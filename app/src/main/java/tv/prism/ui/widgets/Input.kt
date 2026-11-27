@@ -104,7 +104,7 @@ import tv.prism.ui.widgets.requestIfAttached
                 focusManager.moveFocus(FocusDirection.Up); true
             }
             else false
-        }.onFocusChanged { focused = it.isFocused; if (!it.isFocused && manualKeyboard) editing = false }.border(1.dp, if (focused) c.accent else c.line, androidx.compose.foundation.shape.RoundedCornerShape(10.dp)).background(c.panel, androidx.compose.foundation.shape.RoundedCornerShape(10.dp)).padding(12.dp),
+        }.auraFocus(androidx.compose.foundation.shape.RoundedCornerShape(10.dp), 1f).onFocusChanged { focused = it.isFocused; if (!it.isFocused && manualKeyboard) editing = false }.border(1.dp, c.line, androidx.compose.foundation.shape.RoundedCornerShape(10.dp)).background(c.panel, androidx.compose.foundation.shape.RoundedCornerShape(10.dp)).padding(12.dp),
         decorationBox = { inner ->
             val longHint = hint.length > 22
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(if (longHint) 4.dp else 0.dp)) {

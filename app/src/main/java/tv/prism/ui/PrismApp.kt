@@ -8,6 +8,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.draw.clipToBounds
 import androidx.activity.compose.BackHandler
@@ -91,6 +92,7 @@ import tv.prism.library.LibraryBackup
 import tv.prism.sources.Plugin
 import tv.prism.library.primaryKeys
 import tv.prism.ui.widgets.requestIfAttached
+import tv.prism.ui.widgets.RestoreFocusAfterDialog
 import tv.prism.ui.widgets.revealFocusRow
 import tv.prism.ui.widgets.requestAfterScroll
 import tv.prism.catalog.subjectTitle
@@ -169,7 +171,9 @@ import tv.prism.lyrics.withoutOpeningHeading
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class)
 @Composable
 internal fun MainActivity.PrismApp() {
+        val inputMode = androidx.compose.ui.platform.LocalInputModeManager.current
         LaunchedEffect(Unit) {
+            inputMode.requestInputMode(androidx.compose.ui.input.InputMode.Keyboard)
             withFrameNanos { }
             withFrameNanos { }
             startPlaybackAndMaintenance()
@@ -216,6 +220,14 @@ internal fun MainActivity.PrismApp() {
             libraryState.playlists.firstOrNull { "playlist:${it.id}" == selectedList } else null
         val importDraft = remember { PlaylistImportDraft() }
         var importDialog by remember { mutableStateOf(false) }
+        var importOrigin by remember { mutableStateOf<Pair<String, FocusRequester>?>(null) }
+        var updateOrigin by remember { mutableStateOf<Pair<String, FocusRequester>?>(null) }
+        var phoneOrigin by remember { mutableStateOf<Pair<String, FocusRequester>?>(null) }
+        var playerOrigin by remember { mutableStateOf<Pair<String, FocusRequester>?>(null) }
+        /* Set when 歌手/专辑 is opened from the player menu, so coming back reopens the
+           menu on that row instead of dropping the remote on the progress bar. */
+        var returnFromPlayerSearch by remember { mutableStateOf<(() -> Unit)?>(null) }
+        LaunchedEffect(playerOpen) { if (playerOpen) returnFromPlayerSearch = null }
         /* Keep the selected source across phone autofill and full remote operations. */
         var pendingSong by remember { mutableStateOf<Song?>(null) }
         var playerSourceChooser by remember { mutableStateOf<Pair<Song, List<Plugin>>?>(null) }
@@ -225,6 +237,15 @@ internal fun MainActivity.PrismApp() {
         var subjectMenu by remember { mutableStateOf<SavedSubject?>(null) }
         var collectionMenu by remember { mutableStateOf<CollectionMenuTarget?>(null) }
         var menuReturnFocus by remember { mutableStateOf<FocusRequester?>(null) }
+        LaunchedEffect(activeMv) {
+            if (activeMv == null) {
+                inputMode.requestInputMode(androidx.compose.ui.input.InputMode.Keyboard)
+                if (!playerOpen) {
+                    val restored = menuReturnFocus?.let { runCatching { it.requestFocus() }.getOrDefault(false) } == true
+                    if (!restored) focusRecovery++
+                }
+            }
+        }
         var menuWasOpen by remember { mutableStateOf(false) }
         var menuPage by remember { mutableStateOf("") }
         var menuBrowse by remember { mutableStateOf<JSONObject?>(null) }
@@ -293,27 +314,34 @@ internal fun MainActivity.PrismApp() {
            against items the remote never chose. */
         LaunchedEffect(selectedList) { confirmBatchOpen = false }
         var mvResolving by remember { mutableStateOf(false) }
+        var mvRequestToken by remember { mutableIntStateOf(0) }
         var mvError by remember(queue.getOrNull(queueIndex)?.key) { mutableStateOf("") }
         fun openMv(song: Song?) {
             if (song == null || mvResolving) return
+            val token = ++mvRequestToken
             mvResolving = true
             mvError = ""
             lifecycleScope.launch {
-                reportPlayback("正在解析 MV…")
+                if (playerOpen) reportPlayback("正在解析 MV…") else status = "正在加载 MV：${song.title}"
                 try {
                     val source = withTimeoutOrNull(15_000) { plugins.resolveVideo(song) }
                         ?: error("音源没有返回可播放的 MV 地址，或请求已超时")
-                    if (queue.getOrNull(queueIndex)?.key != song.key) return@launch
-                    resumeAfterMv = controller?.playWhenReady == true
-                    controller?.pause(); activeMv = source; reportPlayback("")
+                    if (token != mvRequestToken) return@launch
+                    if (activeMv == null) resumeAfterMv = controller?.playWhenReady == true
+                    playerScreenOff = false
+                    controller?.pause()
+                    activeMvSong = song
+                    activeMv = source
+                    reportPlayback("")
                 } catch (e: kotlinx.coroutines.CancellationException) { throw e }
                 catch (e: Exception) {
-                    if (queue.getOrNull(queueIndex)?.key == song.key) {
-                        mvError = "MV 解析失败：${e.message ?: "音源不可用"}"
-                        reportPlayback(mvError)
+                    if (token == mvRequestToken) {
+                        val message = "MV 解析失败：${e.message ?: "音源不可用"}"
+                        if (queue.getOrNull(queueIndex)?.key == song.key) mvError = message
+                        reportPlayback(message)
                     }
                 }
-                finally { mvResolving = false }
+                finally { if (token == mvRequestToken) mvResolving = false }
             }
         }
 
@@ -321,93 +349,7 @@ internal fun MainActivity.PrismApp() {
         fun importCapablePlugins() = plugins.state.value.plugins.filter { it.enabled && (it.metadata.optBoolean("importSheet") || it.metadata.optBoolean("importItem")) }
         fun importTargetPlugin() = importDraft.sourceId?.let { id -> importCapablePlugins().firstOrNull { it.id == id } }
 
-        fun openPhoneHub(entry: String? = null) {
-            phoneSessions.remoteEntry = entry ?: when {
-                page == "plugins" -> "settings"
-                page == "search" || queue.isEmpty() -> "search"
-                else -> "play"
-            }
-            /* Reopening the QR after hiding it reuses the live session, so the phone page that
-               is already open keeps the same address. A leftover config form is not a remote. */
-            if (phoneSessions.showRemoteQr()) return
-            val commands = PhoneRemoteCommands(
-                isRestoring = { restoringBackup },
-                playback = PhoneRemoteCommands.Playback(
-                    toggle = ::togglePhonePlayback,
-                    step = { delta ->
-                        require(queue.isNotEmpty()) { "播放列表为空" }
-                        step(delta)
-                    },
-                    favorite = {
-                        val song = queue.getOrNull(queueIndex) ?: error("还没有正在播放的歌曲")
-                        toggleFavorite(song)
-                    },
-                    seek = { target ->
-                        val limit = durationMs.takeIf { it > 0 } ?: target
-                        seekPlayback(target.coerceIn(0L, limit))
-                    },
-                    playQueueItem = { index, key ->
-                        require(queue.getOrNull(index)?.key == key) { "播放列表已变化，请重新选择歌曲" }
-                        playAt(index, openPlayer = false)
-                    },
-                    queuePage = { offset ->
-                        require(offset == -1 || offset in queue.indices) { "播放列表已变化，请重新定位" }
-                        phoneQueueOffset = offset
-                    },
-                    quality = { tier ->
-                        if (queue.isNotEmpty() && queue.getOrNull(queueIndex)?.pluginId != "local") switchQuality(tier)
-                    },
-                ),
-                search = PhoneRemoteCommands.Search(
-                    start = { query ->
-                        check(contentTasks.values.none { it.running }) { "请等待当前导入或音源操作完成" }
-                        searchViewModel.editDraft(query)
-                        playerOpen = false
-                        page = "search"
-                        search(query)
-                    },
-                    select = { generation, key, play, next ->
-                        require(searchType == "music" && generation == searchSession.generation) { "搜索结果已更新，请重新选择" }
-                        val song = results.firstOrNull { it.key == key } ?: error("这首歌已不在搜索结果中，请重新搜索")
-                        if (play) playSingle(song) else enqueueSong(song, next)
-                    },
-                    more = {
-                        check(!busy && hasMore && searchType == "music") { "当前无法加载更多" }
-                        search(searchTerm, append = true, focusResults = false)
-                    },
-                    type = ::changePhoneSearchType,
-                    source = ::changePhoneSearchSource,
-                    subscription = ::searchUsingSubscription,
-                ),
-                sources = PhoneRemoteCommands.Sources(
-                    plugins = plugins,
-                    runContentTask = ::runContentTask,
-                    importPlaylist = { name, url -> importPlaylist(name, url, importTargetPlugin()) },
-                    resolveReplacement = ::resolvePluginReplacement,
-                ),
-                app = PhoneRemoteCommands.App(
-                    preference = ::updatePreference,
-                    toggleMiniLyrics = { updatePreference("miniLyrics", (!showMiniLyrics).toString()) },
-                    homeShelf = { id, visible ->
-                        require(homeSectionOptions.any { it.first == id }) {
-                            "栏目不存在"
-                        }
-                        if (visible == (id in homeShelfHidden)) toggleHomeShelf(id)
-                    },
-                    showPlayer = { playerOpen = it },
-                    page = { destination ->
-                        page = destination
-                        playerOpen = false
-                    },
-                    backup = { withContext(Dispatchers.IO) { LibraryBackup.build(this@PrismApp, library, plugins).toString() } },
-                    restore = ::restorePhoneBackup,
-                ),
-            )
-            phoneSessions.openRemote(
-                snapshot = { phoneSnapshot(importTargetPlugin()?.displayName.orEmpty(), importCapablePlugins().size) },
-                command = commands::execute,
-            )
-        }
+
         val homeFocus = remember { FocusRequester() }
         val updatePromptFocus = remember { FocusAnchor() }
         val showUpdatePrompt = updateState.release != null && !updateState.skipped && updateState.remind
@@ -465,6 +407,7 @@ internal fun MainActivity.PrismApp() {
         /* Detail pages put their actions in the page head. A LazyColumn row has no geometric
            neighbour above it, so the first row declares the head as its Up target. */
         val detailHeaderFocus = remember { FocusAnchor() }
+        val detailLoadingFocus = remember { FocusAnchor() }
         /* Details are opened from cards in several lists; one requester per card lets Back
            return the remote to the exact card instead of the page's first entry. */
         val detailCardFocus = remember { mutableMapOf<String, FocusRequester>() }
@@ -588,7 +531,7 @@ internal fun MainActivity.PrismApp() {
             } else if (menuWasOpen) {
                 menuWasOpen = false
                 val target = menuReturnFocus; menuReturnFocus = null
-                if (page != menuPage || browseItem !== menuBrowse || playerOpen != menuPlayer) return@LaunchedEffect
+                if (page != menuPage || browseItem !== menuBrowse || playerOpen != menuPlayer || importDialog) return@LaunchedEffect
                 if (queueOpen) {
                     if (target?.requestAfterScroll { } != true)
                         (if (queue.isEmpty()) queueRootFocus else queuePlaybackFocus).requestAfterScroll { }
@@ -616,7 +559,147 @@ internal fun MainActivity.PrismApp() {
            one instead of the page entry (the rail). */
         val bodyFocusMemory = remember { mutableStateOf<FocusRequester?>(null) }
         LaunchedEffect(configured, settingsSection) { bodyFocusMemory.value = null }
+        fun resetDiscoveryRoot() {
+            clearBrowse()
+            discoverySession.closeChart()
+            browseReturnPage = "discover"
+            playerMenuRestoreRow = null
+            pageScope.launch { discoverListState.scrollToItem(0) }
+        }
+        fun openPhoneHub(entry: String? = null, origin: FocusRequester? = null) {
+            phoneOrigin = origin?.let { page to it }
+            phoneSessions.remoteEntry = entry ?: when {
+                page == "plugins" -> "settings"
+                page == "search" || queue.isEmpty() -> "search"
+                else -> "play"
+            }
+            /* Reopening the QR after hiding it reuses the live session, so the phone page that
+               is already open keeps the same address. A leftover config form is not a remote. */
+            if (phoneSessions.showRemoteQr()) return
+            val commands = PhoneRemoteCommands(
+                isRestoring = { restoringBackup },
+                playback = PhoneRemoteCommands.Playback(
+                    toggle = {
+                        val active = mvRemote
+                        if (activeMv != null && active != null) active.togglePlay() else togglePhonePlayback()
+                    },
+                    step = { delta ->
+                        val active = mvRemote
+                        if (activeMv != null && active != null) {
+                            if (delta < 0) active.prevOrRewind() else active.nextOrForward()
+                        } else {
+                            require(queue.isNotEmpty()) { "播放列表为空" }
+                            step(delta)
+                        }
+                    },
+                    favorite = {
+                        val song = queue.getOrNull(queueIndex) ?: error("还没有正在播放的歌曲")
+                        toggleFavorite(song)
+                    },
+                    seek = { target ->
+                        val active = mvRemote
+                        if (activeMv != null && active != null) {
+                            val total = active.read().duration.takeIf { it > 0 } ?: target
+                            active.seekTo(target.coerceIn(0L, total))
+                        } else {
+                            val limit = durationMs.takeIf { it > 0 } ?: target
+                            seekPlayback(target.coerceIn(0L, limit))
+                        }
+                    },
+                    playQueueItem = { index, key ->
+                        require(queue.getOrNull(index)?.key == key) { "播放列表已变化，请重新选择歌曲" }
+                        playAt(index, openPlayer = false)
+                    },
+                    queuePage = { offset ->
+                        require(offset == -1 || offset in queue.indices) { "播放列表已变化，请重新定位" }
+                        phoneQueueOffset = offset
+                    },
+                    quality = { tier ->
+                        if (queue.isNotEmpty() && queue.getOrNull(queueIndex)?.pluginId != "local") switchQuality(tier)
+                    },
+                    mv = { open ->
+                        if (open) {
+                            val current = queue.getOrNull(queueIndex) ?: error("还没有正在播放的歌曲")
+                            require(current.hasMv && current.pluginId in mvCapableIds) { "当前歌曲暂不支持 MV" }
+                            openMv(current)
+                        } else if (activeMv != null) {
+                            mvRequestToken++
+                            activeMv = null
+                            activeMvSong = null
+                            reportPlayback("")
+                            if (resumeAfterMv) controller?.play()
+                            resumeAfterMv = false
+                        }
+                    },
+                    mvAction = { cmd ->
+                        val active = mvRemote ?: error("当前未在播放 MV")
+                        when (cmd) {
+                            "mvRestart" -> active.restart()
+                            "mvLoop" -> active.toggleLoop()
+                            "mvSpeed" -> active.cycleSpeed()
+                            "mvFill" -> active.toggleFill()
+                            else -> error("未知 MV 操作")
+                        }
+                    },
+                ),
+                search = PhoneRemoteCommands.Search(
+                    start = { query ->
+                        check(contentTasks.values.none { it.running }) { "请等待当前导入或音源操作完成" }
+                        searchViewModel.editDraft(query)
+                        playerOpen = false
+                        page = "search"
+                        search(query)
+                    },
+                    select = { generation, key, play, next ->
+                        require(searchType == "music" && generation == searchSession.generation) { "搜索结果已更新，请重新选择" }
+                        val song = results.firstOrNull { it.key == key } ?: error("这首歌已不在搜索结果中，请重新搜索")
+                        if (play) playSingle(song) else enqueueSong(song, next)
+                    },
+                    more = {
+                        check(!busy && hasMore && searchType == "music") { "当前无法加载更多" }
+                        search(searchTerm, append = true, focusResults = false)
+                    },
+                    type = ::changePhoneSearchType,
+                    source = ::changePhoneSearchSource,
+                    subscription = ::searchUsingSubscription,
+                ),
+                sources = PhoneRemoteCommands.Sources(
+                    plugins = plugins,
+                    runContentTask = ::runContentTask,
+                    importPlaylist = { name, url -> importPlaylist(name, url, importTargetPlugin()) },
+                    resolveReplacement = ::resolvePluginReplacement,
+                ),
+                app = PhoneRemoteCommands.App(
+                    preference = ::updatePreference,
+                    toggleMiniLyrics = { updatePreference("miniLyrics", (!showMiniLyrics).toString()) },
+                    homeShelf = { id, visible ->
+                        require(homeSectionOptions.any { it.first == id }) {
+                            "栏目不存在"
+                        }
+                        if (visible == (id in homeShelfHidden)) toggleHomeShelf(id)
+                    },
+                    showPlayer = { playerOpen = it },
+                    page = { destination ->
+                        returnFromPlayerSearch = null
+                        if (destination == "discover") resetDiscoveryRoot()
+                        page = destination
+                        playerOpen = false
+                    },
+                    backup = { withContext(Dispatchers.IO) { LibraryBackup.build(this@PrismApp, library, plugins).toString() } },
+                    restore = ::restorePhoneBackup,
+                ),
+            )
+            phoneSessions.openRemote(
+                snapshot = { phoneSnapshot(importTargetPlugin()?.displayName.orEmpty(), importCapablePlugins().size) },
+                command = commands::execute,
+            )
+        }
         val enterPage: (String) -> Unit = enter@{ target ->
+            returnFromPlayerSearch = null
+            // Selecting the tab is an explicit trip to the discovery root, not Back.
+            if (target == "discover") {
+                resetDiscoveryRoot()
+            }
             val origin = homePlaylistOrigin
             if (target == "home" && origin != null) {
                 returnToHomePlaylist(origin)
@@ -645,12 +728,27 @@ internal fun MainActivity.PrismApp() {
                 else -> null
             }
         }
-        /* Leaving the player through a subject link lands on a detail page, not on the mini
+        /* Leaving the player through a subject link lands on a detail or search page, not on the mini
            player; keep the end-of-playback focus handoff from yanking the remote back. */
         var suppressMiniReturn by remember { mutableStateOf(false) }
         /* The album name alone is ambiguous, so the music-search fallback includes the artist. */
         var resolvingSubject by remember { mutableStateOf("") }
-        fun searchSubject(name: String, kind: String, song: Song) {
+        fun searchSubject(name: String, kind: String, song: Song, playerMenuRow: String?) {
+            if (playerOpen) {
+                val originPage = page
+                val originBrowse = captureBrowse()
+                val originStack = browseStack.toList()
+                returnFromPlayerSearch = {
+                    browseStack.clear()
+                    browseStack.addAll(originStack)
+                    browseItem = null
+                    originBrowse?.let(::restoreBrowse)
+                    playerMenuRestoreRow = playerMenuRow
+                    page = originPage
+                    playerOpen = true
+                }
+            }
+            playerOpen = false
             val albumCapable = plugins.state.value.plugins.any { it.enabled && supportsSubjectSearch(it, "album") }
             val query = if (kind == "album" && song.artist.isNotBlank() && song.artist != "未知歌手") "${song.artist} $name" else name
             searchViewModel.editDraft(query)
@@ -662,7 +760,7 @@ internal fun MainActivity.PrismApp() {
            entity object. Our plugins also emit artistId/albumId (a Prism-only extra), which
            opens the detail directly and avoids guessing among search hits. Sources that only
            give names fall back to searching the same source. */
-        fun openSubject(song: Song, kind: String, originFocus: String = "", menu: Boolean = false) {
+        fun openSubject(song: Song, kind: String, originFocus: String = "", menu: Boolean = false, playerMenuRow: String? = null) {
             subjectJob?.cancel()
             resolvingSubject = ""
             queueOpen = false
@@ -672,13 +770,12 @@ internal fun MainActivity.PrismApp() {
             if (playerOpen) suppressMiniReturn = true
             val plugin = plugins.state.value.plugins.firstOrNull { it.id == song.pluginId && it.enabled }
             if (plugin == null) {
-                playerOpen = false
-                searchSubject(name, kind, song)
+                searchSubject(name, kind, song, playerMenuRow)
                 return
             }
             fun acceptSubject(item: JSONObject) {
                 if (menu) showSubjectMenu(plugin, kind, item, detailFocus(originFocus))
-                else openBrowse(plugin, item, kind, originFocus)
+                else openBrowse(plugin, item, kind, originFocus, playerMenuRow)
             }
             val directId = (if (kind == "artist") song.data.optString("artistId") else song.data.optString("albumId"))
                 .trim()
@@ -696,8 +793,7 @@ internal fun MainActivity.PrismApp() {
             /* Without a platform id the only route is a subject search; a source that
                declares only song search gets the search page instead of an empty detail. */
             if (!supportsSubjectSearch(plugin, kind)) {
-                playerOpen = false
-                searchSubject(name, kind, song)
+                searchSubject(name, kind, song, playerMenuRow)
                 return
             }
             val originPage = page
@@ -721,8 +817,7 @@ internal fun MainActivity.PrismApp() {
                     } else null
                     if (best == null) {
                         status = "没有找到「$name」的$label，已改为搜索"
-                        playerOpen = false
-                        searchSubject(name, kind, song)
+                        searchSubject(name, kind, song, playerMenuRow)
                     } else {
                         status = ""
                         acceptSubject(best)
@@ -731,8 +826,7 @@ internal fun MainActivity.PrismApp() {
                 catch (e: Exception) {
                     if (originPage != page || originPlayer != playerOpen || originItem !== browseItem) return@launch
                     status = "打开$label 失败：${e.message ?: "未知错误"}，已改为搜索"
-                    playerOpen = false
-                    searchSubject(name, kind, song)
+                    searchSubject(name, kind, song, playerMenuRow)
                 } finally { if (kotlinx.coroutines.currentCoroutineContext().isActive) resolvingSubject = "" }
             }
         }
@@ -760,6 +854,8 @@ internal fun MainActivity.PrismApp() {
                 "discover" -> detailFocusMemory.value?.first ?: discoverFocusMemory.value?.first
                 else -> null
             }
+            val opener = playerOrigin?.takeIf { it.first == page }?.second
+            if (opener?.requestAfterScroll { } == true) return true
             repeat(3) { withFrameNanos { }; if (tryRequest(remembered)) return true }
             when (page) {
                 "home" -> return homeBodyFocus.requestIfAttached()
@@ -792,25 +888,40 @@ internal fun MainActivity.PrismApp() {
             if (playerOpen) playerWasOpen = true
             else if (playerWasOpen) {
                 withFrameNanos { }
-                val restored = !suppressMiniReturn && restorePlayerReturnFocus()
-                if (!restored) miniFocus.requestFocus()
+                /* Leaving the player for a subject page on purpose: that page owns the
+                   focus handoff, so the mini player must not pull the remote back behind
+                   the detail (which left the first Back with no focus owner). */
+                if (!suppressMiniReturn) {
+                    val restored = restorePlayerReturnFocus()
+                    if (!restored) miniFocus.requestFocus()
+                }
                 suppressMiniReturn = false
+                playerOrigin = null
                 playerWasOpen = false
             }
         }
-        /* Cancelling import returns to its toolbar; a completed import opens the new detail. */
-        var importWasOpen by remember { mutableStateOf(false) }
-        LaunchedEffect(importDialog) {
-            if (importDialog) importWasOpen = true
-            else if (importWasOpen) {
-                withFrameNanos { }
-                if (!importDialog) {
-                    if (selectedPlaylist != null) playlistBackFocus.requestIfAttached()
-                    else if (!libraryHeaderFocus.requestIfAttached()) libraryEmptyFocus.requestIfAttached()
-                }
-                importWasOpen = false
-            }
-        }
+        RestoreFocusAfterDialog(
+            open = importDialog,
+            origin = importOrigin?.second,
+            fallback = when {
+                selectedPlaylist != null -> playlistBackFocus.requester
+                libraryHeaderFocus.attached -> libraryHeaderFocus.requester
+                else -> libraryEmptyFocus.requester
+            },
+            enabled = page == importOrigin?.first && !playerOpen && !phoneSessions.dialogVisible && !libraryListMenu,
+        )
+        RestoreFocusAfterDialog(
+            open = updateDialogOpen,
+            origin = updateOrigin?.second,
+            fallback = if (page == "home") heroFocus.requester else pageEntryFocus?.requester,
+            enabled = page == updateOrigin?.first && !playerOpen,
+        )
+        RestoreFocusAfterDialog(
+            open = phoneSessions.dialogVisible && phoneSessions.remoteMode,
+            origin = phoneOrigin?.second,
+            fallback = pageEntryFocus?.requester,
+            enabled = page == phoneOrigin?.first && !playerOpen && !phoneSessions.dialogVisible,
+        )
         LaunchedEffect(page) {
             if (page != "search") focusSearchResults = false
             /* The bar already owns focus while previewing; moving it now would stop the user
@@ -910,6 +1021,15 @@ internal fun MainActivity.PrismApp() {
                 if (page != "discover") return@LaunchedEffect
             }
             if (page != "discover") return@LaunchedEffect
+            /* A detail composes its head before its songs finish loading. Park focus on
+               a non-visual container while loading so Back is never swallowed, without
+               flashing a focus ring on 收藏 before 播放全部 appears. */
+            if (browseItem != null && browseLoading && browseSongs.isEmpty()) {
+                for (attempt in 0 until 4) {
+                    if (detailLoadingFocus.requestIfAttached()) break
+                    withFrameNanos { }
+                }
+            }
             when {
                 browseItem != null && discoverySession.chartSelection == null -> snapshotFlow {
                     !browseLoading && browseStatus != "正在加载…"
@@ -927,7 +1047,7 @@ internal fun MainActivity.PrismApp() {
                 discoverySession.chartSelection != null -> discoverEntryFocus
                 else -> discoverContentEntry()
             }
-            repeat(6) {
+            repeat(12) {
                 withFrameNanos { }
                 if (target.requestIfAttached()) return@LaunchedEffect
             }
@@ -1017,6 +1137,11 @@ internal fun MainActivity.PrismApp() {
                    table rather than leaving 我的 for 首页. */
                 page == "library" && libraryViewModel.state.value.list.startsWith("playlist:") -> closePlaylistTable()
                 page == "library" && homePlaylistOrigin != null -> homePlaylistOrigin?.let(::returnToHomePlaylist)
+                page == "search" && returnFromPlayerSearch != null -> {
+                    val restore = returnFromPlayerSearch
+                    returnFromPlayerSearch = null
+                    restore?.invoke()
+                }
                 browseItem != null && page == "discover" -> leaveBrowse()
                 discoverySession.chartSelection != null && page == "discover" -> {
                     /* Back belongs on the chart card you chose, not on whichever one the grid
@@ -1030,6 +1155,13 @@ internal fun MainActivity.PrismApp() {
                     /* The page body recomposes away and takes the focused node with it, so the
                        remote is handed to the 首页 tab — Back must never strand focus nowhere. */
                     pageScope.launch { withFrameNanos { }; focusActiveTab() }
+                }
+                page == "home" && homeListState.firstVisibleItemIndex > 0 -> {
+                    pageScope.launch {
+                        if (!reduceMotion) homeListState.animateScrollToItem(0) else homeListState.scrollToItem(0)
+                        withFrameNanos { }
+                        if (!entryFocus("home").requestIfAttached()) focusActiveTab()
+                    }
                 }
                 else -> {
                     val now = android.os.SystemClock.elapsedRealtime()
@@ -1069,8 +1201,6 @@ internal fun MainActivity.PrismApp() {
             catch (e: Exception) { status = "曲库更新失败：${e.message}" }
             if (selectedPlugin.isNotEmpty() && activePlugins.none { it.id == selectedPlugin }) selectedPlugin = ""
             searchSources = searchSources.intersect(activePlugins.map { it.id }.toSet())
-            recommendationPluginId = recommendationSource?.id.orEmpty()
-            chartPluginId = chartSource?.id.orEmpty()
         }
         val recommendationRevision = remember(recommendationSource) { recommendationSource?.requestRevision() }
         LaunchedEffect(recommendationRevision, page == "discover") {
@@ -1131,11 +1261,18 @@ internal fun MainActivity.PrismApp() {
             PrismBackground {
                 Column(Modifier.fillMaxSize().padding(horizontal = PrismPagePadding, vertical = 20.dp)) {
                     TopNavigation(page, navTabs, pageEntryFocus,
-                        onPreviewPage = { page = it }, onEnterPage = enterPage,
-                        onNavFocusChanged = { navFocused = it }, onOpenPhone = { openPhoneHub() },
+                        onPreviewPage = {
+                            if (page != it) {
+                                returnFromPlayerSearch = null
+                                playerMenuRestoreRow = null
+                                if (it == "discover") resetDiscoveryRoot()
+                            }
+                            page = it
+                        }, onEnterPage = enterPage,
+                        onNavFocusChanged = { navFocused = it }, onOpenPhone = { openPhoneHub(origin = it) },
                         restoreHomeOnDown = homePlaylistOrigin != null)
                     Spacer(Modifier.height(18.dp))
-                    if (state.error != null || libraryState.error != null) Text(state.error ?: libraryState.error.orEmpty(), fontSize = 12.sp, color = c.accent, modifier = Modifier.padding(bottom = 8.dp), maxLines = 2)
+                    if (state.error != null || libraryState.error != null) Text(state.error ?: libraryState.error.orEmpty(), fontSize = 12.sp, color = c.danger, modifier = Modifier.padding(bottom = 8.dp), maxLines = 2)
                     Box(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
                         Box(Modifier.fillMaxSize()) {
                         when (page) {
@@ -1160,12 +1297,19 @@ internal fun MainActivity.PrismApp() {
                                 focus = HomePageFocus(navTabFocus, miniFocus, heroFocus, homeBodyFocus, homePlayerFocus,
                                     updatePromptFocus, radioCardFocus, homeListState, homeRowStates, ::detailFocus, { entryFocus("home") }),
                                 actions = HomePageActions(
-                                    showUpdate = { updateDialogOpen = true },
+                                    showUpdate = {
+                                        updateOrigin = page to updatePromptFocus.requester
+                                        updateDialogOpen = true
+                                    },
                                     skipUpdate = appUpdates::skip,
                                     openSources = ::openSources,
                                     showGuide = { guideOpen = true },
                                     continuePlayback = {
-                                        if (queue.isNotEmpty()) playerOpen = true
+                                        if (queue.isNotEmpty()) {
+                                            playerOrigin = page to (if (activePlugins.isEmpty()) homePlayerFocus else heroFocus).requester
+                                            playerMenuRestoreRow = null
+                                            playerOpen = true
+                                        }
                                         else if (activePlugins.isEmpty()) { settingsViewModel.open("音源"); page = "plugins" }
                                         else page = "search"
                                     },
@@ -1181,7 +1325,7 @@ internal fun MainActivity.PrismApp() {
                                             else if (!discoverySession.chartLoading) lifecycleScope.launch { discoverySession.loadCharts(source) }
                                         }
                                     },
-                                    discover = { page = "discover" },
+                                    discover = { resetDiscoveryRoot(); page = "discover" },
                                     manageShelves = { settingsViewModel.open("推荐"); page = "plugins" },
                                     openPlaylists = { origin ->
                                         homePlaylistOrigin = origin
@@ -1271,7 +1415,18 @@ internal fun MainActivity.PrismApp() {
                                             }
                                         }
                                         CompositionLocalProvider(LocalBringIntoViewSpec provides detailReveal) {
-                                        LazyColumn(state = browseSongListState, modifier = Modifier.weight(1f)) {
+                                        if (browseLoading && browseSongs.isEmpty()) {
+                                            Box(
+                                                Modifier.size(0.dp)
+                                                    .focusAnchor(detailLoadingFocus)
+                                                    .focusProperties { up = navTabFocus }
+                                                    .focusable(),
+                                            )
+                                        }
+                                        LazyColumn(
+                                            state = browseSongListState,
+                                            modifier = Modifier.weight(1f),
+                                        ) {
                                             item {
                                                 PrismDetailHero(
                                                     title = browseTitle, eyebrow = eyebrow, meta = subjectMeta,
@@ -1284,19 +1439,22 @@ internal fun MainActivity.PrismApp() {
                                                     /* The hero sits inside the scrolling list, so the head's Up has
                                                        no geometric neighbour to the bar; name it. */
                                                     val heroUp = Modifier.focusProperties { up = navTabFocus }
-                                                    /* 播放全部 belongs to a song list. An artist page has
-                                                       two lists (albums and songs), so the button moves down
-                                                       beside 热门歌曲 instead of silently choosing one. */
-                                                    val playAllInHero = browseKind != "artist" && browseSongs.isNotEmpty()
+                                                    val playAllInHero = browseSongs.isNotEmpty()
+                                                    val fromPlayer = browseStack.any { it.playerOpen }
+                                                    // Keep automatic focus off secondary actions until the primary action is ready.
+                                                    val actionEdge = heroUp.focusProperties { canFocus = !browseLoading }
+                                                    if (playAllInHero) {
+                                                        PrismAction("播放全部", { playCollection(browseSongs.toList()) }, actionEdge.focusAnchor(detailHeaderFocus), primary = true, icon = "play")
+                                                        PrismAction("随机播放", { playCollection(browseSongs.toList(), shuffle = true) }, actionEdge, icon = "shuffle")
+                                                    }
                                                     PrismAction(if (saved) "已收藏" else "收藏", {
                                                         toggleSubject(browsePluginId, browseKind, item, sourceName)
-                                                    }, if (!playAllInHero) heroUp.focusAnchor(detailHeaderFocus) else heroUp,
+                                                    }, if (!playAllInHero && !browseLoading) actionEdge.focusAnchor(detailHeaderFocus) else actionEdge,
                                                         icon = if (saved) "heartFilled" else "heart")
-                                                    if (playAllInHero) {
-                                                        PrismAction("播放全部", { playCollection(browseSongs.toList()) }, heroUp.focusAnchor(detailHeaderFocus), primary = true, icon = "play")
-                                                        PrismAction("随机播放", { playCollection(browseSongs.toList(), shuffle = true) }, heroUp, icon = "shuffle")
+                                                    if (fromPlayer) {
+                                                        PrismAction("发现主页", { resetDiscoveryRoot() }, actionEdge, icon = "compass")
                                                     }
-                                                    else if (queue.isNotEmpty()) PrismAction("打开播放器", { playerOpen = true }, heroUp)
+                                                    if (!playAllInHero && !fromPlayer && queue.isNotEmpty()) PrismAction("打开播放器", { playerOpen = true }, actionEdge)
                                                 }
                                             }
                                             if (browseKind == "artist" && (browseAlbums.isNotEmpty() || browseAlbumStatus.isNotBlank())) {
@@ -1765,7 +1923,10 @@ internal fun MainActivity.PrismApp() {
                                     },
                                     openPlaylist = ::openPlaylistTable,
                                     closePlaylist = ::closePlaylistTable,
-                                    importPlaylist = { importDialog = true },
+                                    importPlaylist = { origin ->
+                                        importOrigin = page to origin
+                                        importDialog = true
+                                    },
                                     fillOnPhone = { field, query, onReturn, onQuery ->
                                         phoneSessions.openForm(
                                             listOf("keyword" to field), mapOf("keyword" to query),
@@ -1774,7 +1935,7 @@ internal fun MainActivity.PrismApp() {
                                             onReturn = onReturn,
                                         ) { values -> onQuery(values["keyword"].orEmpty().take(120)) }
                                     },
-                                    discover = { page = "discover" },
+                                    discover = { resetDiscoveryRoot(); page = "discover" },
                                     enterManage = ::enterLibraryManage,
                                     exitManage = ::exitLibraryManage,
                                     onBack = { onBackPressedDispatcher.onBackPressed() },
@@ -1819,9 +1980,12 @@ internal fun MainActivity.PrismApp() {
                                     }
                                     if (settingsSection == "关于") AboutSettings(
                                         updateState, cacheBytes, clearingCache, sectionEntryFocus.getValue("关于"),
-                                        entryEdge, edgeToRail, bodyFocusMemory, ::checkAppUpdates, appUpdates::setRemind,
+                                        entryEdge, edgeToRail, bodyFocusMemory, {
+                                            updateOrigin = bodyFocusMemory.value?.let { page to it }
+                                            checkAppUpdates()
+                                        }, appUpdates::setRemind,
                                         clearCache = ::clearCache,
-                                        onBackup = { openPhoneHub("settings") },
+                                        onBackup = { openPhoneHub("settings", bodyFocusMemory.value) },
                                     )
                                     if (settingsSection == "推荐") DiscoverySettings(
                                         activePlugins, recommendationPluginId, chartPluginId, homeShelfHidden,
@@ -1857,7 +2021,14 @@ internal fun MainActivity.PrismApp() {
                         lyricPosition = { positionMs - lyricCalibrationMs },
                         showLyric = showMiniLyrics,
                         visible = !playerOpen && activeMv == null,
-                        onOpen = { if (queue.getOrNull(queueIndex) == null) page = "search" else playerOpen = true },
+                        onOpen = {
+                            if (queue.getOrNull(queueIndex) == null) page = "search"
+                            else {
+                                playerOrigin = page to miniFocus
+                                playerMenuRestoreRow = null
+                                playerOpen = true
+                            }
+                        },
                         onToggle = { togglePlayback() },
                         openFocus = miniFocus,
                         /* After a search result plays, Up should reach the list you were
@@ -1991,7 +2162,7 @@ internal fun MainActivity.PrismApp() {
                                     playbackSong()?.let { LyricCalibration.save(this@PrismApp, it.key, value) }
                                 },
                                 onScreenOff = { playerScreenOff = true; screenOffSettled = false },
-                                onBack = { playerOpen = false }, onPlay = { togglePlayback() },
+                                onBack = { playerMenuRestoreRow = null; playerOpen = false }, onPlay = { togglePlayback() },
                                 onPrevious = { step(-1) }, onNext = { step(1) }, onShuffle = {
                                     val modes = PlaybackMode.entries
                                     updatePreference("mode", modes[(modes.indexOf(playMode) + 1) % modes.size].id)
@@ -2020,8 +2191,8 @@ internal fun MainActivity.PrismApp() {
                                     menuReturnFocus = focus
                                     trackMenu = TrackMenuTarget(current, list = "player")
                                 },
-                                onArtist = song?.let { { openSubject(it, "artist") } },
-                                onAlbum = song?.let { { openSubject(it, "album") } },
+                                onArtist = song?.let { s -> { openSubject(s, "artist", playerMenuRow = "artist") } },
+                                onAlbum = song?.let { s -> { openSubject(s, "album", playerMenuRow = "album") } },
                                 onQueue = { queueOpen = true },
                                 onMv = { openMv(song) },
                                 /* A tier the plugin left unanswered is dropped, so the pill only cycles
@@ -2033,7 +2204,9 @@ internal fun MainActivity.PrismApp() {
                                 qualityEnabled = (playbackSong() ?: song)?.pluginId?.let { it != "local" } ?: false,
                                 qualitySwitching = qualitySwitching,
                                 qualityNotice = qualityNotice,
-                                onSelectQuality = { tier -> switchQuality(tier) })
+                                onSelectQuality = { tier -> switchQuality(tier) },
+                                menuStartRow = playerMenuRestoreRow,
+                                onMenuStartConsumed = { playerMenuRestoreRow = null })
                         }
                     }
                     /* 幕布：渐隐时盖住正在淡出的播放器；唤醒时播放器先回到幕布下，再渐亮出来。
@@ -2042,20 +2215,22 @@ internal fun MainActivity.PrismApp() {
                     LaunchedEffect(playerScreenOff, screenOffSettled, motionEnabled) {
                         when {
                             playerScreenOff && !screenOffSettled -> {
-                                if (motionEnabled) curtain.animateTo(1f, tween(700)) else curtain.snapTo(1f)
+                                if (motionEnabled) curtain.animateTo(1f, tween(780, easing = FastOutSlowInEasing)) else curtain.snapTo(1f)
                                 screenOffSettled = true
                             }
                             !playerScreenOff && curtain.value > 0f -> {
-                                if (motionEnabled) curtain.animateTo(0f, tween(300)) else curtain.snapTo(0f)
+                                // Let the re-mounted player compose behind black before lifting the curtain.
+                                repeat(2) { withFrameNanos { } }
+                                if (motionEnabled) curtain.animateTo(0f, tween(380, easing = FastOutSlowInEasing)) else curtain.snapTo(0f)
                             }
                         }
                     }
                     /* 黑色只由幕布一层来画：息屏层透明、盖在幕布之上接焦点/点击并显示
-                       提示。若息屏层自带不透明黑底，入场瞬间就盖住播放器（渐隐不可见）；
-                       若把它压在幕布下面，稳定后提示又被幕布盖住。 */
+                       提示。唤醒时保留组件到幕布退场，让暖光与提示随幕布一同柔和消退。 */
                     if (curtain.value > 0f) Box(Modifier.fillMaxSize().alpha(curtain.value).background(Color.Black))
-                    if (playerScreenOff) PrismScreenOff(
-                        keepAwake = playing && playbackState in setOf(Player.STATE_READY, Player.STATE_BUFFERING),
+                    if (playerScreenOff || curtain.value > 0f) PrismScreenOff(
+                        active = playerScreenOff,
+                        keepAwake = playerScreenOff && playing && playbackState in setOf(Player.STATE_READY, Player.STATE_BUFFERING),
                         motion = motionEnabled,
                         settled = screenOffSettled,
                         onWake = { playerScreenOff = false },
@@ -2064,9 +2239,29 @@ internal fun MainActivity.PrismApp() {
             }
             }
             activeMv?.let { source ->
-                val mvSong = queue.getOrNull(queueIndex)
-                MvPlayer(source, mvSong?.title.orEmpty(), mvSong?.artist.orEmpty(), progressKey = mvSong?.key.orEmpty()) {
+                val mvSong = activeMvSong ?: queue.getOrNull(queueIndex)
+                val queueMvs = remember(queue, queueIndex, playMode, mvCapableIds) {
+                    playbackIndices().mapNotNull { queue.getOrNull(it) }.filter { it.hasMv && it.pluginId in mvCapableIds }
+                }
+                val mvPos = mvSong?.let { s -> queueMvs.indexOfFirst { it.key == s.key } } ?: -1
+                val prevMvSong = if (mvPos > 0) queueMvs[mvPos - 1] else null
+                val nextMvSong = if (mvPos >= 0 && mvPos < queueMvs.lastIndex) queueMvs[mvPos + 1] else null
+                val mvLyrics = if (mvSong?.key == queue.getOrNull(queueIndex)?.key) visibleLyrics else emptyList()
+                MvPlayer(
+                    source = source,
+                    title = mvSong?.title.orEmpty(),
+                    artist = mvSong?.artist.orEmpty(),
+                    progressKey = mvSong?.key.orEmpty(),
+                    lyrics = mvLyrics,
+                    subLyrics = subLyrics,
+                    lyricOffsetMs = lyricCalibrationMs,
+                    onPrevMv = prevMvSong?.let { target -> { openMv(target) } },
+                    onNextMv = nextMvSong?.let { target -> { openMv(target) } },
+                    onRemoteSession = { session -> mvRemote = session },
+                ) {
+                    mvRequestToken++
                     activeMv = null
+                    activeMvSong = null
                     reportPlayback("")
                     if (resumeAfterMv) controller?.play()
                     resumeAfterMv = false
@@ -2098,22 +2293,10 @@ internal fun MainActivity.PrismApp() {
                 onCheck = { checkAppUpdates() }, onDownload = { downloadAppUpdate() },
                 onInstall = { if (updateJob?.isActive != true) updateJob = lifecycleScope.launch { appUpdates.install(this@PrismApp) } },
                 onCancel = { cancelAppUpdate() }, onSkip = {
-                    appUpdates.skip(); updateDialogOpen = false
-                    pageScope.launch {
-                        withFrameNanos { }
-                        if (page == "home") heroFocus.requestIfAttached()
-                        else if (page == "plugins" && settingsSection == "关于") sectionEntryFocus.getValue("关于").requestIfAttached()
-                        else pageEntryFocus?.requestIfAttached()
-                    }
-                },
-                onDismiss = {
+                    appUpdates.skip()
                     updateDialogOpen = false
-                    pageScope.launch {
-                        withFrameNanos { }
-                        if (page == "plugins" && settingsSection == "关于") sectionEntryFocus.getValue("关于").requestIfAttached()
-                        else pageEntryFocus?.requestIfAttached()
-                    }
-                })
+                },
+                onDismiss = { updateDialogOpen = false })
             var subjectHint by remember(resolvingSubject) { mutableStateOf(false) }
             LaunchedEffect(resolvingSubject) {
                 if (resolvingSubject.isNotEmpty()) { delay(400); subjectHint = true }
@@ -2131,6 +2314,7 @@ internal fun MainActivity.PrismApp() {
                 }
                 QueueDialog(queue, playbackIndices(), queueIndex, following, ActiveQueue.radio,
                     libraryState.favorites, queuePlaybackFocus, queueRootFocus, ::detailFocus, motionEnabled,
+                    mvCapableIds = mvCapableIds,
                     onClose = { queueOpen = false },
                     onSongMenu = { song, focus ->
                         menuReturnFocus = focus
@@ -2165,6 +2349,11 @@ internal fun MainActivity.PrismApp() {
                         })
                 } else TrackActionsMenu(target, libraryState, activePlugins,
                     openOtherSources = if (available.isEmpty()) null else ({ choosingSource = true }),
+                    openMv = { song ->
+                        trackMenu = null
+                        queueOpen = false
+                        openMv(song)
+                    },
                     openSubject = { song, kind, origin -> openSubject(song, kind, origin) },
                     find = { term, type ->
                         trackMenu = null
@@ -2209,7 +2398,10 @@ internal fun MainActivity.PrismApp() {
                             add(PrismMenuAction("随机播放", "shuffle") { libraryListMenu = false; playCollection(menuSongs, shuffle = true) })
                         }
                         if (showingPlaylists) {
-                            add(PrismMenuAction("导入歌单", "import", navigates = true) { libraryListMenu = false; importDialog = true })
+                            add(PrismMenuAction("导入歌单", "import", navigates = true, keepOpen = true) {
+                                importOrigin = menuReturnFocus?.let { page to it }
+                                importDialog = true
+                            })
                         }
                         if (menuManageable) {
                             add(PrismMenuAction("批量管理", "list", navigates = true, section = PrismMenuSection.MANAGEMENT) { libraryListMenu = false; enterLibraryManage() })
@@ -2250,7 +2442,7 @@ internal fun MainActivity.PrismApp() {
                             Text("已选 ${libraryViewModel.state.collectAsState().value.selected.size} $batchUnit，$batchNote", color = c.muted, fontSize = 13.sp)
                             Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
                                 PrismAction("取消", { if (!batchRunning) confirmBatchOpen = false }, Modifier.focusRequester(cancelFocus))
-                                PrismAction(if (batchRunning) "处理中…" else "确认", { runLibraryBatch() }, primary = true)
+                                PrismAction(if (batchRunning) "处理中…" else "确认", { runLibraryBatch() }, primary = true, destructive = true, enabled = !batchRunning)
                             }
                         }
                     }
@@ -2269,6 +2461,7 @@ internal fun MainActivity.PrismApp() {
             }
             if (importDialog) PlaylistImportDialog(importDraft,
                 onDismiss = { importDialog = false }, onReopen = { importDialog = true },
+                onStarted = { libraryListMenu = false },
                 onError = { status = it })
             pluginReplacements.firstOrNull()?.let { replacement ->
                 key(replacement.incoming.id) {

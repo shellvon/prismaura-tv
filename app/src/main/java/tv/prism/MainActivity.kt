@@ -125,6 +125,7 @@ import tv.prism.ui.SearchViewModel
 import tv.prism.ui.LibraryViewModel
 import tv.prism.ui.PluginViewModel
 import tv.prism.ui.SettingsViewModel
+import tv.prism.playback.MvRemoteSession
 import tv.prism.playback.VideoSource
 import tv.prism.library.SavedSubject
 import tv.prism.catalog.SearchSession
@@ -250,6 +251,9 @@ class MainActivity : ComponentActivity() {
     /* 被吞掉的那次按键，落焦后重放一次。 */
     internal var replayKey by mutableStateOf<KeyEvent?>(null)
     internal var replaying = false
+    /* A BACK swallowed by lost focus: the down event is forwarded to the dispatcher so the
+       press still navigates, and its matching up event is absorbed. */
+    private var swallowedBackDown = -1L
     internal val replayableKeys = setOf(
         KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT,
         KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
@@ -265,6 +269,8 @@ class MainActivity : ComponentActivity() {
     internal val settingsViewModel by viewModels<SettingsViewModel>()
     internal var playerOpen by mutableStateOf(false)
     internal var activeMv by mutableStateOf<VideoSource?>(null)
+    internal var activeMvSong by mutableStateOf<Song?>(null)
+    internal var mvRemote by mutableStateOf<MvRemoteSession?>(null)
     internal var playerScreenOff by mutableStateOf(false)
     // Retain the player during the fade; remove it once the black curtain is opaque.
     internal var screenOffSettled by mutableStateOf(true)
@@ -308,6 +314,7 @@ class MainActivity : ComponentActivity() {
     internal var focusSearchResults by mutableStateOf(false)
     internal var browseTitle by mutableStateOf("")
     internal var browseReturnPage by mutableStateOf("home")
+    internal var playerMenuRestoreRow by mutableStateOf<String?>(null)
     internal var browseKind by mutableStateOf("")
     internal var browseItem by mutableStateOf<JSONObject?>(null)
     internal var browsePluginId by mutableStateOf("")
@@ -878,6 +885,20 @@ class MainActivity : ComponentActivity() {
 
     /* Back leaves the detail, not the page the detail happened to live on: the snapshot is
        whatever the user was looking at when the detail opened. */
+    internal fun clearBrowse() {
+        browseJob?.cancel()
+        browseAlbumJob?.cancel()
+        browseGeneration++
+        browseLoading = false
+        browseAlbumLoading = false
+        browseItem = null
+        browseAlbums = emptyList()
+        browseInfo = null
+        browseStack.clear()
+        playerMenuRestoreRow = null
+        pendingReturnFocus = ""
+    }
+
     internal fun leaveBrowse() {
         browseJob?.cancel()
         browseAlbumJob?.cancel()
@@ -892,11 +913,12 @@ class MainActivity : ComponentActivity() {
         pendingReturnFocus = previous?.focusKey.orEmpty()
         if (previous == null) { page = browseReturnPage; return }
         previous.browse?.let { restoreBrowse(it) }
+        playerMenuRestoreRow = previous.playerMenuRow
         page = previous.page
         playerOpen = previous.playerOpen
     }
 
-    internal fun openBrowse(plugin: Plugin, item: JSONObject, kind: String, originFocus: String? = null) {
+    internal fun openBrowse(plugin: Plugin, item: JSONObject, kind: String, originFocus: String? = null, playerMenuRow: String? = null) {
         browseJob?.cancel()
         browseAlbumJob?.cancel()
         browseGeneration++
@@ -913,10 +935,10 @@ class MainActivity : ComponentActivity() {
             else -> "$kind:${plugin.id}:${item.optString("id")}"
         }
         pendingReturnFocus = ""
-        if (nested) browseStack.addLast(BrowseReturn(page, playerOpen, captureBrowse(), returnFocus))
+        if (nested) browseStack.addLast(BrowseReturn(page, playerOpen, captureBrowse(), returnFocus, if (playerOpen) playerMenuRow else null))
         else {
             browseStack.clear()
-            browseStack.addLast(BrowseReturn(page, playerOpen, null, returnFocus))
+            browseStack.addLast(BrowseReturn(page, playerOpen, null, returnFocus, if (playerOpen) playerMenuRow else null))
         }
         if (!nested) browseReturnPage = page
         playerOpen = false
@@ -929,6 +951,7 @@ class MainActivity : ComponentActivity() {
         browseInfo = null
         browsePage = 1
         browseMore = false
+        browseLoading = true
         browseStatus = "正在加载…"
         browseAlbumStatus = if (kind == "artist") "正在加载专辑…" else ""
         page = "discover"
@@ -938,8 +961,12 @@ class MainActivity : ComponentActivity() {
 
     internal fun loadBrowse(append: Boolean) {
         val item = browseItem ?: return
-        val plugin = plugins.state.value.plugins.firstOrNull { it.id == browsePluginId } ?: run { browseStatus = "音源已移除"; return }
-        if (browseLoading) return
+        val plugin = plugins.state.value.plugins.firstOrNull { it.id == browsePluginId } ?: run {
+            browseLoading = false
+            browseStatus = "音源已移除"
+            return
+        }
+        if (browseJob?.isActive == true) return
         val generation = browseGeneration
         browseJob = lifecycleScope.launch {
             browseLoading = true
@@ -1220,15 +1247,14 @@ class MainActivity : ComponentActivity() {
     }
 
     internal fun toggleSubject(pluginId: String, kind: String, item: JSONObject, sourceName: String,
-                              onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = { status = it }) {
+                              onSuccess: (String) -> Unit = { status = it }, onFailure: (String) -> Unit = { status = it }) {
         lifecycleScope.launch {
             try {
                 val keys = plugins.state.value.plugins.firstOrNull { it.id == pluginId }?.metadata?.let(::primaryKeys) ?: listOf("id")
                 val key = SavedSubject(pluginId, kind, item, sourceName, keys).key
                 val wasSaved = library.state.value.subjects.any { it.key == key }
                 library.toggleSubject(SavedSubject(pluginId, kind, item, sourceName, keys))
-                status = if (wasSaved) "已取消收藏" else "已收藏"
-                onSuccess()
+                onSuccess(if (wasSaved) "已取消收藏" else "已收藏")
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { onFailure(e.message ?: "保存失败") }
         }
@@ -2235,18 +2261,41 @@ class MainActivity : ComponentActivity() {
         } else emptyList()
         val shelves = tv.prism.ui.home.homeSectionOptions
 
+        val currentMvSong = activeMvSong ?: current
+        val mvState = if (activeMv != null) mvRemote?.read() else null
         return PhoneRemoteSnapshot().apply {
             playback(
                 queue = queue, queueIndex = queueIndex, order = playbackIndices(), offset = phoneQueueOffset,
-                stream = stream, playing = playing && playbackState != Player.STATE_ENDED,
-                position = positionMs, duration = durationMs, quality = playingQuality.ifBlank { tierFor(stream) },
+                stream = stream,
+                playing = mvState?.playing ?: (playing && playbackState != Player.STATE_ENDED),
+                position = mvState?.position ?: positionMs,
+                duration = mvState?.duration ?: durationMs,
+                quality = playingQuality.ifBlank { tierFor(stream) },
                 streamFormat = streamFormat, mode = playMode.id, radioActive = ActiveQueue.radio,
                 favorite = current != null && libraryState.favorites.any { it.key == current.key },
-                qualities = qualities,
+                qualities = qualities, phase = playbackPhase,
+                advancing = mvState?.advancing ?: (playbackPhase == PlaybackPhase.Ready && playbackActive && activeMv == null),
+                seekable = mvState?.seekable ?: streamSeekable,
+                hasMv = current != null && current.hasMv && sourceState.plugins.any { it.id == current.pluginId && it.enabled && it.capabilities.has("mvSource") },
+                mvActive = activeMv != null,
+                mvTitle = if (activeMv != null) currentMvSong?.title.orEmpty() else "",
+                mvQuality = mvState?.quality.orEmpty(),
+                mvLoop = mvState?.loopOne == true,
+                mvSpeed = mvState?.speed ?: 1f,
+                mvFill = mvState?.fillScreen == true,
+                mvCanPrev = mvState?.canPrev == true,
+                mvCanNext = mvState?.canNext == true,
+                mvStatus = if (mvState != null) when {
+                    mvState.ended -> "MV 播放结束"
+                    mvState.buffering -> "MV 缓冲中…"
+                    mvState.playing -> "正在观看 MV"
+                    else -> "MV 已暂停"
+                } else "",
             )
             preferences(
                 miniLyrics = showMiniLyrics, theme = theme, reduceMotion = reduceMotion,
                 autoSourceFallback = autoSourceFallback, lyricFontLevel = lyricFontLevel, subLyrics = subLyrics,
+                hideHeading = hideHeading, lyricLrclib = lyricLrclib, lyricKugou = lyricKugou, lyricNetease = lyricNetease,
                 pluginWorkerLimit = pluginWorkerLimit, automaticWorkers = PluginWorkers.automatic(this@MainActivity),
                 recommendationSource = Discovery.select(sourceState.plugins, recommendationPluginId) { it.recommendations }?.id.orEmpty(),
                 chartSource = Discovery.select(sourceState.plugins, chartPluginId) { it.charts }?.id.orEmpty(),
@@ -2372,6 +2421,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        if (activeMv != null && event.keyCode in setOf(
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE,
+                KeyEvent.KEYCODE_MEDIA_STOP, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, KeyEvent.KEYCODE_MEDIA_REWIND,
+                KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+            )) {
+            dispatchWithFocusRecovery(event)
+            return true
+        }
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_MEDIA_NEXT -> { step(1); return true }
@@ -2400,7 +2457,14 @@ class MainActivity : ComponentActivity() {
             val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
             if (imm?.isAcceptingText == true) imm.hideSoftInputFromWindow(window.decorView.windowToken, 0)
         }
-        return dispatchWithFocusRecovery(event)
+        val dispatched = dispatchWithFocusRecovery(event)
+        // Some TV keyboards leave BACK's release unhandled by the platform back bridge.
+        // Child players/dialogs keep their handled events; only an unhandled release falls back.
+        if (!dispatched && event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP && !event.isCanceled) {
+            onBackPressedDispatcher.onBackPressed()
+            return true
+        }
+        return dispatched
     }
 
     @SuppressLint("RestrictedApi") // Forward unhandled keys through ComponentActivity's dispatcher.
@@ -2425,6 +2489,18 @@ class MainActivity : ComponentActivity() {
                 focusRecovery++
                 /* BACK／菜单不重放：换了上下文再做一次就串味了。 */
                 if (event.action == KeyEvent.ACTION_DOWN && !replaying && event.keyCode in replayableKeys) replayKey = KeyEvent(event)
+            }
+            /* BACK is the one key that must never be dropped: a detail whose focused node
+               was just replaced would otherwise need a second press to go back at all. */
+            if (noActiveFocus && event.keyCode == KeyEvent.KEYCODE_BACK) {
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    if (swallowedBackDown != event.downTime) {
+                        swallowedBackDown = event.downTime
+                        onBackPressedDispatcher.onBackPressed()
+                    }
+                } else if (event.action == KeyEvent.ACTION_UP && swallowedBackDown == event.downTime) {
+                    swallowedBackDown = -1L
+                }
             }
             android.util.Log.w("PrismFocus", "焦点暂不可用，忽略本次按键 ${event.keyCode}；恢复焦点=$noActiveFocus")
             true
@@ -2460,7 +2536,7 @@ internal data class BrowseSnapshot(
     val albums: List<JSONObject>, val info: JSONObject?,
 )
 
-internal data class BrowseReturn(val page: String, val playerOpen: Boolean, val browse: BrowseSnapshot?, val focusKey: String = "")
+internal data class BrowseReturn(val page: String, val playerOpen: Boolean, val browse: BrowseSnapshot?, val focusKey: String = "", val playerMenuRow: String? = null)
 
 internal fun clock(ms: Long) = "%d:%02d".format(ms / 60_000, (ms / 1000) % 60)
 

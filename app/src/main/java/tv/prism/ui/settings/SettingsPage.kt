@@ -23,7 +23,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
@@ -51,7 +54,8 @@ import tv.prism.ui.widgets.PlatformIcon
 import tv.prism.ui.widgets.AuraThemeCard
 import tv.prism.ui.widgets.prismColors
 import tv.prism.playback.PlaybackMode
-import tv.prism.ui.widgets.SettingsSeg
+import tv.prism.ui.widgets.RestoreFocusAfterDialog
+import tv.prism.ui.widgets.ChoicePopup
 import tv.prism.ui.playback.lyricFontLevels
 import tv.prism.ui.playback.LYRIC_HEADING_HINT
 
@@ -315,60 +319,20 @@ internal fun DiscoverySettings(
     onToggleShelf: (String) -> Unit,
     onLibrary: () -> Unit,
 ) {
-    val pageScope = rememberCoroutineScope()
     SettingsCard("内容来源") {
-        /* When the popup closes, focus must return to this row — a popup
-        is its own focus window and the top bar is otherwise a dead end. */
-        val restoreRowFocus: (Boolean) -> Unit = { open ->
-            if (!open)
-                pageScope.launch {
-                    withFrameNanos {}
-                    bodyFocusMemory.value?.let { requester ->
-                        runCatching { requester.requestFocus() }
-                    }
-                }
-        }
-        var recOpen by remember { mutableStateOf(false) }
         val recOptions = activePlugins.filter { it.capabilities.recommendations }
-        SettingsRow(
-            "推荐歌单",
-            modifier = Modifier.focusAnchor(entry).then(entryEdge).rememberFocus(bodyFocusMemory),
-            onActivate = { if (recOptions.isNotEmpty()) recOpen = true },
-        ) {
-            SourcePicker(
-                recOptions,
-                recommendationPluginId,
-                open = recOpen,
-                onOpenChange = {
-                    recOpen = it
-                    restoreRowFocus(it)
-                },
-                passive = true,
-            ) { plugin ->
-                updatePreference("recommendationSource", plugin.id)
-            }
-        }
+        SettingsChoiceRow("推荐歌单", recOptions.map { it.id to it.displayName },
+            recOptions.firstOrNull { it.id == recommendationPluginId }?.id ?: recOptions.firstOrNull()?.id.orEmpty(),
+            { updatePreference("recommendationSource", it) },
+            Modifier.focusAnchor(entry).then(entryEdge).rememberFocus(bodyFocusMemory),
+            optionIcon = { option -> recOptions.firstOrNull { it.id == option.first }?.let { PlatformIcon(it.platform, Modifier.size(22.dp)) } })
         SettingsDivider()
-        var chartOpen by remember { mutableStateOf(false) }
         val chartOptions = activePlugins.filter { it.capabilities.charts }
-        SettingsRow(
-            "排行榜",
-            modifier = edgeToRail.rememberFocus(bodyFocusMemory),
-            onActivate = { if (chartOptions.isNotEmpty()) chartOpen = true },
-        ) {
-            SourcePicker(
-                chartOptions,
-                chartPluginId,
-                open = chartOpen,
-                onOpenChange = {
-                    chartOpen = it
-                    restoreRowFocus(it)
-                },
-                passive = true,
-            ) { plugin ->
-                updatePreference("chartSource", plugin.id)
-            }
-        }
+        SettingsChoiceRow("排行榜", chartOptions.map { it.id to it.displayName },
+            chartOptions.firstOrNull { it.id == chartPluginId }?.id ?: chartOptions.firstOrNull()?.id.orEmpty(),
+            { updatePreference("chartSource", it) },
+            edgeToRail.rememberFocus(bodyFocusMemory),
+            optionIcon = { option -> chartOptions.firstOrNull { it.id == option.first }?.let { PlatformIcon(it.platform, Modifier.size(22.dp)) } })
     }
     val shelfOptions = tv.prism.ui.home.homeSectionOptions
     SettingsCard(
@@ -399,60 +363,6 @@ internal fun DiscoverySettings(
         ) {
             SettingsButton("打开「我的」", onLibrary, passive = true)
         }
-    }
-}
-
-/* open is hoisted to the caller: focus lives on the whole row and OK opens the sheet
-there. passive skips the focus ring and pointer events — it only shows the value. */
-@Composable
-private fun SourcePicker(
-    options: List<Plugin>,
-    selected: String,
-    modifier: Modifier = Modifier,
-    open: Boolean = false,
-    onOpenChange: (Boolean) -> Unit = {},
-    passive: Boolean = false,
-    onSelect: (Plugin) -> Unit,
-) {
-    val c = LocalPrismColors.current
-    val current = options.firstOrNull { it.id == selected } ?: options.firstOrNull()
-    Box {
-        /* 选择音源只影响对应的推荐或榜单。 */
-        Row(
-            modifier
-                .height(34.dp)
-                .then(if (passive) Modifier else Modifier.auraFocus(RoundedCornerShape(7.dp), 1f))
-                .clip(RoundedCornerShape(7.dp))
-                .border(1.dp, c.accent.copy(alpha = .24f), RoundedCornerShape(7.dp))
-                .background(c.accent.copy(alpha = .055f))
-                .then(
-                    if (passive) Modifier.focusProperties { canFocus = false }
-                    else Modifier.clickable { onOpenChange(true) }
-                )
-                .padding(start = 11.dp, end = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.dp),
-        ) {
-            Text(
-                current?.displayName ?: "暂无支持此能力的音源",
-                color = c.foreground.copy(alpha = .9f),
-                fontSize = 12.sp,
-                maxLines = 1,
-            )
-            Glyph("chev", Modifier.size(10.dp), lerp(c.accent, c.glow, .5f))
-        }
-        if (open)
-            ChoicePopup(
-                options,
-                options.indexOfFirst { it.id == current?.id },
-                label = { it.displayName },
-                onDismiss = { onOpenChange(false) },
-                onSelect = {
-                    onSelect(it)
-                    onOpenChange(false)
-                },
-                icon = { PlatformIcon(it.platform, Modifier.size(22.dp)) },
-            )
     }
 }
 
@@ -545,20 +455,9 @@ internal fun PlaybackSettings(
     fun pickQuality(value: String) {
         updatePreference("quality", value)
     }
-    /* 两栏布局里左键归左栏（按左就回导航），行内用 OK 循环改值。 */
-    fun cycleQuality() {
-        val i = qualityTiers.indexOfFirst { it.first == quality }
-        if (i < 0) return
-        pickQuality(qualityTiers[(i + 1) % qualityTiers.size].first)
-    }
     SettingsCard("音质") {
-        SettingsRow(
-            "首选音质",
-            modifier = Modifier.focusAnchor(entry).then(entryEdge).rememberFocus(bodyFocusMemory),
-            onActivate = { cycleQuality() },
-        ) {
-            SettingsSeg(qualityTiers, quality, ::pickQuality)
-        }
+        SettingsChoiceRow("首选音质", qualityTiers, quality, ::pickQuality,
+            Modifier.focusAnchor(entry).then(entryEdge).rememberFocus(bodyFocusMemory))
         SettingsDivider()
         PrismSwitchRow(
             "播放失败自动换源",
@@ -572,19 +471,9 @@ internal fun PlaybackSettings(
     fun pickMode(value: PlaybackMode) {
         updatePreference("mode", value.id)
     }
-    fun cycleMode() {
-        val i = playModes.indexOfFirst { it.first == playMode }
-        if (i < 0) return
-        pickMode(playModes[(i + 1) % playModes.size].first)
-    }
     SettingsCard("播放与搜索") {
-        SettingsRow(
-            "播放模式",
-            modifier = edgeToRail.rememberFocus(bodyFocusMemory),
-            onActivate = { cycleMode() },
-        ) {
-            SettingsSeg(playModes, playMode, ::pickMode)
-        }
+        SettingsChoiceRow("播放模式", playModes, playMode, ::pickMode,
+            edgeToRail.rememberFocus(bodyFocusMemory))
         SettingsDivider()
         val workerOptions =
             listOf(
@@ -597,20 +486,10 @@ internal fun PlaybackSettings(
         fun pickWorkers(value: Int) {
             updatePreference("pluginWorkerLimit", value.toString())
         }
-        fun cycleWorkers() {
-            val i = workerOptions.indexOfFirst { it.first == pluginWorkerLimit }
-            if (i < 0) return
-            pickWorkers(workerOptions[(i + 1) % workerOptions.size].first)
-        }
-        SettingsRow(
-            "搜索并发",
-            "调大更快，也更占内存",
-            modifier = edgeToRail.rememberFocus(bodyFocusMemory),
-            onActivate = { cycleWorkers() },
-        ) {
-            SettingsSeg(workerOptions, pluginWorkerLimit, ::pickWorkers)
-        }
+        SettingsChoiceRow("搜索并发", workerOptions, pluginWorkerLimit, ::pickWorkers,
+            edgeToRail.rememberFocus(bodyFocusMemory), description = "调大更快，也更占内存")
     }
+
     /* All lyric-display preferences live in this card. Time calibration
     stays on the player page — it only makes sense while listening. */
     SettingsCard("歌词") {
@@ -626,21 +505,11 @@ internal fun PlaybackSettings(
         fun pickFont(level: String) {
             updatePreference("lyricFontLevel", level)
         }
-        fun cycleFont() {
-            val i = levels.indexOfFirst { it.first == lyricFontLevel }
-            if (i < 0) return
-            pickFont(levels[(i + 1) % levels.size].first)
-        }
-        SettingsRow(
-            "字号",
-            modifier = edgeToRail.rememberFocus(bodyFocusMemory),
-            onActivate = { cycleFont() },
-        ) {
-            SettingsSeg(levels, lyricFontLevel, ::pickFont)
-        }
+        SettingsChoiceRow("字号", levels, lyricFontLevel, ::pickFont,
+            edgeToRail.rememberFocus(bodyFocusMemory))
         SettingsDivider()
         PrismSwitchRow(
-            "自动隐藏片头署名",
+            "隐藏片头信息",
             hideHeading,
             { updatePreference("hideHeading", it.toString()) },
             edgeToRail.rememberFocus(bodyFocusMemory),
@@ -671,8 +540,9 @@ internal fun PlaybackSettings(
             modifier = edgeToRail.focusRequester(trigger).rememberFocus(bodyFocusMemory),
             onActivate = { open = true },
         ) {
-            Box {
-                SettingsButton(summary, { open = true }, icon = "chev", passive = true)
+            var anchor by remember { mutableStateOf(Rect.Zero) }
+            Box(Modifier.onGloballyPositioned { anchor = it.boundsInWindow() }) {
+                SettingsButton(summary, { open = true }, passive = true, trailingIcon = "chev")
                 if (open) ChoicePopup(
                     options = sources, selectedIndex = 0, label = { it.name },
                     description = { it.description }, checked = { it.checked },
@@ -682,6 +552,7 @@ internal fun PlaybackSettings(
                         scope.launch { withFrameNanos {}; trigger.requestFocus() }
                     },
                     icon = {},
+                    anchor = anchor,
                 )
             }
         }
@@ -689,3 +560,44 @@ internal fun PlaybackSettings(
 }
 
 private data class LyricChoice(val name: String, val description: String, val preference: String, val checked: Boolean)
+
+/** Left remains navigation; only OK opens choices, and Back never commits a preview. */
+@Composable
+private fun <T> SettingsChoiceRow(
+    label: String,
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier,
+    description: String? = null,
+    optionIcon: (@Composable (Pair<T, String>) -> Unit)? = null,
+) {
+    var open by remember { mutableStateOf(false) }
+    val origin = remember { FocusRequester() }
+    val selectedIndex = options.indexOfFirst { it.first == selected }
+    SettingsRow(label, description, modifier = modifier.focusRequester(origin),
+        onActivate = { if (options.isNotEmpty()) open = true }) {
+        var anchor by remember { mutableStateOf(Rect.Zero) }
+        Box(Modifier.onGloballyPositioned { anchor = it.boundsInWindow() }) {
+            val selectedOption = options.getOrNull(selectedIndex)
+            /* Every value row opens a sheet, so it wears the same down chevron;
+               the glyph says "opens a list", not "this setting is a list". A source
+               row also keeps its platform mark after choosing, matching the sheet. */
+            SettingsButton(selectedOption?.second ?: if (options.isEmpty()) "暂无可选项" else "当前值不可用",
+                { if (options.isNotEmpty()) open = true }, passive = true, trailingIcon = "chev",
+                leading = if (selectedOption != null && optionIcon != null) {
+                    { optionIcon.invoke(selectedOption) }
+                } else null)
+            if (open) ChoicePopup(
+                options = options,
+                selectedIndex = selectedIndex,
+                label = { it.second },
+                onDismiss = { open = false },
+                onSelect = { onSelect(it.first); open = false },
+                icon = optionIcon ?: {},
+                anchor = anchor,
+            )
+        }
+    }
+    RestoreFocusAfterDialog(open, origin, origin)
+}

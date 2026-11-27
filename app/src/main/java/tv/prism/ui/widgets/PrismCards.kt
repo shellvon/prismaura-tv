@@ -71,9 +71,9 @@ import tv.prism.catalog.SearchSuggestion
 @Composable fun AuraRadioCard(active: Boolean, loading: Boolean, status: String, onPlay: () -> Unit,
                              modifier: Modifier = Modifier, onLongPress: (() -> Unit)? = null) {
     val c = LocalPrismColors.current
-    Column(modifier.auraFocus().clip(RoundedCornerShape(12.dp))
+    Column(modifier.auraFocus(PrismCardShape).clip(PrismCardShape)
         .background(Brush.linearGradient(listOf(c.panel.copy(alpha = .95f), c.background.copy(alpha = .5f))))
-        .border(1.dp, c.line.copy(alpha = .7f), RoundedCornerShape(12.dp))
+        .border(1.dp, c.line, PrismCardShape)
         .tvClickable(onPlay, onLongPress).padding(horizontal = 14.dp, vertical = 10.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Glyph("radio", Modifier.size(18.dp), c.accent)
@@ -96,11 +96,11 @@ internal fun AuraHotCard(
     status: String = "", loading: Boolean = false,
 ) {
     val c = LocalPrismColors.current
-    val shape = RoundedCornerShape(12.dp)
+    val shape = PrismCardShape
     Row(
         modifier.auraFocus(shape).clip(shape)
             .background(c.panel.copy(alpha = .92f))
-            .border(1.dp, c.line.copy(alpha = .7f), shape)
+            .border(1.dp, c.line, shape)
             .clickable(onClick = onOpen)
             .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -141,7 +141,7 @@ private fun VipBadge(modifier: Modifier = Modifier) {
     Box(modifier.clip(RoundedCornerShape(4.dp)).background(c.accent.copy(alpha = .16f))
         .border(1.dp, c.accent.copy(alpha = .32f), RoundedCornerShape(4.dp))
         .padding(horizontal = 4.dp, vertical = 1.dp)) {
-        Text("VIP", color = c.accent, fontSize = 8.sp, letterSpacing = .6.sp, maxLines = 1)
+        Text("VIP", color = c.accent, fontSize = 12.sp, letterSpacing = .6.sp, maxLines = 1)
     }
 }
 
@@ -177,7 +177,7 @@ fun PrismCoverCard(song: Song, index: Int, onClick: () -> Unit, modifier: Modifi
     Column(
         modifier
             .width(132.dp)
-            .auraFocus(RoundedCornerShape(14.dp), scale = 1.035f, instantRing = true)
+            .auraFocus(PrismCardShape)
             .onFocusChanged { focused = it.isFocused }
             .clip(RoundedCornerShape(14.dp))
             .background(if (focused) c.accent.copy(alpha = .12f) else Color.Transparent)
@@ -185,7 +185,7 @@ fun PrismCoverCard(song: Song, index: Int, onClick: () -> Unit, modifier: Modifi
             .padding(6.dp),
     ) {
         Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
-            CoverArt(song, Modifier.fillMaxSize(), 10.dp)
+            CoverArt(song, Modifier.fillMaxSize().border(0.5.dp, c.foreground.copy(alpha = .08f), RoundedCornerShape(10.dp)), 10.dp)
             if (current) Box(
                 Modifier.align(Alignment.BottomEnd).padding(6.dp).clip(RoundedCornerShape(50))
                     .background(Color.Black.copy(alpha = .55f)).padding(horizontal = 7.dp, vertical = 5.dp),
@@ -223,15 +223,15 @@ fun PrismSheetCard(title: String, artwork: String, subtitle: String, modifier: M
     val highlighted = shelfFocused ?: focused
     Column(
         modifier.width(132.dp)
-            .then(if (shelfFocused == null) Modifier.auraFocus(RoundedCornerShape(14.dp)) else Modifier)
+            .then(if (shelfFocused == null) Modifier.auraFocus(PrismCardShape) else Modifier)
             .onFocusChanged {
                 if (shelfFocused == null) focused = it.isFocused else onShelfFocusChanged(it.isFocused)
             }
-            .clip(RoundedCornerShape(14.dp))
+            .clip(PrismCardShape)
             .background(if (highlighted || selected == true) c.accent.copy(alpha = .12f) else Color.Transparent)
             .border(if (shelfFocused != null) 2.dp else 1.dp,
                 if (selected == true || shelfFocused == true) c.accent
-                else if (highlighted) c.accent.copy(alpha = .55f) else Color.Transparent, RoundedCornerShape(14.dp))
+                else Color.Transparent, PrismCardShape)
             .tvClickable(onClick, onLongPress)
             .padding(6.dp),
     ) {
@@ -293,7 +293,7 @@ fun PrismLibraryTab(label: String, count: Int, selected: Boolean, onClick: () ->
                     onLongPress: (() -> Unit)? = null) {
     val c = LocalPrismColors.current
     val shape = RoundedCornerShape(50)
-    Row(modifier.height(42.dp).auraFocus(shape, 1f, instantRing = true).clip(shape)
+    Row(modifier.height(42.dp).auraFocus(shape, 1f).clip(shape)
         .background(if (selected) c.foreground.copy(alpha = .10f) else Color.Transparent)
         .semantics { this.selected = selected }
         .tvClickable(onClick, onLongPress)
@@ -422,10 +422,9 @@ fun PrismHero(
 @Composable
 fun PrismChartCard(title: String, artwork: String, preview: List<Song>, modifier: Modifier = Modifier, onLongPress: (() -> Unit)? = null, onClick: () -> Unit) {
     val c = LocalPrismColors.current
-    var focused by remember { mutableStateOf(false) }
-    Row(modifier.height(132.dp).onFocusChanged { focused = it.isFocused }
-        .clip(RoundedCornerShape(14.dp)).background(c.panel)
-        .border(if (focused) 2.dp else 1.dp, if (focused) c.accent else c.line.copy(alpha = .5f), RoundedCornerShape(14.dp))
+    Row(modifier.height(132.dp).auraFocus(PrismCardShape)
+        .clip(PrismCardShape).background(c.panel)
+        .border(1.dp, c.line, PrismCardShape)
         .tvClickable(onClick, onLongPress).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(76.dp).clip(RoundedCornerShape(10.dp))
             .background(Brush.linearGradient(listOf(c.accent.copy(alpha = .22f), c.background))), contentAlignment = Alignment.Center) {
@@ -449,7 +448,7 @@ fun PrismChartCard(title: String, artwork: String, preview: List<Song>, modifier
 }
 
 @Composable
-fun PrismQueueRow(song: Song, index: Int, current: Boolean, modifier: Modifier = Modifier, onLongPress: (() -> Unit)? = null, favorite: Boolean = false, subtitle: String = song.artist, onClick: () -> Unit) {
+fun PrismQueueRow(song: Song, index: Int, current: Boolean, modifier: Modifier = Modifier, onLongPress: (() -> Unit)? = null, favorite: Boolean = false, showMv: Boolean = false, subtitle: String = song.artist, onClick: () -> Unit) {
     val c = LocalPrismColors.current
     var focused by remember { mutableStateOf(false) }
     val emphasis by animateFloatAsState(if (focused) 1f else if (current) .5f else 0f, tween(if (LocalAuraMotion.current) 170 else 0), label = "queue light")
@@ -463,8 +462,19 @@ fun PrismQueueRow(song: Song, index: Int, current: Boolean, modifier: Modifier =
         CoverArt(song, Modifier.size(38.dp), 6.dp)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text(song.title, color = if (current) c.accent else c.foreground, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.focusedMarquee(focused))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(song.title, color = if (current) c.accent else c.foreground, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false).focusedMarquee(focused))
+                if (showMv && song.hasMv) {
+                    Spacer(Modifier.width(6.dp))
+                    Row(Modifier.border(1.dp, c.accent.copy(alpha = .45f), RoundedCornerShape(3.dp))
+                        .padding(horizontal = 4.dp, vertical = 1.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Glyph("mv", Modifier.size(9.dp), c.accent)
+                        Spacer(Modifier.width(2.dp))
+                        Text("MV", color = c.accent, fontSize = 8.sp, letterSpacing = .4.sp)
+                    }
+                }
+            }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 PlatformIcon(song.platform, Modifier.size(12.dp))
                 Text(subtitle, Modifier.weight(1f), color = c.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -612,10 +622,7 @@ fun PrismTrackRow(song: Song, index: Int, onClick: () -> Unit, modifier: Modifie
         if (selected != null) Box(Modifier.width(ColIndex)) { PrismCheckmark(selected, Modifier.align(Alignment.CenterStart)) }
         else if (current) Box(Modifier.width(ColIndex)) { NowPlayingBars(c.accent) }
         else Text("%02d".format(index + 1), Modifier.width(ColIndex), color = if (emphasis > 0f) c.accent else c.muted, fontSize = 11.sp)
-        CoverArt(song, Modifier.size(ColCover).graphicsLayer {
-            val scale = 1f + .07f * emphasis
-            scaleX = scale; scaleY = scale
-        }, 8.dp)
+        CoverArt(song, Modifier.size(ColCover), 8.dp)
         Spacer(Modifier.width(ColGap))
         Column(Modifier.weight(1.5f).padding(end = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -698,7 +705,7 @@ fun PrismSuggestionRow(term: String, badge: String, onClick: () -> Unit, modifie
 internal fun PrismSearchSuggestionCard(item: SearchSuggestion, type: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = LocalPrismColors.current
     val imageShape = if (type == "artist") CircleShape else RoundedCornerShape(8.dp)
-    Column(modifier.keepFocusVisible().auraFocus().clip(RoundedCornerShape(12.dp)).background(c.panel)
+    Column(modifier.keepFocusVisible().auraFocus(PrismCardShape).clip(PrismCardShape).background(c.panel)
         .clickable(onClick = onClick).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(5.dp)) {
         Box(Modifier.size(72.dp).clip(imageShape).background(c.accent.copy(alpha = .12f)), contentAlignment = Alignment.Center) {

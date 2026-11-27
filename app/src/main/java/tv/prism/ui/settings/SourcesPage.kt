@@ -44,6 +44,7 @@ import tv.prism.ui.widgets.tvClickable
 import tv.prism.ui.widgets.Glyph
 import tv.prism.ui.widgets.PrismActionMenu
 import tv.prism.ui.widgets.PrismMenuAction
+import tv.prism.ui.widgets.RestoreFocusAfterDialog
 import tv.prism.ui.widgets.PrismMenuSection
 
 @Composable
@@ -233,7 +234,7 @@ internal fun SourcesPage(
                     if (ui.addressError.isNotBlank())
                         Text(
                             ui.addressError,
-                            color = c.accent,
+                            color = c.danger,
                             fontSize = 12.sp,
                             lineHeight = 16.sp,
                             maxLines = 3,
@@ -256,6 +257,7 @@ internal fun SourcesPage(
                 "移除订阅？",
                 "同时移除订阅内音源，保留本机歌单和收藏",
                 "移除订阅",
+                destructive = true,
                 onDismiss = { removingSubscription = null },
                 onConfirm = {
                     removingSubscription = null
@@ -287,15 +289,34 @@ internal fun SourcesPage(
             var groupPending by remember(url) { mutableStateOf(false) }
             var groupNotice by remember(url) { mutableStateOf("") }
             val titleFocus = remember(url) { FocusRequester() }
-            val updateFocus = remember(url) { FocusRequester() }
             val moreFocus = remember(url) { FocusRequester() }
             val subscriptionUri = remember(url) { Uri.parse(url) }
             val groupTitle = plugins.subscriptionLabel(url)
-            fun backToHeader() {
-                pageScope.launch {
-                    withFrameNanos {}
-                    runCatching { moreFocus.requestFocus() }
-                }
+            RestoreFocusAfterDialog(groupMenu || infoOpen, moreFocus, moreFocus)
+            fun updateGroup() {
+                if (!busy && subscriptionUpdateProgress == null)
+                    operationScope.launch {
+                        busy = true
+                        groupNotice = "更新中…"
+                        subscriptionUpdateProgress = url to "更新中…"
+                        try {
+                            val result = plugins.importUrl(url) { current, total, _ ->
+                                val text = "更新中 $current/$total"
+                                subscriptionUpdateProgress = url to text
+                                groupNotice = text
+                            }
+                            groupNotice = result.message
+                            onImport(result)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            groupNotice = "更新失败：${e.message}"
+                            onStatus(groupNotice)
+                        } finally {
+                            subscriptionUpdateProgress = null
+                            busy = false
+                        }
+                    }
             }
             if (!firstRow) SettingsDivider()
             Row(
@@ -308,7 +329,7 @@ internal fun SourcesPage(
                         .focusRequester(titleFocus)
                         .then(edgeToRail)
                         .rememberFocus(bodyFocusMemory)
-                        .focusProperties { right = updateFocus }
+                        .focusProperties { right = moreFocus }
                         .auraFocus(RoundedCornerShape(8.dp), 1f)
                         .clip(RoundedCornerShape(8.dp))
                         .tvClickable({ pluginViewModel.toggleSubscription(url) })
@@ -329,7 +350,8 @@ internal fun SourcesPage(
                         )
                         Text(
                             listOfNotNull(
-                                    "${owned.size} 个音源 · 已启用 $enabledCount",
+                                    subscriptionUpdateProgress?.takeIf { it.first == url }?.second
+                                        ?: "${owned.size} 个音源 · 已启用 $enabledCount",
                                     subscriptionUri.lastPathSegment?.takeIf { it.isNotBlank() },
                                 )
                                 .joinToString(" · "),
@@ -341,45 +363,11 @@ internal fun SourcesPage(
                         )
                     }
                 }
-                val updateLabel by
-                    remember(url) {
-                        derivedStateOf {
-                            subscriptionUpdateProgress?.takeIf { it.first == url }?.second ?: "更新"
-                        }
-                    }
-                SubscriptionUpdateButton(
-                    { updateLabel },
-                    {
-                        if (!busy && subscriptionUpdateProgress == null)
-                            operationScope.launch {
-                                busy = true
-                                subscriptionUpdateProgress = url to "更新中…"
-                                try {
-                                    onImport(
-                                        plugins.importUrl(url) { current, total, _ ->
-                                            subscriptionUpdateProgress =
-                                                url to "更新中 $current/$total"
-                                        }
-                                    )
-                                } catch (e: kotlinx.coroutines.CancellationException) {
-                                    throw e
-                                } catch (e: Exception) {
-                                    onStatus("更新失败：${e.message}")
-                                } finally {
-                                    subscriptionUpdateProgress = null
-                                    busy = false
-                                }
-                            }
-                    },
-                    Modifier.focusRequester(updateFocus)
-                        .focusProperties { left = titleFocus }
-                        .rememberFocus(bodyFocusMemory),
-                )
                 SettingsButton(
-                    "管理分组",
+                    "管理",
                     { groupMenu = true },
                     Modifier.focusRequester(moreFocus)
-                        .focusProperties { left = updateFocus }
+                        .focusProperties { left = titleFocus }
                         .rememberFocus(bodyFocusMemory),
                 )
             }
@@ -389,7 +377,6 @@ internal fun SourcesPage(
                     "${owned.size} 个音源 · 已启用 $enabledCount",
                     onDismiss = {
                         groupMenu = false
-                        backToHeader()
                     },
                     notice = groupNotice,
                     actions =
@@ -411,12 +398,15 @@ internal fun SourcesPage(
                                 groupMenu = false
                                 infoOpen = true
                             },
-                            /* 和单个音源的开关项同一套：字形只表示「这是开关」，
-                            右侧 ✓ 才表示现在是开着的。 */
+                            // This is a command, not a selected option; state belongs in its description.
                             PrismMenuAction(
                                 if (groupPending) "正在保存…" else if (allEnabled) "全部停用" else "全部启用",
                                 if (allEnabled) "disabled" else "enabled",
-                                active = allEnabled,
+                                description = when {
+                                    allEnabled -> "当前：已全部启用"
+                                    enabledCount == 0 -> "当前：已全部停用"
+                                    else -> "当前：已启用 $enabledCount / ${owned.size}"
+                                },
                                 enabled = !busy && owned.isNotEmpty(),
                                 keepOpen = true,
                                 section = PrismMenuSection.MANAGEMENT,
@@ -442,6 +432,18 @@ internal fun SourcesPage(
                                     }
                                 }
                             },
+                            /* Refreshing a subscription is upkeep, not a frequent action:
+                               it belongs with the management commands, not the first row.
+                               No extra dialog — the notice line reports progress. */
+                            PrismMenuAction(
+                                if (subscriptionUpdateProgress?.first == url) "正在更新…" else "更新分组",
+                                "refresh",
+                                description =
+                                    if (subscriptionUpdateProgress?.first == url) "正在获取最新音源"
+                                    else "重新拉取此订阅的音源",
+                                keepOpen = true,
+                                section = PrismMenuSection.MANAGEMENT,
+                            ) { updateGroup() },
                             PrismMenuAction(
                                 "移除订阅",
                                 "trash",
@@ -459,7 +461,6 @@ internal fun SourcesPage(
             if (infoOpen) {
                 val groupClose = {
                     infoOpen = false
-                    backToHeader()
                 }
                 val description = state.subscriptionDescriptions[url]?.takeIf { it.isNotBlank() }
                 /* 订阅的「名字」就是那段 desc，放进卡片第一行；标题只留通用名，
@@ -486,7 +487,7 @@ internal fun SourcesPage(
                             }
                         }
                     },
-                    footer = { PrismAction("关闭", groupClose, primary = true) },
+                    focusClose = true,
                 ) {
                     /* 订阅不是音源：这里只交代「这组是什么、地址在哪」。
                     能力是组内每个音源各自的事，求并集只会得到一个「什么都有」的假象。 */
@@ -547,9 +548,4 @@ internal fun SourcesPage(
             }
         }
     }
-}
-
-@Composable
-private fun SubscriptionUpdateButton(label: () -> String, onClick: () -> Unit, modifier: Modifier) {
-    SettingsButton(label(), onClick, modifier)
 }

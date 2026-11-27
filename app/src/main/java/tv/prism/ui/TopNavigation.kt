@@ -34,7 +34,7 @@ internal fun TopNavigation(
     onPreviewPage: (String) -> Unit,
     onEnterPage: (String) -> Unit,
     onNavFocusChanged: (Boolean) -> Unit,
-    onOpenPhone: () -> Unit,
+    onOpenPhone: (FocusRequester) -> Unit,
     restoreHomeOnDown: Boolean,
 ) {
     val c = LocalPrismColors.current
@@ -114,12 +114,12 @@ internal fun TopNavigation(
         Spacer(Modifier.width(9.dp))
         Box(Modifier.width(1.dp).height(13.dp).background(c.foreground.copy(alpha = .12f)))
         Spacer(Modifier.width(9.dp))
-        PrismNav("设置", page == "plugins", { commitPage("plugins") }, navModifier(4), focused = focusedTab == "plugins", previewed = (focusedTab ?: page) == "plugins", quiet = true)
+        PrismNav("设置", page == "plugins", { commitPage("plugins") }, navModifier(4), focused = focusedTab == "plugins", previewed = (focusedTab ?: page) == "plugins")
         Spacer(Modifier.weight(1f))
         AuraRemotePill(Modifier.focusRequester(remotePillFocus)
             .onFocusChanged { remotePillFocused = it.isFocused }
             .focusProperties { pageEntryFocus?.takeIf { it.attached }?.let { down = it.requester } },
-            onClick = { onOpenPhone() })
+            onClick = { onOpenPhone(remotePillFocus) })
         Spacer(Modifier.width(12.dp))
         Box(Modifier.width(0.5.dp).height(9.dp).background(c.foreground.copy(alpha = .12f)))
         Spacer(Modifier.width(12.dp))

@@ -31,6 +31,7 @@ import tv.prism.sources.SyncResult
 import tv.prism.sources.Plugin
 import tv.prism.library.Song
 import tv.prism.playback.audioQualityLabel
+import tv.prism.playback.PlaybackPhase
 import tv.prism.sources.PluginReplacement
 import tv.prism.sources.credentialKeys
 
@@ -271,6 +272,8 @@ internal class PhoneRemoteCommands(
         val playQueueItem: (index: Int, key: String) -> Unit,
         val queuePage: (Int) -> Unit,
         val quality: (String) -> Unit,
+        val mv: ((Boolean) -> Unit)? = null,
+        val mvAction: ((String) -> Unit)? = null,
     )
 
     data class Search(
@@ -320,6 +323,8 @@ internal class PhoneRemoteCommands(
                 require(value in qualityTiers) { "未知音质" }
                 playback.quality(value)
             }
+            "openMv", "closeMv" -> playback.mv?.invoke(type == "openMv") ?: error("当前不支持 MV 控制")
+            "mvRestart", "mvLoop", "mvSpeed", "mvFill" -> playback.mvAction?.invoke(type) ?: error("当前未在播放 MV")
             "theme", "mode" -> app.preference(type, value)
             "miniLyrics" -> app.toggleMiniLyrics()
             "preference" -> {
@@ -470,6 +475,11 @@ internal class PhoneRemoteSnapshot {
         queue: List<Song>, queueIndex: Int, order: List<Int>, offset: Int, stream: Song?,
         playing: Boolean, position: Long, duration: Long, quality: String, streamFormat: String,
         mode: String, radioActive: Boolean, favorite: Boolean, qualities: List<String>,
+        phase: PlaybackPhase, advancing: Boolean, seekable: Boolean,
+        hasMv: Boolean = false, mvActive: Boolean = false, mvTitle: String = "",
+        mvQuality: String = "", mvLoop: Boolean = false, mvSpeed: Float = 1f,
+        mvFill: Boolean = false, mvCanPrev: Boolean = false, mvCanNext: Boolean = false,
+        mvStatus: String = "",
     ) {
         val song = queue.getOrNull(queueIndex)
         val cursor = order.indexOf(queueIndex).coerceAtLeast(0)
@@ -482,7 +492,22 @@ internal class PhoneRemoteSnapshot {
             items.put(JSONObject().put("title", item.title).put("artist", item.artist).put("index", index)
                 .put("position", start + relative).put("key", item.key))
         }
-        json.put("title", song?.title.orEmpty())
+        json.put("songKey", song?.key.orEmpty())
+            .put("playbackPhase", phase.name)
+            .put("playbackMessage", phase.message)
+            .put("advancing", advancing)
+            .put("seekable", seekable && !phase.holdControls)
+            .put("hasMv", hasMv)
+            .put("mvActive", mvActive)
+            .put("mvTitle", mvTitle)
+            .put("mvQuality", mvQuality)
+            .put("mvLoop", mvLoop)
+            .put("mvSpeed", mvSpeed.toDouble())
+            .put("mvFill", mvFill)
+            .put("mvCanPrev", mvCanPrev)
+            .put("mvCanNext", mvCanNext)
+            .put("mvStatus", mvStatus)
+            .put("title", song?.title.orEmpty())
             .put("artist", song?.artist.orEmpty())
             .put("source", stream?.sourceLabel.orEmpty())
             .put("playing", playing)
@@ -504,10 +529,15 @@ internal class PhoneRemoteSnapshot {
 
     fun preferences(
         miniLyrics: Boolean, theme: String, reduceMotion: Boolean, autoSourceFallback: Boolean,
+        hideHeading: Boolean, lyricLrclib: Boolean, lyricKugou: Boolean, lyricNetease: Boolean,
         lyricFontLevel: String, subLyrics: Boolean, pluginWorkerLimit: Int, automaticWorkers: Int,
         recommendationSource: String, chartSource: String, shelves: List<Pair<String, String>>, hiddenShelves: Set<String>,
     ) {
-        json.put("miniLyrics", miniLyrics)
+        json.put("hideHeading", hideHeading)
+            .put("lyricLrclib", lyricLrclib)
+            .put("lyricKugou", lyricKugou)
+            .put("lyricNetease", lyricNetease)
+            .put("miniLyrics", miniLyrics)
             .put("theme", theme)
             .put("reduceMotion", reduceMotion)
             .put("autoSourceFallback", autoSourceFallback)

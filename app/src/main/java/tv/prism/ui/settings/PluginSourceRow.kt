@@ -49,23 +49,17 @@ internal fun MainActivity.PluginSourceRow(plugin: Plugin, owned: Boolean, onConf
                 if (details.isNotBlank()) Text(details, color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (!plugin.capabilities.has("search")) Text("不支持搜索", color = c.muted, fontSize = 12.sp)
-            Text(if (plugin.enabled) "已启用" else "已停用", color = c.muted, fontSize = 12.sp)
+            Text(if (plugin.enabled) "已启用" else "已停用", color = if (plugin.enabled) c.accent else c.muted, fontSize = 12.sp)
             Glyph("chevR", Modifier.size(16.dp), c.muted)
         }
         if (menuOpen) {
-            if (confirmRemoval) PrismConfirmDialog("移除 ${plugin.displayName}？", "本机歌单和收藏会保留", "移除音源",
-                onDismiss = { closeMenu() }, onConfirm = {
-                    menuOpen = false
-                    lifecycleScope.launch { try { plugins.remove(plugin.id); status = "已移除音源"; onRemoved() } catch (e: Exception) { status = e.message ?: "移除失败" } }
-                }, confirmIcon = "trash")
-            else PrismActionMenu(plugin.displayName, listOfNotNull(
+            PrismActionMenu(plugin.displayName, listOfNotNull(
                     plugin.metadata.optString("version").takeIf { it.isNotBlank() }?.let { "v$it" },
                     plugin.metadata.optString("author").takeIf { it.isNotBlank() },
                 ).joinToString(" · ").ifBlank { "未提供版本与作者" }, onDismiss = { closeMenu() }, actions = buildList {
-                        /* 布尔项照「收藏」的手法：菜单不关，右侧 ✓ 标出当前是开着的。
-                           图标维持原样（✔ 圈 / ⊘），不动。 */
+                        // The label describes the next action; the description states the current status.
                         add(PrismMenuAction(if (plugin.enabled) "停用音源" else "启用音源",
-                            if (plugin.enabled) "disabled" else "enabled", active = plugin.enabled, keepOpen = true) {
+                            if (plugin.enabled) "disabled" else "enabled", description = if (plugin.enabled) "当前：已启用" else "当前：已停用", keepOpen = true) {
                             scope.launch {
                                 try { plugins.setEnabled(plugin.id, !plugin.enabled) }
                                 catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -91,8 +85,13 @@ internal fun MainActivity.PluginSourceRow(plugin: Plugin, owned: Boolean, onConf
                                 catch (e: Exception) { status = "更新失败：${e.message}" }
                             }
                         })
-                        if (!owned) add(PrismMenuAction("移除音源", "trash", destructive = true, enabled = !busy) { confirmRemoval = true })
+                        if (!owned) add(PrismMenuAction("移除音源", "trash", destructive = true, enabled = !busy, keepOpen = true) { confirmRemoval = true })
                     })
+            if (confirmRemoval) PrismConfirmDialog("移除 ${plugin.displayName}？", "本机歌单和收藏会保留", "移除音源",
+                onDismiss = { confirmRemoval = false }, onConfirm = {
+                    closeMenu()
+                    lifecycleScope.launch { try { plugins.remove(plugin.id); status = "已移除音源"; onRemoved() } catch (e: Exception) { status = e.message ?: "移除失败" } }
+                }, destructive = true, confirmIcon = "trash")
         }
         if (infoOpen) PluginInfoDialog(plugin, busy, onSearch = {
             runCatching { searchUsingSources(setOf(plugin.id)) }.onSuccess { infoOpen = false }.onFailure { status = it.message ?: "无法切换音源" }

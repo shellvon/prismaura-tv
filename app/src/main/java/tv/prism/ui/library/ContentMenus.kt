@@ -23,6 +23,7 @@ internal fun MainActivity.TrackActionsMenu(
     openSubject: (Song, String, String) -> Unit,
     find: (String, String) -> Unit,
     openOtherSources: (() -> Unit)?,
+    openMv: ((Song) -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
     val song = target.song
@@ -32,9 +33,10 @@ internal fun MainActivity.TrackActionsMenu(
         { PlaylistPickerPanel(song, libraryState, onDismiss) }
     } else null
     var favoritePending by remember(song.key) { mutableStateOf(false) }
-    var menuNotice by remember(song.key) { mutableStateOf("") }
+    val (menuNotice, notifyMenu) = rememberMenuFeedback(song.key) { status = "$it：${song.title}" }
     val saved = libraryState.favorites.any { it.key == song.key }
     val songPlugin = activePlugins.firstOrNull { it.id == song.pluginId }
+    val canWatchMv = openMv != null && song.hasMv && songPlugin?.capabilities?.has("mvSource") == true
     val artistDetail = supportsSubjectSearch(songPlugin, "artist")
     val albumDetail = supportsSubjectSearch(songPlugin, "album")
     /* Search-type support is declared per plugin. Asking an album search of a
@@ -42,14 +44,14 @@ internal fun MainActivity.TrackActionsMenu(
     val albumSearch = activePlugins.any { supportsSubjectSearch(it, "album") }
     PrismActionMenu(song.title, song.artist, song, onDismiss = onDismiss, notice = menuNotice, replacement = picker, actions = buildList {
             if (canEnqueue) add(PrismMenuAction("下一首播放", "queueNext") { onDismiss(); enqueueSong(song, next = true) })
+            if (canWatchMv) add(PrismMenuAction("观看 MV", "mv", navigates = true) { onDismiss(); openMv?.invoke(song) })
             add(PrismMenuAction(if (favoritePending) "正在保存…" else if (saved) "取消收藏" else "收藏歌曲", if (saved) "heartFilled" else "heart", active = saved, keepOpen = true) {
                 if (!favoritePending) {
-                    favoritePending = true; menuNotice = "正在保存…"
+                    favoritePending = true; notifyMenu("正在保存…")
                     toggleFavorite(song, onSuccess = {
                         favoritePending = false
-                        menuNotice = if (library.state.value.favorites.any { it.key == song.key }) "已收藏" else "已取消收藏"
-                        status = "$menuNotice：${song.title}"
-                    }, onFailure = { favoritePending = false; menuNotice = it; status = it })
+                        notifyMenu(if (library.state.value.favorites.any { it.key == song.key }) "已收藏" else "已取消收藏")
+                    }, onFailure = { favoritePending = false; notifyMenu(it) })
                 }
             })
             add(PrismMenuAction("添加到歌单", "list", navigates = true, keepOpen = true) { pickingPlaylist = true })
@@ -90,7 +92,7 @@ internal fun MainActivity.SubjectActionsMenu(
     onDismiss: () -> Unit,
 ) {
     var favoritePending by remember(subject.key) { mutableStateOf(false) }
-    var menuNotice by remember(subject.key) { mutableStateOf("") }
+    val (menuNotice, notifyMenu) = rememberMenuFeedback(subject.key) { status = "$it：${subject.title}" }
     val saved = libraryState.subjects.any { it.key == subject.key }
     val plugin = activePlugins.firstOrNull { it.id == subject.pluginId }
     PrismActionMenu(subject.title, if (subject.kind == "chart") "榜单" else subject.kindLabel,
@@ -112,10 +114,10 @@ internal fun MainActivity.SubjectActionsMenu(
             })
             if (subject.kind != "chart") add(PrismMenuAction(if (favoritePending) "正在保存…" else if (saved) "取消收藏" else "收藏", if (saved) "heartFilled" else "heart", active = saved, keepOpen = true) {
                 if (!favoritePending) {
-                    favoritePending = true; menuNotice = "正在保存…"
+                    favoritePending = true; notifyMenu("正在保存…")
                     toggleSubject(subject.pluginId, subject.kind, subject.data, subject.sourceName,
-                        onSuccess = { favoritePending = false; menuNotice = status },
-                        onFailure = { favoritePending = false; menuNotice = it; status = it })
+                        onSuccess = { favoritePending = false; notifyMenu(it) },
+                        onFailure = { favoritePending = false; notifyMenu(it) })
                 }
             })
             if (subject.kind == "chart" && plugin != null) add(PrismMenuAction("刷新曲目", "refresh") {
@@ -153,6 +155,21 @@ internal fun MainActivity.CollectionActionsMenu(
             }
         } else null
     val verb = if (target.playlistId != null) "删除歌单" else "取消专辑收藏"
+    PrismActionMenu(target.title, "本机 · ${target.songs.size} 首", onDismiss = onDismiss,
+        replacement = renamePanel, onBackFromReplacement = { renaming = false }, actions = buildList {
+        add(PrismMenuAction("播放全部", "play", enabled = target.songs.isNotEmpty(), description = if (target.songs.isEmpty()) "这个歌单还没有歌曲" else "") {
+            onDismiss(); playCollection(target.songs)
+        })
+        add(PrismMenuAction("随机播放", "shuffle", enabled = target.songs.isNotEmpty()) {
+            onDismiss(); playCollection(target.songs, shuffle = true)
+        })
+        if (target.playlistId != null) {
+            add(PrismMenuAction("重命名歌单", "keyboard", navigates = true, keepOpen = true, section = PrismMenuSection.MANAGEMENT) {
+                renaming = true
+            })
+        }
+        add(PrismMenuAction(verb, if (target.playlistId != null) "trash" else "heart", destructive = true, keepOpen = true) { error = ""; confirming = true })
+    })
     if (confirming) PrismConfirmDialog(verb,
         (if (target.playlistId != null) "删除本机歌单「${target.title}」？此操作无法撤销。" else "取消这张专辑中 ${target.songs.size} 首歌曲的收藏？") +
             error.takeIf { it.isNotBlank() }?.let { "\n$it" }.orEmpty(),
@@ -170,20 +187,15 @@ internal fun MainActivity.CollectionActionsMenu(
                     finally { removing = false }
                 }
             }
-        }, confirmIcon = if (target.playlistId != null) "trash" else "heart")
-    else PrismActionMenu(target.title, "本机 · ${target.songs.size} 首", onDismiss = onDismiss,
-        replacement = renamePanel, onBackFromReplacement = { renaming = false }, actions = buildList {
-        add(PrismMenuAction("播放全部", "play", enabled = target.songs.isNotEmpty(), description = if (target.songs.isEmpty()) "这个歌单还没有歌曲" else "") {
-            onDismiss(); playCollection(target.songs)
-        })
-        add(PrismMenuAction("随机播放", "shuffle", enabled = target.songs.isNotEmpty()) {
-            onDismiss(); playCollection(target.songs, shuffle = true)
-        })
-        if (target.playlistId != null) {
-            add(PrismMenuAction("重命名歌单", "keyboard", navigates = true, keepOpen = true, section = PrismMenuSection.MANAGEMENT) {
-                renaming = true
-            })
-        }
-        add(PrismMenuAction(verb, if (target.playlistId != null) "trash" else "heart", destructive = true) { error = ""; confirming = true })
-    })
+        }, destructive = true, confirmIcon = if (target.playlistId != null) "trash" else "heart")
+
+}
+
+/** Keep feedback beside its action; only notify globally if the menu has already closed. */
+@Composable
+private fun rememberMenuFeedback(key: String, onClosed: (String) -> Unit): Pair<String, (String) -> Unit> {
+    var notice by remember(key) { mutableStateOf("") }
+    var attached by remember(key) { mutableStateOf(true) }
+    DisposableEffect(key) { onDispose { attached = false } }
+    return notice to { message -> if (attached) notice = message else onClosed(message) }
 }

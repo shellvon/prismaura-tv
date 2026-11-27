@@ -18,7 +18,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -36,19 +39,50 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.Path
 import tv.prism.sources.MusicPlatform
 
+private data class PlatformBadgeSpec(
+    val backdrop: Color?,
+    val scale: Float,
+    val crop: Boolean = false,
+)
+
+private fun platformBadgeSpec(platform: MusicPlatform): PlatformBadgeSpec = when (platform) {
+    MusicPlatform.NETEASE -> PlatformBadgeSpec(Color(0xFFD43C33), .70f)
+    MusicPlatform.BILIBILI -> PlatformBadgeSpec(Color(0xFF00A1D6), .70f)
+    MusicPlatform.SPOTIFY -> PlatformBadgeSpec(Color(0xFF0D1110), .94f)
+    MusicPlatform.YOUTUBE -> PlatformBadgeSpec(Color(0xFF161618), .96f)
+    MusicPlatform.LIZHI -> PlatformBadgeSpec(Color(0xFFD20B54), 1.40f, crop = true)
+    MusicPlatform.HUAWEI -> PlatformBadgeSpec(Color(0xFF6981E9), 1.14f, crop = true)
+    MusicPlatform.FIVESING -> PlatformBadgeSpec(Color.White, .82f)
+    MusicPlatform.QIANQIAN -> PlatformBadgeSpec(Color(0xFFF8F9FA), .82f)
+    MusicPlatform.FANQIE -> PlatformBadgeSpec(Color.White, 1.04f, crop = true)
+    MusicPlatform.MISSEVAN -> PlatformBadgeSpec(Color.White, 1.08f, crop = true)
+    else -> PlatformBadgeSpec(null, 1.04f, crop = true)
+}
+
 @Composable fun PlatformIcon(platform: MusicPlatform, modifier: Modifier = Modifier) {
     val c = LocalPrismColors.current
-    Box(modifier.clip(RoundedCornerShape(6.dp)).background(when (platform) {
-        MusicPlatform.NETEASE -> Color(0xFFD43C33)
-        MusicPlatform.BILIBILI -> Color(0xFF00A1D6)
-        else -> c.panel
-    }).semantics { contentDescription = platform.label }, contentAlignment = Alignment.Center) {
-        if (platform.icon != null) Image(painterResource(platform.icon), null, Modifier.fillMaxSize(when (platform) {
-            MusicPlatform.NETEASE, MusicPlatform.BILIBILI -> .72f
-            MusicPlatform.SPOTIFY, MusicPlatform.YOUTUBE -> .86f
-            else -> 1f
-        }))
-        else Canvas(Modifier.fillMaxSize(.62f)) {
+    val shape = RoundedCornerShape(percent = 24)
+    val spec = platformBadgeSpec(platform)
+    val borderAlpha = if (c.background.luminance() > .5f) .16f else .10f
+    Box(modifier.clip(shape).background(spec.backdrop ?: c.panel)
+        .border(0.5.dp, c.foreground.copy(alpha = borderAlpha), shape)
+        .semantics { contentDescription = platform.label }, contentAlignment = Alignment.Center) {
+        if (platform.icon != null) {
+            val artModifier = if (spec.crop) {
+                Modifier.fillMaxSize().graphicsLayer {
+                    scaleX = spec.scale
+                    scaleY = spec.scale
+                }
+            } else {
+                Modifier.fillMaxSize(spec.scale)
+            }
+            Image(
+                painterResource(platform.icon),
+                null,
+                artModifier,
+                contentScale = if (spec.crop) ContentScale.Crop else ContentScale.Fit,
+            )
+        } else Canvas(Modifier.fillMaxSize(.62f)) {
             val stroke = 2.dp.toPx()
             if (platform == MusicPlatform.AGGREGATE) {
                 val nodes = listOf(Offset(size.width * .2f, size.height * .2f), Offset(size.width * .8f, size.height * .2f),
@@ -110,6 +144,14 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
             "next" -> {
                 drawRoundRect(color, topLeft = p(.71f, .20f), size = Size(s * .07f, s * .60f), cornerRadius = CornerRadius(s * .02f))
                 drawPath(path { moveTo(s * .20f, s * .20f); lineTo(s * .64f, s * .5f); lineTo(s * .20f, s * .80f); close() }, color)
+            }
+            "rewind" -> {
+                drawPath(path { moveTo(s * .50f, s * .22f); lineTo(s * .16f, s * .50f); lineTo(s * .50f, s * .78f); close() }, color)
+                drawPath(path { moveTo(s * .84f, s * .22f); lineTo(s * .50f, s * .50f); lineTo(s * .84f, s * .78f); close() }, color)
+            }
+            "forward" -> {
+                drawPath(path { moveTo(s * .16f, s * .22f); lineTo(s * .50f, s * .50f); lineTo(s * .16f, s * .78f); close() }, color)
+                drawPath(path { moveTo(s * .50f, s * .22f); lineTo(s * .84f, s * .50f); lineTo(s * .50f, s * .78f); close() }, color)
             }
             "heart", "heartFilled" -> {
                 val h = path {
@@ -200,7 +242,11 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
                 drawLine(color, p(.8f, .68f), p(.2f, .68f), w, StrokeCap.Round)
                 drawLine(color, p(.35f, .53f), p(.2f, .68f), w, StrokeCap.Round)
                 drawLine(color, p(.2f, .68f), p(.35f, .83f), w, StrokeCap.Round)
-                if (kind == "repeatOne") drawLine(color, p(.5f, .42f), p(.5f, .58f), w * 1.5f, StrokeCap.Round)
+                if (kind == "repeatOne") {
+                    drawLine(color, p(.46f, .44f), p(.51f, .40f), w, StrokeCap.Round)
+                    drawLine(color, p(.51f, .40f), p(.51f, .60f), w, StrokeCap.Round)
+                    drawLine(color, p(.46f, .60f), p(.56f, .60f), w, StrokeCap.Round)
+                }
             }
             "diamond" -> drawPath(path {
                 moveTo(s * .5f, s * .10f); lineTo(s * .90f, s * .5f); lineTo(s * .5f, s * .90f); lineTo(s * .10f, s * .5f); close()
@@ -301,6 +347,26 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
                 corner(.82f, .18f, -.16f, .16f)
                 corner(.18f, .82f, .16f, -.16f)
                 corner(.82f, .82f, -.16f, -.16f)
+            }
+            /* Centered lyric stanza flanked by quiet focus arcs: pure lyric immersion, distinct from fullscreen. */
+            "immersion" -> {
+                drawLine(color.copy(alpha = .48f), p(.32f, .24f), p(.68f, .24f), w * .95f, StrokeCap.Round)
+                drawLine(color, p(.18f, .50f), p(.82f, .50f), w * 1.25f, StrokeCap.Round)
+                drawLine(color.copy(alpha = .48f), p(.35f, .76f), p(.65f, .76f), w * .95f, StrokeCap.Round)
+                drawArc(color.copy(alpha = .42f), startAngle = 135f, sweepAngle = 90f, useCenter = false,
+                    topLeft = p(.06f, .22f), size = Size(s * .20f, s * .56f), style = Stroke(w * .85f, cap = StrokeCap.Round))
+                drawArc(color.copy(alpha = .42f), startAngle = -45f, sweepAngle = 90f, useCenter = false,
+                    topLeft = p(.74f, .22f), size = Size(s * .20f, s * .56f), style = Stroke(w * .85f, cap = StrokeCap.Round))
+            }
+            /* Cinema 16:9 frame with opposing horizontal resize marks: aspect/fill ratio, distinct from expand. */
+            "aspect" -> {
+                drawRoundRect(color, topLeft = p(.12f, .24f), size = Size(s * .76f, s * .52f),
+                    cornerRadius = CornerRadius(s * .07f), style = Stroke(w))
+                drawLine(color, p(.26f, .50f), p(.74f, .50f), w * .85f, StrokeCap.Round)
+                drawPath(path { moveTo(s * .35f, s * .40f); lineTo(s * .24f, s * .50f); lineTo(s * .35f, s * .60f) },
+                    color, style = Stroke(w * .85f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                drawPath(path { moveTo(s * .65f, s * .40f); lineTo(s * .76f, s * .50f); lineTo(s * .65f, s * .60f) },
+                    color, style = Stroke(w * .85f, cap = StrokeCap.Round, join = StrokeJoin.Round))
             }
             "bulbOff" -> {
                 drawPath(path {
@@ -415,7 +481,7 @@ internal fun Glyph(kind: String, modifier: Modifier = Modifier, color: Color) {
 @Composable fun AuraIconButton(icon: String, description: String, onClick: () -> Unit, modifier: Modifier = Modifier,
                                primary: Boolean = false, size: Dp = 38.dp) {
     val c = LocalPrismColors.current
-    Box(modifier.size(size).auraFocus(CircleShape, 1f, ring = if (primary) c.foreground else null, instantRing = true)
+    Box(modifier.size(size).auraFocus(CircleShape, 1f, ring = if (primary) c.foreground else null)
         .clip(CircleShape).background(if (primary) c.accent else c.panel)
         .clickable(onClick = onClick).semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
         Glyph(icon, Modifier.size(size * .6f), if (primary) c.onAccent else c.foreground.copy(alpha = .82f))

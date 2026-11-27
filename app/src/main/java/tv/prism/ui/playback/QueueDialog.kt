@@ -20,11 +20,14 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.alpha
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -43,7 +46,9 @@ import tv.prism.library.Song
 import tv.prism.ui.widgets.requestIfAttached
 import tv.prism.ui.widgets.requestAfterScroll
 import tv.prism.ui.widgets.LocalPrismColors
-import tv.prism.ui.widgets.PrismAction
+import tv.prism.ui.widgets.Glyph
+import tv.prism.ui.widgets.auraFocus
+import tv.prism.ui.widgets.tvClickable
 import tv.prism.ui.widgets.focusAnchor
 import tv.prism.ui.widgets.AuraMark
 import tv.prism.ui.widgets.PrismQueueRow
@@ -62,6 +67,7 @@ internal fun QueueDialog(
     queueRootFocus: FocusRequester,
     detailFocus: (String) -> FocusRequester,
     motionEnabled: Boolean,
+    mvCapableIds: Set<String> = emptySet(),
     onClose: () -> Unit,
     onSongMenu: (Song, FocusRequester) -> Unit,
     onPlay: (Int) -> Unit,
@@ -134,8 +140,14 @@ internal fun QueueDialog(
                                 },
                                 color = c.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                        PrismAction("关闭", closeQueue, Modifier.focusRequester(queueRootFocus).focusAnchor(queueCloseFocus)
-                            .onFocusChanged { if (it.isFocused && focusMove?.isActive != true) cursor = -1 })
+                        /* Same close affordance as every menu: a bare X in the corner. */
+                        Box(Modifier.size(38.dp).focusRequester(queueRootFocus).focusAnchor(queueCloseFocus)
+                            .onFocusChanged { if (it.isFocused && focusMove?.isActive != true) cursor = -1 }
+                            .auraFocus(RoundedCornerShape(50), 1f)
+                            .semantics { contentDescription = "关闭播放列表" }
+                            .tvClickable(closeQueue, closeQueue), contentAlignment = Alignment.Center) {
+                            Glyph("close", Modifier.size(20.dp), c.muted)
+                        }
                     }
                     Spacer(Modifier.height(14.dp))
                     if (queue.isEmpty()) Text("播放歌曲后显示队列", color = c.muted)
@@ -155,6 +167,7 @@ internal fun QueueDialog(
                                    way; the queue is no exception. */
                                 onLongPress = { onSongMenu(item, rowFocus) },
                                 favorite = item.key in favoriteKeys,
+                                showMv = item.pluginId in mvCapableIds,
                             ) { closeQueue(); onPlay(index) }
                         }
                     }

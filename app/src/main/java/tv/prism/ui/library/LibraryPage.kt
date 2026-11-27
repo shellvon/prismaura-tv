@@ -79,7 +79,7 @@ internal data class LibraryPageActions(
     val openSubject: (SavedSubject) -> Unit,
     val openPlaylist: (String) -> Unit,
     val closePlaylist: () -> Unit,
-    val importPlaylist: () -> Unit,
+    val importPlaylist: (FocusRequester) -> Unit,
     val fillOnPhone: (field: String, query: String, onReturn: () -> Unit, onQuery: (String) -> Unit) -> Unit,
     val discover: () -> Unit,
     val enterManage: () -> Unit,
@@ -471,7 +471,7 @@ internal fun LibraryPage(
                         if (showingPlaylists)
                             PrismAction(
                                 "导入歌单",
-                                { actions.importPlaylist() },
+                                { actions.importPlaylist(focus.importPlaylist.requester) },
                                 headerEdges
                                     .focusAnchor(focus.importPlaylist)
                                     .then(
@@ -674,7 +674,7 @@ internal fun LibraryPage(
                     onFocus = focus.onFocused,
                     registerPlaylist = focus.registerPlaylist,
                     onDiscover = actions.discover,
-                    onImport = { actions.importPlaylist() },
+                    onImport = { actions.importPlaylist(focus.empty.requester) },
                     onPickSubject = { subject ->
                         if (libraryManage) libraryViewModel.toggle(subject.key)
                         else actions.openSubject(subject)

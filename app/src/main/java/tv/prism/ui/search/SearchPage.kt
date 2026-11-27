@@ -906,7 +906,7 @@ internal fun ColumnScope.SearchResults(
             if (resultCount > 0) Text("$resultCount 条", color = c.muted, fontSize = 11.sp)
             if (resultCount > 0) {
                 Spacer(Modifier.weight(1f))
-                Text("长按确定键：收藏 / 找歌手", color = c.muted.copy(alpha = .8f), fontSize = 10.sp)
+                Text("长按确定键：收藏 / 找歌手", color = c.muted, fontSize = 12.sp)
             }
         }
         Spacer(Modifier.height(8.dp))

@@ -54,7 +54,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -85,6 +88,7 @@ import tv.prism.remote.qrCodeBitmap
 import tv.prism.ui.widgets.PrismQrFrame
 import tv.prism.ui.widgets.LocalAuraMotion
 import tv.prism.ui.widgets.SettingsButton
+import tv.prism.ui.widgets.ChoicePopup
 import tv.prism.ui.widgets.auraFocus
 import tv.prism.ui.widgets.PrismContentDialog
 import tv.prism.ui.widgets.rowFocus
@@ -370,7 +374,8 @@ internal fun PluginConfig(
                         .rememberFocus(memory),
                     icon = "info",
                 )
-                Box {
+                var platformAnchor by remember { mutableStateOf(Rect.Zero) }
+                Box(Modifier.onGloballyPositioned { platformAnchor = it.boundsInWindow() }) {
                     val platforms = remember {
                         listOf<MusicPlatform?>(null) +
                             MusicPlatform.entries.filterNot {
@@ -389,8 +394,9 @@ internal fun PluginConfig(
                             platformFocus.requestFocus()
                         }
                     }
+                    val currentPlatform = SourcePlatforms.get(plugin.id)
                     PrismAction(
-                        "平台 · ${SourcePlatforms.get(plugin.id)?.label ?: "自动识别"} ▾",
+                        "平台 · ${currentPlatform?.label ?: "自动识别"}",
                         {
                             platformOpen = true
                             infoOpen = false
@@ -403,6 +409,11 @@ internal fun PluginConfig(
                                 right = resetFocus
                             }
                             .rememberFocus(memory),
+                        leading = {
+                            if (currentPlatform == null) Glyph("compass", Modifier.size(18.dp), c.accent)
+                            else PlatformIcon(currentPlatform, Modifier.size(18.dp))
+                        },
+                        trailingIcon = "chev",
                     )
                     if (platformOpen)
                         ChoicePopup(
@@ -418,6 +429,7 @@ internal fun PluginConfig(
                                 if (it == null) Glyph("compass", Modifier.size(22.dp), c.muted)
                                 else PlatformIcon(it, Modifier.size(22.dp))
                             },
+                            anchor = platformAnchor,
                         )
                 }
                 PrismAction(
@@ -686,7 +698,7 @@ internal fun PluginConfig(
                 resetOpen = false
                 resetConfiguration()
             },
-            confirmIcon = "trash",
+            destructive = true, confirmIcon = "trash",
         )
 }
 
@@ -1086,87 +1098,6 @@ private fun PluginLoginQr(
     }
 }
 
-/* 标准 hints：{ importMusicSheet: [...], importMusicItem: [...] }，展示当前选中音源的那一组。 */
-@Composable
-internal fun <T> ChoicePopup(
-    options: List<T>,
-    selectedIndex: Int,
-    label: (T) -> String,
-    onDismiss: () -> Unit,
-    onSelect: (T) -> Unit,
-    description: ((T) -> String)? = null,
-    checked: ((T) -> Boolean)? = null,
-    icon: @Composable (T) -> Unit,
-) {
-    val c = LocalPrismColors.current
-    Popup(
-        alignment = Alignment.TopEnd,
-        offset = IntOffset(0, with(LocalDensity.current) { 38.dp.roundToPx() }),
-        onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = true),
-    ) {
-        val focus = remember { FocusRequester() }
-        LaunchedEffect(Unit) {
-            withFrameNanos {}
-            focus.requestFocus()
-        }
-        val shape = RoundedCornerShape(12.dp)
-        Column(
-            Modifier.width(268.dp)
-                .heightIn(max = 280.dp)
-                .clip(shape)
-                .background(c.panel)
-                .border(1.dp, c.line, shape)
-                .padding(horizontal = 6.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            if (options.isEmpty())
-                SettingsButton(
-                    "暂无可选项 · 返回",
-                    onDismiss,
-                    Modifier.fillMaxWidth().focusRequester(focus),
-                )
-            options.forEachIndexed { index, option ->
-                val chosen = checked?.invoke(option) ?: (index == selectedIndex)
-                val rowShape = RoundedCornerShape(8.dp)
-                Row(
-                    Modifier.fillMaxWidth()
-                        .heightIn(min = 42.dp)
-                        .then(
-                            if (index == selectedIndex.coerceAtLeast(0))
-                                Modifier.focusRequester(focus)
-                            else Modifier
-                        )
-                        .auraFocus(rowShape, 1f)
-                        .clip(rowShape)
-                        .background(if (chosen) c.accent.copy(alpha = .12f) else Color.Transparent)
-                        .then(if (checked == null) Modifier.selectable(chosen, role = Role.RadioButton, onClick = { onSelect(option) })
-                            else Modifier.toggleable(chosen, role = Role.Checkbox) { onSelect(option) })
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    icon(option)
-                    Column(Modifier.weight(1f)) {
-                    Text(
-                        label(option),
-                        color = c.foreground,
-                        fontSize = 14.sp,
-                        lineHeight = 20.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    description?.let { Text(it(option), color = c.muted, fontSize = 12.sp, lineHeight = 16.sp) }
-                    }
-                    if (chosen) Glyph("check", Modifier.size(14.dp), c.accent)
-                }
-            }
-        }
-    }
-}
-
 internal class SourceAddress(val label: String, val url: String)
 
 private fun sourceAddresses(plugin: Plugin): List<SourceAddress> {
@@ -1191,52 +1122,59 @@ internal fun PrismInfoDialog(
     subtitle: String,
     onDismiss: () -> Unit,
     header: @Composable () -> Unit,
-    footer: @Composable RowScope.() -> Unit,
+    footer: (@Composable RowScope.() -> Unit)? = null,
+    focusClose: Boolean = false,
     body: @Composable ColumnScope.() -> Unit,
 ) {
     val c = LocalPrismColors.current
     val scroll = rememberScrollState()
     val scope = rememberCoroutineScope()
     val bodyFocus = remember { FocusRequester() }
+    val closeFocus = remember { FocusRequester() }
+    val scrollable = scroll.maxValue > 0
     /* 按一下只挪两行（正文 20sp 行高），配一小段动画；按住时走系统连发的 KeyDown，
     每次同样两行、跳过动画，速度跟着按键节奏走。不再一按就是一屏。 */
     val stepPx = with(LocalDensity.current) { 40.dp.toPx() }
     val holdStepPx = with(LocalDensity.current) { 24.dp.toPx() }
-    PrismContentDialog(title, subtitle, onDismiss, bodyFocus, width = 600.dp) {
+    PrismContentDialog(title, subtitle, onDismiss, if (focusClose) closeFocus else bodyFocus, width = 560.dp, closeFocus = closeFocus) {
         /* 概览卡钉在顶部：滚到「地址」时还看得见是哪个音源、哪个订阅。
         只有卡片下面的正文滚动，卡片按 panel 不透明铺底，文字从下面的渐隐里穿过去。 */
         Column(
             Modifier.fillMaxWidth()
-                .weight(1f, fill = false)
-                .focusRequester(bodyFocus)
-                .infoBodyFocus()
-                .onPreviewKeyEvent { event ->
-                    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                    val direction =
-                        when {
-                            event.key == Key.DirectionDown && scroll.canScrollForward -> 1
-                            event.key == Key.DirectionUp && scroll.canScrollBackward -> -1
-                            else -> return@onPreviewKeyEvent false
-                        }
-                    if (event.nativeKeyEvent.repeatCount > 0)
-                        scope.launch { scroll.scrollBy(direction * holdStepPx) }
-                    else
-                        scope.launch {
-                            scroll.animateScrollBy(
-                                direction * stepPx,
-                                tween(150, easing = LinearOutSlowInEasing),
-                            )
-                        }
-                    true
-                }
-                .focusable()
+                .heightIn(max = 420.dp)
+                .then(
+                    if (!focusClose || scrollable) {
+                        Modifier.focusRequester(bodyFocus)
+                            .infoBodyFocus()
+                            .onPreviewKeyEvent { event ->
+                                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                val direction =
+                                    when {
+                                        event.key == Key.DirectionDown && scroll.canScrollForward -> 1
+                                        event.key == Key.DirectionUp && scroll.canScrollBackward -> -1
+                                        else -> return@onPreviewKeyEvent false
+                                    }
+                                if (event.nativeKeyEvent.repeatCount > 0)
+                                    scope.launch { scroll.scrollBy(direction * holdStepPx) }
+                                else
+                                    scope.launch {
+                                        scroll.animateScrollBy(
+                                            direction * stepPx,
+                                            tween(150, easing = LinearOutSlowInEasing),
+                                        )
+                                    }
+                                true
+                            }
+                            .focusable()
+                    } else Modifier
+                )
         ) {
             header()
-            Box(Modifier.fillMaxWidth().weight(1f, fill = false)) {
+            Box(Modifier.fillMaxWidth()) {
                 Column(
-                    Modifier.fillMaxSize()
+                    Modifier.fillMaxWidth()
                         .verticalScroll(scroll)
-                        .padding(start = 16.dp, end = 4.dp, bottom = 2.dp)
+                        .padding(bottom = 2.dp)
                 ) {
                     body()
                 }
@@ -1246,7 +1184,7 @@ internal fun PrismInfoDialog(
                     Box(
                         Modifier.align(Alignment.TopCenter)
                             .fillMaxWidth()
-                            .height(30.dp)
+                            .height(28.dp)
                             .background(
                                 Brush.verticalGradient(
                                     0f to c.panel,
@@ -1260,7 +1198,7 @@ internal fun PrismInfoDialog(
                     Box(
                         Modifier.align(Alignment.BottomCenter)
                             .fillMaxWidth()
-                            .height(28.dp)
+                            .height(26.dp)
                             .background(
                                 Brush.verticalGradient(
                                     listOf(Color.Transparent, c.panel.copy(alpha = .82f), c.panel)
@@ -1269,8 +1207,8 @@ internal fun PrismInfoDialog(
                     )
             }
         }
-        Row(
-            Modifier.fillMaxWidth(),
+        if (footer != null) Row(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
         ) {
             footer()
@@ -1290,21 +1228,18 @@ internal fun InfoHeaderCard(
     icon: @Composable () -> Unit,
 ) {
     val c = LocalPrismColors.current
-    /* 胶囊跟第二行（数量/体积）走，不跟标题抢位置：标题再长也只在卡片右边缘省略，
-    不会出现「省略号旁边顶着一块标签」的错觉。两行之间留 6dp，胶囊和数量之间留 16dp。 */
     Row(
         Modifier.fillMaxWidth()
             .background(c.panel)
-            .padding(start = 16.dp, end = 4.dp, top = 2.dp, bottom = 2.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(c.foreground.copy(alpha = .035f))
+            .background(c.foreground.copy(alpha = .04f))
             .border(1.dp, c.line.copy(alpha = .55f), RoundedCornerShape(14.dp))
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         icon()
         Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Text(
                 primary,
                 color = c.foreground,
@@ -1324,7 +1259,7 @@ internal fun InfoHeaderCard(
                     overflow = TextOverflow.Ellipsis,
                 )
                 if (pill.isNotBlank()) {
-                    Spacer(Modifier.width(16.dp))
+                    Spacer(Modifier.width(12.dp))
                     Text(
                         pill,
                         color = pillColor,
@@ -1332,7 +1267,7 @@ internal fun InfoHeaderCard(
                         maxLines = 1,
                         modifier =
                             Modifier.clip(RoundedCornerShape(6.dp))
-                                .background(pillColor.copy(alpha = .1f))
+                                .background(pillColor.copy(alpha = .12f))
                                 .padding(horizontal = 8.dp, vertical = 3.dp),
                     )
                 }
@@ -1388,7 +1323,6 @@ internal fun PluginInfoDialog(
         footer = {
             if (plugin.enabled && plugin.capabilities.has("search"))
                 PrismAction("使用此音源搜索", onSearch, enabled = !busy, icon = "search")
-            PrismAction("关闭", onDismiss)
         },
     ) {
         if (description.isNotBlank())

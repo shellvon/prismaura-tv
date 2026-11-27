@@ -58,6 +58,7 @@ internal fun MainActivity.PlaylistImportDialog(
     draft: PlaylistImportDraft,
     onDismiss: () -> Unit,
     onReopen: () -> Unit,
+    onStarted: () -> Unit,
     onError: (String) -> Unit,
 ) {
     val c = LocalPrismColors.current
@@ -145,7 +146,9 @@ internal fun MainActivity.PlaylistImportDialog(
                         PrismAction(if (busy) "导入中…" else "开始导入", {
                             val url = draft.url
                             onDismiss()
-                            runCatching { importPlaylist(draft.name, url, chosen) }.onFailure { onError(it.message ?: "无法开始导入"); onReopen() }
+                            runCatching { importPlaylist(draft.name, url, chosen) }
+                                .onSuccess { onStarted() }
+                                .onFailure { onError(it.message ?: "无法开始导入"); onReopen() }
                         }, Modifier.focusRequester(primaryFocus).keepFocusVisible().focusProperties { up = nameFocus },
                             primary = true, enabled = !busy)
                     }

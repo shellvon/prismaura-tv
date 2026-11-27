@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
@@ -73,7 +74,9 @@ import tv.prism.library.Song
 data class PrismColors(
     val background: Color, val panel: Color, val foreground: Color, val muted: Color,
     val accent: Color, val onAccent: Color, val line: Color, val glow: Color,
-)
+) {
+    val danger: Color = if (panel.luminance() > .5f) Color(0xFF9B3C30) else Color(0xFFE3A098)
+}
 
 val LocalPrismColors = staticCompositionLocalOf { prismColors("gold") }
 val LocalAuraMotion = staticCompositionLocalOf { true }
@@ -275,7 +278,7 @@ internal fun coverRequest(url: String, sampleSize: Int? = null): ImageRequest {
 }
 
 fun prismColors(theme: String): PrismColors = when (theme) {
-    "porcelain" -> PrismColors(Color(0xFFF4F1EA), Color(0xFFE9E4DA), Color(0xFF252119), Color(0xFF756E60), Color(0xFF8A6626), Color.White, Color(0xFFC9BDAA), Color(0xFFCEB477))
+    "porcelain" -> PrismColors(Color(0xFFF4F1EA), Color(0xFFE9E4DA), Color(0xFF252119), Color(0xFF655E52), Color(0xFF8A6626), Color.White, Color(0xFFC9BDAA), Color(0xFFCEB477))
     "mono" -> PrismColors(Color(0xFF0A0A0A), Color(0xFF1A1A1A), Color(0xFFF3F3F3), Color(0xFF9A9A9A), Color(0xFFF3F3F3), Color(0xFF111111), Color(0xFF3B3B3B), Color(0xFF777777))
     else -> PrismColors(Color(0xFF08090B), Color(0xFF151619), Color(0xFFF4F0E8), Color(0xFFAAA69E), Color(0xFFE8C78D), Color(0xFF17120B), Color(0xFF333230), Color(0xFFBD863C))
 }
@@ -362,19 +365,25 @@ fun prismColors(theme: String): PrismColors = when (theme) {
     primary: Boolean = false, live: Boolean = false,
     enabled: Boolean = true, onLongPress: (() -> Unit)? = null,
     icon: String? = null,
+    leading: (@Composable () -> Unit)? = null,
+    trailingIcon: String? = null,
+    destructive: Boolean = false,
 ) {
     val c = LocalPrismColors.current
+    val ink = if (destructive) c.danger else if (primary) c.onAccent else c.foreground
     Box(modifier.heightIn(min = 42.dp)
         .then(if (enabled) Modifier.auraFocus(RoundedCornerShape(50), scale = 1f,
-            ring = if (primary) c.foreground else null, instantRing = true) else Modifier)
+            ring = if (destructive) c.danger else if (primary) c.foreground else null) else Modifier)
         .alpha(if (enabled) 1f else .42f)
-        .clip(RoundedCornerShape(50)).background(if (primary) c.accent else c.panel)
+        .clip(RoundedCornerShape(50)).background(if (destructive) c.danger.copy(alpha = .12f) else if (primary) c.accent else c.panel)
         .then(if (enabled) Modifier.tvClickable(onClick, onLongPress) else Modifier.semantics { disabled() })
         .padding(horizontal = 18.dp, vertical = 10.dp), contentAlignment = Alignment.Center) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (live) NowPlayingBars(if (primary) c.onAccent else c.accent, height = 13.dp, barWidth = 2.5.dp)
-            if (icon != null) Glyph(icon, Modifier.size(18.dp), if (primary) c.onAccent else c.accent)
-            Text(label, color = if (primary) c.onAccent else c.foreground, fontSize = 16.sp, fontWeight = if (primary) FontWeight.Medium else FontWeight.Normal, maxLines = 1)
+            if (live) NowPlayingBars(if (destructive) c.danger else if (primary) c.onAccent else c.accent, height = 13.dp, barWidth = 2.5.dp)
+            leading?.invoke()
+            if (icon != null) Glyph(icon, Modifier.size(18.dp), if (destructive) c.danger else if (primary) c.onAccent else c.accent)
+            Text(label, color = ink, fontSize = 16.sp, fontWeight = if (primary) FontWeight.Medium else FontWeight.Normal, maxLines = 1)
+            if (trailingIcon != null) Glyph(trailingIcon, Modifier.size(15.dp), if (destructive) c.danger else if (primary) c.onAccent else c.muted)
         }
     }
 }
@@ -386,7 +395,7 @@ fun prismColors(theme: String): PrismColors = when (theme) {
     var focused by remember { mutableStateOf(false) }
     /* Two letters, no capsule. Next to the round transport icons a framed pill read as a
        section tab; the focus ring is enough. */
-    Box(modifier.size(40.dp).auraFocus(RoundedCornerShape(50), 1.08f)
+    Box(modifier.size(40.dp).auraFocus(RoundedCornerShape(50), 1f)
         .onFocusChanged { focused = it.isFocused }
         .clip(RoundedCornerShape(50))
         .background(if (focused) c.accent.copy(alpha = .12f) else Color.Transparent)
@@ -400,7 +409,7 @@ fun prismColors(theme: String): PrismColors = when (theme) {
    with the primary button sitting next to it. */
 @Composable fun PrismLink(label: String, onClick: () -> Unit, modifier: Modifier = Modifier, active: Boolean = false) {
     val c = LocalPrismColors.current
-    Box(modifier.heightIn(min = 36.dp).auraFocus(RoundedCornerShape(6.dp), 1.01f).clip(RoundedCornerShape(6.dp))
+    Box(modifier.heightIn(min = 36.dp).auraFocus(RoundedCornerShape(6.dp), 1f).clip(RoundedCornerShape(6.dp))
         .clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 4.dp), contentAlignment = Alignment.Center) {
         Text(label, color = if (active) c.accent else c.muted, fontSize = 14.sp, maxLines = 1)
     }
@@ -408,16 +417,17 @@ fun prismColors(theme: String): PrismColors = when (theme) {
 
 @Composable internal fun PrismNav(
     label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier,
-    focused: Boolean, quiet: Boolean = false, previewed: Boolean = selected,
+    focused: Boolean, previewed: Boolean = selected,
 ) {
     val c = LocalPrismColors.current
-    val idle = if (quiet) c.muted.copy(alpha = .62f) else c.muted
-    Column(modifier.widthIn(min = 64.dp).border(2.dp, if (focused) c.accent else Color.Transparent, RoundedCornerShape(50))
+    val idle = c.muted
+    Column(modifier.widthIn(min = 64.dp)
+        .auraFocus(RoundedCornerShape(50), 1f)
         .clip(RoundedCornerShape(50)).clickable(onClick = onClick)
         .semantics { this.selected = selected }
         .padding(horizontal = 18.dp, vertical = 9.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Column(Modifier.width(IntrinsicSize.Max), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(label, color = if (selected) c.foreground else idle, fontSize = 16.sp, fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal, maxLines = 1)
+            Text(label, color = if (selected || focused) c.foreground else idle, fontSize = 16.sp, fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal, maxLines = 1)
             Spacer(Modifier.height(5.dp))
             Box(Modifier.fillMaxWidth().height(2.dp).background(if (previewed) c.accent else Color.Transparent, CircleShape))
         }
@@ -517,6 +527,7 @@ internal fun MusicArtwork(title: String, artwork: String, modifier: Modifier = M
 @Composable
 internal fun BoxScope.StatusOverlay(status: () -> String, keepVisible: () -> Boolean) {
     val c = LocalPrismColors.current
+    val motion = LocalAuraMotion.current
     val notice = status().takeUnless {
         it.startsWith("正在播放") || it.startsWith("正在解析") ||
             it.startsWith("已暂停") || it.startsWith("上次听到") || it == "播放完毕"
@@ -527,10 +538,23 @@ internal fun BoxScope.StatusOverlay(status: () -> String, keepVisible: () -> Boo
         delay(4500)
         visible = false
     }
-    if (notice.isNotBlank() && (visible || keepVisible())) {
-        Box(Modifier.align(Alignment.TopEnd).padding(top = 78.dp, end = 32.dp).widthIn(max = 560.dp)
-            .background(c.panel.copy(alpha = .94f), RoundedCornerShape(10.dp))
-            .border(1.dp, c.line, RoundedCornerShape(10.dp)).padding(horizontal = 16.dp, vertical = 10.dp)) {
+    val isError = notice.contains("失败") || notice.contains("不可用") || notice.contains("无法") || notice.contains("错误")
+    androidx.compose.animation.AnimatedVisibility(
+        visible = notice.isNotBlank() && (visible || keepVisible()),
+        enter = androidx.compose.animation.fadeIn(tween(if (motion) 160 else 0)),
+        exit = androidx.compose.animation.fadeOut(tween(if (motion) 220 else 0)),
+        modifier = Modifier.align(Alignment.TopEnd).padding(top = 78.dp, end = 32.dp),
+    ) {
+        Row(
+            Modifier.widthIn(max = 560.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(c.panel.copy(alpha = .95f))
+                .border(1.dp, if (isError) c.danger.copy(alpha = .45f) else c.line, RoundedCornerShape(10.dp))
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(Modifier.size(6.dp).clip(CircleShape).background(if (isError) c.danger else c.accent))
             Text(notice, color = c.foreground, fontSize = 12.sp, maxLines = 2)
         }
     }
@@ -548,6 +572,7 @@ internal fun PrismConfirmDialog(
     title: String, message: String, confirmLabel: String,
     onDismiss: () -> Unit, onConfirm: () -> Unit,
     confirmIcon: String? = null,
+    destructive: Boolean = false,
 ) {
     val c = LocalPrismColors.current
     val cancelFocus = remember { FocusRequester() }
@@ -560,7 +585,7 @@ internal fun PrismConfirmDialog(
             Row(Modifier.fillMaxWidth().padding(top = 24.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
                 PrismAction("取消", onDismiss, Modifier.widthIn(min = 96.dp).focusRequester(cancelFocus))
-                PrismAction(confirmLabel, onConfirm, Modifier.widthIn(min = 96.dp), primary = true, icon = confirmIcon)
+                PrismAction(confirmLabel, onConfirm, Modifier.widthIn(min = 96.dp), primary = true, icon = confirmIcon, destructive = destructive)
             }
         }
     }
@@ -579,7 +604,7 @@ fun PrismContentDialog(title: String, subtitle: String, onDismiss: () -> Unit, i
             if (windowFocused && initialFocus != null) {
                 withFrameNanos { }
                 inputMode.requestInputMode(androidx.compose.ui.input.InputMode.Keyboard)
-                initialFocus.requestFocus()
+                initialFocus.requestAfterScroll { }
             }
         }
         Column(Modifier.width(width).clip(RoundedCornerShape(24.dp)).background(c.panel)
