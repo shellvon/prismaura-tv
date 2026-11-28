@@ -172,8 +172,11 @@ import tv.prism.lyrics.withoutOpeningHeading
 @Composable
 internal fun MainActivity.PrismApp() {
         val inputMode = androidx.compose.ui.platform.LocalInputModeManager.current
+        val windowFocused = androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused
+        LaunchedEffect(windowFocused) {
+            if (windowFocused) inputMode.requestInputMode(androidx.compose.ui.input.InputMode.Keyboard)
+        }
         LaunchedEffect(Unit) {
-            inputMode.requestInputMode(androidx.compose.ui.input.InputMode.Keyboard)
             withFrameNanos { }
             withFrameNanos { }
             startPlaybackAndMaintenance()
@@ -192,6 +195,7 @@ internal fun MainActivity.PrismApp() {
             "${it.id}:${it.enabled}:${it.source.hashCode()}:${it.metadata}:${it.variables}"
         } }
         var guideOpen by remember { mutableStateOf(false) }
+        val guideHelpFocus = remember { FocusRequester() }
         val activePlugins = remember(state.plugins) { state.plugins.filter { it.enabled } }
         /* 徽标只承诺能兑现的能力：有 mv 字段但没有 getMvSource 的插件不亮 MV。 */
         val mvCapableIds = remember(state.plugins) { state.plugins.filter { it.capabilities.has("mvSource") }.mapTo(HashSet()) { it.id } }
@@ -407,6 +411,7 @@ internal fun MainActivity.PrismApp() {
         /* Detail pages put their actions in the page head. A LazyColumn row has no geometric
            neighbour above it, so the first row declares the head as its Up target. */
         val detailHeaderFocus = remember { FocusAnchor() }
+        var detailHeaderFocused by remember { mutableStateOf(false) }
         val detailLoadingFocus = remember { FocusAnchor() }
         /* Details are opened from cards in several lists; one requester per card lets Back
            return the remote to the exact card instead of the page's first entry. */
@@ -922,6 +927,43 @@ internal fun MainActivity.PrismApp() {
             fallback = pageEntryFocus?.requester,
             enabled = page == phoneOrigin?.first && !playerOpen && !phoneSessions.dialogVisible,
         )
+        RestoreFocusAfterDialog(
+            open = guideOpen,
+            origin = guideHelpFocus,
+            fallback = heroFocus.requester,
+            enabled = page == "home" && !playerOpen,
+        )
+        var homeInitialFocused by remember { mutableStateOf(false) }
+        suspend fun focusHomeLanding(ignoreNav: Boolean = false) {
+            if (!windowFocused) return
+            inputMode.requestInputMode(androidx.compose.ui.input.InputMode.Keyboard)
+            repeat(12) {
+                withFrameNanos { }
+                if ((!ignoreNav && navFocused) || playerOpen || guideOpen || page != "home") return
+                val target = when {
+                    showUpdatePrompt && updatePromptFocus.attached -> updatePromptFocus
+                    heroFocus.attached -> heroFocus
+                    else -> null
+                }
+                if (target?.requestIfAttached() == true) {
+                    homeInitialFocused = true
+                    return
+                }
+            }
+            if (homeBodyFocus.requestIfAttached()) homeInitialFocused = true
+        }
+        LaunchedEffect(windowFocused, state.plugins.isEmpty(), activePlugins.isEmpty()) {
+            if (!windowFocused || page != "home" || navFocused || playerOpen || guideOpen || updateDialogOpen || phoneSessions.dialogVisible || contentMenuOpen || importDialog) return@LaunchedEffect
+            if (!homeInitialFocused) {
+                focusHomeLanding()
+            }
+        }
+        LaunchedEffect(activePlugins.isEmpty(), queue.isEmpty()) {
+            if (page != "home" || !windowFocused || playerOpen || guideOpen || updateDialogOpen || phoneSessions.dialogVisible || contentMenuOpen || importDialog) return@LaunchedEffect
+            /* Swapping between PrismHero and HomeSourceGuide detaches the focused header before
+               the replacement attaches, letting Compose park focus on TopNavigation; reclaim it. */
+            focusHomeLanding(ignoreNav = true)
+        }
         LaunchedEffect(page) {
             if (page != "search") focusSearchResults = false
             /* The bar already owns focus while previewing; moving it now would stop the user
@@ -932,9 +974,12 @@ internal fun MainActivity.PrismApp() {
             /* Back from a detail restores the card that opened it; that effect owns focus. */
             if (pendingReturnFocus.isNotBlank() || (page == "home" && returningHomePlaylist != null))
                 return@LaunchedEffect
+            if (page == "home") {
+                focusHomeLanding()
+                return@LaunchedEffect
+            }
             withFrameNanos { }
             when (page) {
-                "home" -> entryFocus("home").requestIfAttached()
                 "search" -> searchInputFocus.requestIfAttached()
                 /* A detail is opened from a card on another page: the effect below waits for its
                    songs and lands on the first one. Taking the bar's tab here would park the
@@ -1049,7 +1094,11 @@ internal fun MainActivity.PrismApp() {
             }
             repeat(12) {
                 withFrameNanos { }
-                if (target.requestIfAttached()) return@LaunchedEffect
+                if (target.requestIfAttached()) {
+                    if (target !== detailHeaderFocus) return@LaunchedEffect
+                    withFrameNanos { }
+                    if (detailHeaderFocused) return@LaunchedEffect
+                }
             }
             /* A restored detail whose hero failed to attach (empty page, an error) still needs
                a focused node; the first song row or the bar's 发现 tab always exists. */
@@ -1251,8 +1300,14 @@ internal fun MainActivity.PrismApp() {
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         PrismAction("我有地址，去添加", { openSources(true) }, Modifier.focusRequester(guideFocus), primary = true)
                         PrismAction("用手机填写", {
-                            openSources(true)
-                            fillSourceOnPhone { pageScope.launch { repeat(2) { withFrameNanos { } }; runCatching { addFocus.requestFocus() } } }
+                            openSources(false)
+                            fillSourceOnPhone {
+                                pluginViewModel.showAdd(true)
+                                pageScope.launch {
+                                    repeat(3) { withFrameNanos { } }
+                                    runCatching { addFocus.requestFocus() }
+                                }
+                            }
                         }, icon = "qr")
                     }
                 }
@@ -1294,7 +1349,7 @@ internal fun MainActivity.PrismApp() {
                                     chartStatus = discoverySession.chartStatus,
                                     chartTitle = discoverySession.charts.firstOrNull()?.optString("title").orEmpty(),
                                 ),
-                                focus = HomePageFocus(navTabFocus, miniFocus, heroFocus, homeBodyFocus, homePlayerFocus,
+                                focus = HomePageFocus(navTabFocus, miniFocus, heroFocus, guideHelpFocus, homeBodyFocus, homePlayerFocus,
                                     updatePromptFocus, radioCardFocus, homeListState, homeRowStates, ::detailFocus, { entryFocus("home") }),
                                 actions = HomePageActions(
                                     showUpdate = {
@@ -1443,13 +1498,14 @@ internal fun MainActivity.PrismApp() {
                                                     val fromPlayer = browseStack.any { it.playerOpen }
                                                     // Keep automatic focus off secondary actions until the primary action is ready.
                                                     val actionEdge = heroUp.focusProperties { canFocus = !browseLoading }
+                                                    val primaryEdge = actionEdge.onFocusChanged { detailHeaderFocused = it.isFocused }
                                                     if (playAllInHero) {
-                                                        PrismAction("播放全部", { playCollection(browseSongs.toList()) }, actionEdge.focusAnchor(detailHeaderFocus), primary = true, icon = "play")
+                                                        PrismAction("播放全部", { playCollection(browseSongs.toList()) }, primaryEdge.focusAnchor(detailHeaderFocus), primary = true, icon = "play")
                                                         PrismAction("随机播放", { playCollection(browseSongs.toList(), shuffle = true) }, actionEdge, icon = "shuffle")
                                                     }
                                                     PrismAction(if (saved) "已收藏" else "收藏", {
                                                         toggleSubject(browsePluginId, browseKind, item, sourceName)
-                                                    }, if (!playAllInHero && !browseLoading) actionEdge.focusAnchor(detailHeaderFocus) else actionEdge,
+                                                    }, if (!playAllInHero && !browseLoading) primaryEdge.focusAnchor(detailHeaderFocus) else actionEdge,
                                                         icon = if (saved) "heartFilled" else "heart")
                                                     if (fromPlayer) {
                                                         PrismAction("发现主页", { resetDiscoveryRoot() }, actionEdge, icon = "compass")

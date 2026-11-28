@@ -245,6 +245,20 @@ class CoreTest {
         assertEquals("https://example.com/", source.headers["Referer"])
         assertFalse(source.headers.containsKey("Invalid Header"))
         assertNull(videoSource(JSONObject().put("url", "https://user:pass@example.com/video")))
+        val qqMapped = videoSource(JSONObject().put("urls", JSONObject()
+            .put("10", "https://example.com/240.mp4")
+            .put("40", "https://example.com/720.mp4")
+            .put("50", "https://example.com/1080.mp4")))!!
+        assertEquals("https://example.com/1080.mp4", qqMapped.url)
+        val bitrateMapped = videoSource(JSONObject().put("brs", JSONObject()
+            .put("960000", "https://example.com/960k.mp4")
+            .put("1080000", "https://example.com/1080k.mp4")))!!
+        assertEquals("https://example.com/1080k.mp4", bitrateMapped.url)
+        val wrapped = videoSource(JSONObject().put("data", JSONObject().put("sources", JSONArray()
+            .put(JSONObject().put("resolution", "1280x720").put("url", "https://example.com/720p.mp4"))
+            .put(JSONObject().put("resolution", "1920x1080").put("url", "https://example.com/1080p.mp4"))
+            .put(JSONObject().put("quality", "4k").put("url", "https://example.com/4k.mp4")))))!!
+        assertEquals("https://example.com/4k.mp4", wrapped.url)
     }
 
     @Test fun pluginSearchPreservesTrackIdForMediaLookup() = runBlocking {
@@ -545,6 +559,8 @@ class CoreTest {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         context.stopService(Intent(context, PlaybackService::class.java))
         val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
+        val originalTheme = activity.theme
+        val originalSubLyrics = activity.subLyrics
         try {
             val lyrics = Lyrics.parse("[00:00.00]<00:00.00>暗<00:00.50>涌<00:02.00>\n" +
                 "[00:00.00]Undercurrent\n[00:00.00]am cung")
@@ -560,6 +576,7 @@ class CoreTest {
                 activity.queue = listOf(Song("fixture", JSONObject().put("id", "bilingual").put("title", "歌词验证")))
                 activity.queueIndex = 0
                 activity.theme = "mono"
+                activity.subLyrics = true
                 activity.lyrics = lyrics
                 activity.lyricStatus = tv.prism.lyrics.LyricStatus.Ready
                 activity.positionMs = 0L
@@ -592,6 +609,8 @@ class CoreTest {
         } finally {
             instrumentation.runOnMainSync {
                 activity.exitingAfterResumeSave = true
+                activity.theme = originalTheme
+                activity.subLyrics = originalSubLyrics
                 activity.queue = emptyList()
                 activity.queueIndex = -1
                 activity.finish()

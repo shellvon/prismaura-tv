@@ -171,15 +171,30 @@ internal fun audioMediaItem(song: Song, source: JSONObject): MediaItem {
 
 private fun videoQualityRank(label: String): Int {
     val key = label.trim().lowercase(Locale.ROOT)
-    Regex("(\\d{3,4})").find(key)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { return it }
+    if (key.isEmpty()) return 0
+    Regex("(\\d{3,4})\\s*[x*]\\s*(\\d{3,4})").find(key)?.let { match ->
+        val w = match.groupValues[1].toIntOrNull() ?: 0
+        val h = match.groupValues[2].toIntOrNull() ?: 0
+        val shortEdge = minOf(w, h)
+        if (shortEdge > 0) return shortEdge
+    }
     return when {
-        key in setOf("4k", "uhd", "2160p") -> 2160
-        key in setOf("2k", "qhd", "1440p") -> 1440
-        key in setOf("fhd", "1080p", "high", "super", "hd_high", "blue", "bluray", "蓝光", "超清") -> 1080
-        key in setOf("hd", "720p", "standard", "高清") -> 720
-        key in setOf("sd", "480p", "标清") -> 480
-        key in setOf("ld", "360p", "low", "流畅") -> 360
-        else -> 0
+        key.contains("8k") || key.contains("4320") -> 4320
+        key.contains("4k") || key.contains("uhd") || key.contains("2160") || key.contains("原画") || key.contains("臻彩") -> 2160
+        key.contains("2k") || key.contains("qhd") || key.contains("1440") -> 1440
+        key.contains("1080p60") || key.contains("1080p+") || key == "116" || key == "120" -> if (key == "120") 2160 else 1081
+        key.contains("fhd") || key.contains("1080") || key in setOf("high", "super", "hd_high", "sq", "blue", "bluray", "蓝光", "超清", "极清", "50", "80", "112") -> 1080
+        key.contains("720") || key in setOf("hd", "hq", "standard", "高清", "40", "64") -> 720
+        key.contains("480") || key in setOf("sd", "标清", "30", "32") -> 480
+        key.contains("360") || key in setOf("ld", "low", "流畅", "16", "20") -> 360
+        key.contains("240") || key == "10" -> 240
+        else -> {
+            val num = Regex("(\\d+)").find(key)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: return 0
+            when {
+                num >= 20_000L -> (num / 1000L).toInt().coerceAtLeast(1)
+                else -> num.toInt().coerceAtLeast(0)
+            }
+        }
     }
 }
 
@@ -191,7 +206,14 @@ private fun validVideoUrl(raw: String?): String? {
 }
 
 fun videoSource(result: Any?): VideoSource? {
-    val obj = result as? JSONObject ?: return null
+    val root = result as? JSONObject ?: return null
+    val obj = root.optJSONObject("data")?.takeIf {
+        root.optString("url").isBlank() &&
+            root.optJSONObject("urls") == null &&
+            root.optJSONObject("qualities") == null &&
+            root.optJSONObject("brs") == null &&
+            root.optJSONArray("sources") == null
+    } ?: root
     val candidates = mutableListOf<Pair<Int, String>>()
     // Prefer the highest available resolution/bitrate when a plugin returns multiple streams.
     for (mapKey in listOf("urls", "qualities", "brs")) {
@@ -203,24 +225,40 @@ fun videoSource(result: Any?): VideoSource? {
                 is JSONObject -> validVideoUrl(value.optString("url"))
                 else -> null
             }
-            if (candidateUrl != null) candidates += videoQualityRank(qualityKey) to candidateUrl
+            val subRank = if (value is JSONObject) {
+                maxOf(
+                    value.optInt("height", 0),
+                    videoQualityRank(value.optString("resolution").ifBlank { value.optString("quality") }),
+                    value.optInt("bitrate", 0) / 1000,
+                )
+            } else 0
+            if (candidateUrl != null) candidates += maxOf(videoQualityRank(qualityKey), subRank) to candidateUrl
         }
     }
     obj.optJSONArray("sources")?.let { arr ->
         for (i in 0 until arr.length()) {
             val item = arr.optJSONObject(i) ?: continue
             val candidateUrl = validVideoUrl(item.optString("url")) ?: continue
+            val brRaw = maxOf(item.optInt("bitrate", 0), item.optInt("br", 0), item.optInt("bps", 0))
+            val brRank = if (brRaw >= 20_000) brRaw / 1000 else brRaw
             val rank = maxOf(
                 item.optInt("height", 0),
                 item.optInt("resolution", 0),
-                item.optInt("bitrate", 0) / 1000,
-                videoQualityRank(item.optString("quality").ifBlank { item.optString("label") }),
+                brRank,
+                videoQualityRank(
+                    item.optString("quality")
+                        .ifBlank { item.optString("resolution") }
+                        .ifBlank { item.optString("label") }
+                        .ifBlank { item.optString("definition") }
+                        .ifBlank { item.optString("name") }
+                ),
             )
             candidates += rank to candidateUrl
         }
     }
     val url = candidates.maxByOrNull { it.first }?.second ?: validVideoUrl(obj.optString("url")) ?: return null
-    return VideoSource(url, sourceHeaders(obj))
+    val headers = sourceHeaders(obj).ifEmpty { sourceHeaders(root) }
+    return VideoSource(url, headers)
 }
 
 private val extendedQualityOrder = listOf("mgg", "64k", "128k", "192k", "320k", "flac", "flac24bit", "hires", "dolby", "atmos", "atmos_plus")

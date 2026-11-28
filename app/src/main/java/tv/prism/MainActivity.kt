@@ -766,7 +766,8 @@ class MainActivity : ComponentActivity() {
 
     internal fun connect(retryPlayback: Boolean = false) {
         connection?.let(MediaController::releaseFuture)
-        val future = MediaController.Builder(this, SessionToken(this, ComponentName(this, PlaybackService::class.java)))
+        val appContext = applicationContext
+        val future = MediaController.Builder(appContext, SessionToken(appContext, ComponentName(appContext, PlaybackService::class.java)))
             .setListener(object : MediaController.Listener {
                 override fun onDisconnected(controller: MediaController) {
                     if (this@MainActivity.controller !== controller) return
@@ -2513,7 +2514,7 @@ class MainActivity : ComponentActivity() {
         if (::appUpdates.isInitialized) { updateJob?.cancel(); appUpdates.cancelNetwork() }
         closePhoneSessions()
         recovery?.ready?.cancel(); recovery = null
-        lyricJob?.cancel(); resolving?.cancel(); controller?.removeListener(listener); connection?.let(MediaController::releaseFuture); controller = null
+        lyricJob?.cancel(); resolving?.cancel(); controller?.removeListener(listener); connection?.let { MediaController.releaseFuture(it); connection = null }; controller = null
         super.onDestroy()
     }
     override fun onStop() {

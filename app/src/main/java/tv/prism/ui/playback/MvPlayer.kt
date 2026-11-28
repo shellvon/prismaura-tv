@@ -3,6 +3,7 @@ package tv.prism.ui.playback
 import android.content.Context
 import android.os.SystemClock
 import android.view.SurfaceView
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
@@ -24,6 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,6 +47,7 @@ import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -154,6 +157,7 @@ private fun MvPlayback(
                 // Always prefer the highest available video quality automatically.
                 trackSelectionParameters = trackSelectionParameters.buildUpon()
                     .setForceHighestSupportedBitrate(true)
+                    .setMaxVideoBitrate(Int.MAX_VALUE)
                     .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
                     .setViewportSize(Int.MAX_VALUE, Int.MAX_VALUE, false)
                     .build()
@@ -1210,11 +1214,18 @@ private fun MvMenu(
         }
     }
     Dialog(onDismissRequest = ::dismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val view = LocalView.current
+        DisposableEffect(view) {
+            val window = (view.parent as? DialogWindowProvider)?.window
+            val original = window?.attributes?.let { WindowManager.LayoutParams().apply { copyFrom(it) } }
+            window?.setDimAmount(.14f)
+            onDispose { if (original != null) window?.attributes = original }
+        }
         BoxWithConstraints(Modifier.fillMaxSize()) {
             Box(
                 Modifier.fillMaxSize()
-                    .graphicsLayer { alpha = .42f + .58f * enter.value }
-                    .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .42f), Color.Black.copy(alpha = .68f))))
+                    .graphicsLayer { alpha = enter.value }
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .22f))))
                     .pointerInput(Unit) { detectTapGestures { dismiss() } },
             )
             Column(

@@ -50,6 +50,7 @@ import tv.prism.ui.widgets.AuraRadioCard
 import tv.prism.ui.widgets.AuraHotCard
 import tv.prism.ui.widgets.upTo
 import tv.prism.ui.widgets.PrismShelfHeader
+import tv.prism.ui.widgets.RestoreFocusAfterDialog
 import tv.prism.ui.widgets.LocalListScrolling
 import tv.prism.ui.widgets.PrismCoverCard
 import tv.prism.ui.widgets.PrismSheetCard
@@ -76,6 +77,7 @@ internal data class HomePageFocus(
     val nav: FocusRequester,
     val mini: FocusRequester,
     val hero: FocusAnchor,
+    val guideHelp: FocusRequester,
     val body: FocusAnchor,
     val player: FocusAnchor,
     val update: FocusAnchor,
@@ -281,7 +283,23 @@ internal fun HomePage(
                     val installed = state.hasInstalledSources
                     val guideEdges =
                         Modifier.onFocusChanged {
-                                if (it.isFocused) scope.launch { focus.list.scrollToItem(0) }
+                                if (it.isFocused) {
+                                    scope.launch { focus.list.scrollToItem(0) }
+                                }
+                            }
+                            .focusProperties {
+                                up =
+                                    if (state.updateVersion != null && focus.update.attached)
+                                        focus.update.requester
+                                    else focus.nav
+                                if (showHomePlayer) downTo(focus.player)
+                            }
+                    val helpEdges =
+                        Modifier.focusRequester(focus.guideHelp)
+                            .onFocusChanged {
+                                if (it.isFocused) {
+                                    scope.launch { focus.list.scrollToItem(0) }
+                                }
                             }
                             .focusProperties {
                                 up =
@@ -293,7 +311,7 @@ internal fun HomePage(
                     HomeSourceGuide(
                         installed,
                         Modifier.focusAnchor(focus.hero).then(guideEdges),
-                        guideEdges,
+                        helpEdges,
                         onAdd = { actions.openSources(!installed) },
                         onHelp = actions.showGuide,
                     )

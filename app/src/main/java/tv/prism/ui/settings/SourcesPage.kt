@@ -2,6 +2,7 @@ package tv.prism.ui.settings
 
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
@@ -18,6 +19,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.tv.material3.Text
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -199,17 +201,17 @@ internal fun SourcesPage(
             )
 
         if (ui.adding)
-            Dialog(onDismissRequest = { closeAddSource() }) {
+            Dialog(onDismissRequest = { closeAddSource() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
                 LaunchedEffect(Unit) {
                     repeat(2) { withFrameNanos {} }
-                    addressFocus.requestFocus()
+                    if (subscription.isNotBlank()) runCatching { addFocus.requestFocus() }
+                    else runCatching { addressFocus.requestFocus() }
                 }
+                val dialogShape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
                 Column(
                     Modifier.width(580.dp)
-                        .background(
-                            c.panel,
-                            androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
-                        )
+                        .background(c.panel, dialogShape)
+                        .border(1.dp, c.line, dialogShape)
                         .padding(26.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {

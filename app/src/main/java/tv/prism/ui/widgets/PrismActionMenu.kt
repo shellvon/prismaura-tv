@@ -116,9 +116,13 @@ internal fun PrismActionMenu(
     Dialog(onDismissRequest = ::back, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         val view = LocalView.current
         val windowFocused = LocalWindowInfo.current.isWindowFocused
+        val inputMode = androidx.compose.ui.platform.LocalInputModeManager.current
         LaunchedEffect(windowFocused) {
-            if (windowFocused && focusedRow in enabledRows && replacement == null && !closing) {
-                rowFocus[focusedRow].requestAfterScroll { }
+            if (windowFocused && !closing && replacement == null) {
+                inputMode.requestInputMode(androidx.compose.ui.input.InputMode.Keyboard)
+                withFrameNanos { }
+                if (focusedRow in enabledRows) rowFocus[focusedRow].requestAfterScroll { }
+                else (first?.let { rowFocus[it] } ?: closeFocus).requestFocus()
             }
         }
         DisposableEffect(view) {

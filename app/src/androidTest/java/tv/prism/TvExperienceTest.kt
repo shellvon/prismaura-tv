@@ -902,6 +902,8 @@ class TvExperienceTest {
             }
             val tab = generateSequence(label("歌单")) { it.parent }.first { it.isLongClickable }
             assertTrue(tab.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK))
+            label("导入歌单")
+            await("menu focus") { true.takeIf { nodes().any { it.isFocused } } }
             val action = generateSequence(label("导入歌单")) { it.parent }.first { it.isClickable }
             assertTrue(action.performAction(AccessibilityNodeInfo.ACTION_FOCUS))
             instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER)
@@ -939,6 +941,42 @@ class TvExperienceTest {
             label("打开正在播放", focused = true)
         } finally {
             instrumentation.runOnMainSync { activity.finish() }
+        }
+    }
+
+    @Test fun firstInstallGuideRestoresFocusOnDismissAndOpensAddSource() = runBlocking<Unit> {
+        instrumentation.setInTouchMode(false)
+        val activity = start()
+        val state = activity.plugins.state as MutableStateFlow<PluginsState>
+        val original = state.value
+        try {
+            await("player controller") { activity.controller }
+            instrumentation.runOnMainSync {
+                activity.reduceMotion = true
+                activity.queue = emptyList()
+                activity.queueIndex = -1
+                state.value = PluginsState()
+                activity.page = "home"
+            }
+            label("添加音源", focused = true)
+            instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_RIGHT)
+            label("我还没有音源", focused = true)
+            instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER)
+            label("添加音源指南")
+            label("我有地址，去添加", focused = true)
+            assertTrue(instrumentation.uiAutomation.performGlobalAction(
+                android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK))
+            label("我还没有音源", focused = true)
+            instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER)
+            label("我有地址，去添加", focused = true)
+            instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER)
+            await("add source dialog opens") { true.takeIf { activity.page == "plugins" } }
+            label("插件 .js 或订阅 .json 地址")
+        } finally {
+            instrumentation.runOnMainSync {
+                state.value = original
+                activity.finish()
+            }
         }
     }
 
